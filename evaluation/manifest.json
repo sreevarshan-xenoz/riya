@@ -1,0 +1,38 @@
+{
+  "version": "sg-bench-v1",
+  "frozen": "2026-10-11",
+  "notes": "Notion page 27 protocol. Change only by creating a new version; never tune on test seeds.",
+  "seeds": {"train": [0, 19], "validation": [20, 29], "test": [30, 49]},
+  "episode_steps": 200,
+  "success": "survive all episode_steps steps with final health >= 0.5",
+  "regimes": {
+    "stable": {"shift_every": 1000000, "shift_jitter": 0.0},
+    "swap": {"shift_every": 30, "shift_jitter": 0.4},
+    "_planned_v2": ["delayed_reward", "partial_observability", "rare_hazard", "held_out_combination"]
+  },
+  "protocol": {
+    "train": "learn online on train seeds under the swap regime, then freeze the checkpoint",
+    "evaluate": "frozen weights (non-parametric state such as context belief, affect and memory may update) on test seeds; same regime schedule for every agent",
+    "pilot": "2 seeds smoke, 5 validation seeds pilot, then all 20 test seeds once the config is frozen"
+  },
+  "metrics": {
+    "recovery": "episodes after a rule flip until the rolling-5 success rate returns to >= 90% of the 10 pre-flip episodes, capped at 20 (censored)",
+    "poison_p10": "mean poison eaten in the first 10 episodes after a flip",
+    "retention": "success on a previously mastered regime after learning a new one"
+  },
+  "pass_rule": {
+    "primary_improvement_pp": 5,
+    "or_recovery_reduction": 0.2,
+    "ci": "paired bootstrap 95% CI over test seeds excludes zero",
+    "max_stable_regression_pp": 3,
+    "max_retention_drop_pp": 3
+  },
+  "baselines": {
+    "B0": "random policy",
+    "B1": "System 1 only (no memory, no planner)",
+    "B2": "v0 frozen: affect + memory + JEPA world model + System 1/2 gate",
+    "B3": "System 1 + episodic memory, no planner",
+    "B4": "oracle context (evaluation-only ceiling)",
+    "v0.1": "B2 + BOCPD context belief + arousal-gated plasticity + salience x20 (promising single-seed results 2026-10-10, to be confirmed here)"
+  }
+}

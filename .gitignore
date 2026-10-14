@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+scratch_data/
+scratch_runs/
+*.pt
+*.bin
+*.gguf
+*.safetensors
+*.wav
+jarvis.zip
+# licensed / large data (NRC VAD lexicon is research-only, no redistribution)
+data/
+# Riya's private runtime state
+riya_memory.json
+riya_slots/
