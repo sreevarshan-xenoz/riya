@@ -12,6 +12,7 @@ from riya.core.engine import RiyaCore
 from riya.core.protocol import ErrorMsg, ProtocolError, UserText, dump, parse_body_message
 
 log = logging.getLogger("riya.app")
+BODY_ORIGINS = ("null", "file://")  # Electron loadFile pages; Node and Electron-main clients send no Origin
 
 
 class Hub:
@@ -98,6 +99,11 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore],
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
         core: RiyaCore = app.state.core
+        origin = ws.headers.get("origin")
+        if origin is not None and origin not in BODY_ORIGINS:  # a web page in some browser tab: never let it in
+            log.warning("rejected a websocket from origin %r", origin)
+            await ws.close(code=1008)
+            return
         await ws.accept()
         q = hub.connect()  # before hello, so nothing published in between is lost
         tasks: list[asyncio.Task] = []
