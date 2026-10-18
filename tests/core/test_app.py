@@ -330,15 +330,15 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
                 while not self.should_exit:
                     threading.Event().wait(0.01)
 
-    class HookServer:
-        should_exit = False
+    class HookReceiver:                                        # never the real one: it would bind 8766
+        def __init__(self, enqueue):
+            made["enqueue"], made["hooks"], self.stopped = enqueue, self, False
 
-    def start_hook_receiver(enqueue):
-        made["enqueue"] = enqueue
-        thread = threading.Thread(target=lambda: None, name="riya-hooks")
-        thread.start()
-        made["hooks"] = HookServer()
-        return made["hooks"], thread
+        def start(self):
+            return self
+
+        def stop(self):
+            self.stopped = True
 
     def start_logwatch(core):                                  # never the real watcher: it would read G:
         made["logwatch"] = (threading.Event(), threading.Thread(target=lambda: None))
@@ -347,14 +347,15 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
         return made["logwatch"]
 
     monkeypatch.setattr(runner, "build_core", build_core)
-    monkeypatch.setattr(runner, "start_hook_receiver", start_hook_receiver)
+    monkeypatch.setattr(runner, "HookReceiver", HookReceiver)
     monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["server"].should_exit and made["body_present"]() is False
     inbox = made["core"].agent_inbox                           # the core's inbox; the receiver feeds it
     made["enqueue"]({"hook_event_name": "Stop"})
-    assert inbox.get_nowait() == {"hook_event_name": "Stop"} and made["hooks"].should_exit
+    assert inbox.get_nowait() == {"hook_event_name": "Stop"} and made["hooks"].stopped
+    assert made["core"].receiver is made["hooks"]               # the settings read its status through the core
     assert made["logwatch"][0].is_set()                        # the log watcher is stopped on shutdown
 
 
@@ -380,7 +381,21 @@ def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
                     threading.Event().wait(0.01)
 
     monkeypatch.setattr(runner, "build_core", build_core)
-    monkeypatch.setattr(runner, "start_hook_receiver", lambda enqueue: None)
+    from riya.agents.hooks import RejectCounter
+
+    class Busy:                                                # 8766 taken: serving later, maybe never
+        ok = False
+
+        def __init__(self, enqueue):
+            made["receiver"], self.rejected = self, RejectCounter()
+
+        def start(self):
+            return self
+
+        def stop(self):
+            made["stopped"] = True
+
+    monkeypatch.setattr(runner, "HookReceiver", Busy)
     def start_logwatch(core):
         thread = threading.Thread(target=lambda: None)
         thread.start()
@@ -389,4 +404,5 @@ def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
     monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
-    assert made["core"].agent_inbox is not None
+    assert made["core"].agent_inbox is not None and made["stopped"]
+    assert made["core"]._agents_msg().receiver_ok is False
