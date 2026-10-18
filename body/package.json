@@ -1,0 +1,15 @@
+{
+  "name": "riya-body",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Riya's desktop body: an Electron app that shows her sprite and talks to the Python core.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "ajv": "8.17.1",
+    "electron": "33.2.1"
+  }
+}

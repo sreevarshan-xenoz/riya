@@ -28,3 +28,6 @@ sprites/
 scratch_runs/voice_candidates/
 # the benchmark datasets live in tests/data; the blanket data/ rule above would hide them
 !tests/data/
+
+# electron body
+body/node_modules/
