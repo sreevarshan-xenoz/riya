@@ -90,13 +90,17 @@ def test_tts_text_strips_emoji_and_stage_directions():
 
 
 def test_tts_text_strips_only_narrow_stage_directions():
-    kept = "3 * 4 and 5 * 6 = f(x) (the cell's powerhouse)"
     out = tts_text("Compute 3 * 4 and 5 * 6 = f(x) (the cell's powerhouse) *really*.")
-    assert out == "Compute " + kept + "."
-    assert tts_text("(laughs) Fine. *giggles* Okay (sighs).") == "Fine. Okay."
-    assert tts_text("It costs (about 5 dollars) and *a very long aside that goes on for far too many words* ok") == (
-        "It costs (about 5 dollars) and *a very long aside that goes on for far too many words* ok")
-    assert tts_text("Hmph. (one two three four five) fine") == "Hmph. (one two three four five) fine"
+    assert out == "Compute 3 * 4 and 5 * 6 = f(x) (the cell's powerhouse)."
+    assert tts_text("the cell (the powerhouse) makes energy") == "the cell (the powerhouse) makes energy"
+    assert tts_text("Okay (sighs).") == "Okay."
+    assert tts_text("Fine (laughs softly) then.") == "Fine then."
+    assert tts_text("(blushing) Stop it. (Hmph!) Fine.") == "Stop it. Fine."
+    assert tts_text("*giggles* Okay *Teasing*") == "Okay"
+    assert tts_text("Hm (laughs at the long way round) ok") == "Hm (laughs at the long way round) ok"  # 5 words
+    assert tts_text("It is (about 5 dollars) ok") == "It is (about 5 dollars) ok"
+    assert tts_text("It costs *a very long aside that goes on for far too many words* ok") == (
+        "It costs *a very long aside that goes on for far too many words* ok")
     assert tts_text("2**3 is **bold** maths") == "2**3 is bold maths"
 
 
