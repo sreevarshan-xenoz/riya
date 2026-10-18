@@ -3,6 +3,7 @@
 const { boundsFor } = require("./geometry");
 
 const MODES = ["buddy", "panel", "window"];
+const REPLAY_TYPES = ["hello", "settings", "state", "expression"];
 
 /** First accelerator for which `register` returns true (a throw counts as a failure), or null. */
 function pickHotkey(accelerators, register) {
@@ -33,4 +34,12 @@ function shouldSendToCore(msg, connected) {
   return connected || msg.type !== "talk_hotkey";
 }
 
-module.exports = { MODES, pickHotkey, modeToApply, repositionTarget, shouldSendToCore };
+/** Keep the latest message of each replay type, in recency order, so a replay ends with the newest (state or
+ *  expression wins by being last). */
+function rememberForReplay(cache, msg) {
+  if (!REPLAY_TYPES.includes(msg.type)) return;
+  cache.delete(msg.type);
+  cache.set(msg.type, msg);
+}
+
+module.exports = { MODES, REPLAY_TYPES, pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay };

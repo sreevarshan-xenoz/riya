@@ -67,3 +67,18 @@ test("shouldSendToCore drops talk_hotkey while disconnected but queues everythin
   assert.equal(shouldSendToCore({ type: "set_settings", patch: {} }, false), true);
   assert.equal(shouldSendToCore({ type: "user_text", text: "hi" }, false), true);
 });
+
+const { rememberForReplay } = require("../src/main-logic");
+
+test("rememberForReplay keeps the latest of each replay type in recency order", () => {
+  const cache = new Map();
+  for (const msg of [
+    { type: "hello" }, { type: "settings", n: 1 }, { type: "state", n: 1 }, { type: "expression", n: 1 },
+    { type: "say", text: "x" }, { type: "state", n: 2 }, { type: "settings", n: 2 },
+  ]) rememberForReplay(cache, msg);
+  assert.deepEqual([...cache.values()], [
+    { type: "hello" }, { type: "expression", n: 1 }, { type: "state", n: 2 }, { type: "settings", n: 2 },
+  ], "the newer state replays after the older expression, so it wins");
+  rememberForReplay(cache, { type: "expression", n: 2 });
+  assert.deepEqual([...cache.values()].map((m) => m.type), ["hello", "state", "settings", "expression"]);
+});
