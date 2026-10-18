@@ -348,7 +348,7 @@ def test_remember_that_mid_game_saves_the_fact(kind):
 
 @pytest.mark.parametrize("kind", games.GAMES)
 @pytest.mark.parametrize("text", ["how's my agent doing?", "did claude finish?", "is my training run done yet?",
-                                  "are the tests green?", "what do you remember about me?", "are you an AI?",
+                                  "are my tests green?", "what do you remember about me?", "are you an AI?",
                                   "do you have feelings?"])
 def test_agent_identity_and_feelings_questions_mid_game_are_chat(kind, text):
     core, emitted, local, clock = mid_game(kind, local_replies=("It's still busy~",))
@@ -381,3 +381,25 @@ def test_word_chain_chat_never_counts(text):
     before = untouched(g)
     list(core.reply(text))
     assert core.game is g and untouched(g) == before and "still in the middle of word chain" in situation(local)
+
+
+# --- the narrowed agent words (controller ruling amending I1) ------------------------------------------------------
+
+def test_can_it_run_mid_20_questions_is_a_move():
+    core, emitted, local, _ = mid_game("twenty_questions")
+    list(core.reply("can it run?"))
+    assert core.game.questions == 1 and "question 1 of 20" in situation(local)
+
+
+def test_did_my_build_finish_mid_20_questions_is_chat():
+    core, emitted, local, _ = mid_game("twenty_questions")
+    list(core.reply("did my build finish?"))
+    assert core.game.questions == 0 and "still in the middle of 20 questions" in situation(local)
+
+
+def test_hows_claude_doing_mid_riddles_is_chat():
+    core, emitted, local, _ = mid_game("riddles")
+    g = core.game
+    before = untouched(g)
+    list(core.reply("how's claude doing?"))
+    assert untouched(g) == before and "still in the middle of riddles" in situation(local)

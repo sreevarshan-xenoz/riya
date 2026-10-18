@@ -113,13 +113,16 @@ def test_word_chain_anything_but_one_alphabetic_word_is_chat(text):
     assert v.kind == "off" and not v.over and s.turns == 0 and s.word == "apple" and s.used == {"apple"}
 
 
-@pytest.mark.parametrize("text", ["how's my agent doing?", "did claude finish?", "is the colab run done", "Training?",
-                                  "the build broke", "tests pass", "AGENTS"])
+@pytest.mark.parametrize("text", ["how's my agent doing?", "did claude finish?", "is the colab run done", "AGENTS",
+                                  "is the training run over", "did my build finish?", "are My Tests green",
+                                  "my test failed", "how's my run", "is my training done", "how's Claude doing?"])
 def test_about_agents(text):
     assert games.about_agents(text)
 
 
-@pytest.mark.parametrize("text", ["is it alive?", "a towel", "running water", "is it a cat", "rerun"])
+@pytest.mark.parametrize("text", ["is it alive?", "a towel", "running water", "is it a cat", "rerun", "can it run?",
+                                  "run", "test", "build", "is it used for training?", "the build broke", "tests pass",
+                                  "my runner", "my testing kit"])
 def test_not_about_agents(text):
     assert not games.about_agents(text)
 
