@@ -2,7 +2,7 @@
 honesty line, the situation and a reply-rules line (v0.2 spec section 4.2)."""
 import re
 
-from riya.core.memory import Fact, Retrieved, Thread
+from riya.core.memory import Fact, Glance, Retrieved, Thread
 from riya.core.shaping import CAPS, is_identity_question
 
 NO_MEMORY_LINE = "(nothing stored about this yet)"
@@ -13,6 +13,10 @@ SPEAK_FIRST_TURN = "(no message yet: you speak first)"
 MEMORY_START = "### What you know about them (the only true things you know):"
 MEMORY_END = "### End"
 AFTER_ABOUT_ME = "Recent conversations (context only, not facts to list):"
+EYES_NOW = "### What they're doing now:"
+EYES_RECENT = "### What you glimpsed on their screen lately (your own glances, not things they told you):"
+NOW_GLANCE_S = 600
+RECENT_GLANCE_S = 3 * 3600
 REPLY_RULES = {"small": f"Reply in at most {CAPS['small']} sentences.",
                "explain": f"Explain clearly in at most {CAPS['explain']} sentences. No ~ in explanations.",
                "about_me": "List what's in the memory block, nothing else."}
@@ -94,14 +98,37 @@ def _memory_block(r: Retrieved, now: float, about_me: bool = False) -> str:
     return block + "\n\n" + "\n".join([AFTER_ABOUT_ME, *rest]) if about_me and rest else block
 
 
+def _ago(at: float, now: float) -> str:
+    m = int(max(0.0, now - at) // 60)
+    return "just now" if m < 1 else f"{m} min ago" if m < 60 else f"{m // 60} h ago"
+
+
+def eyes_block(glances: list[Glance], now: float) -> str | None:
+    """What she saw on their screen: a `### What they're doing now:` line from the newest note while it's under
+    10 minutes old, then the notes from the last 3 hours (newest first). None when there's nothing recent. It sits
+    outside the memory block: these are her own glances, not things they said."""
+    recent = [g for g in glances if now - g.at <= RECENT_GLANCE_S]
+    if not recent:
+        return None
+    lines, g = [], recent[0]
+    if now - g.at <= NOW_GLANCE_S:
+        details = g.details.rstrip(".") + "." if g.details else None
+        lines.append(" ".join(filter(None, [f"{EYES_NOW} {g.activity} ({g.app}).", details,
+                                            g.notable and f"Notable: {g.notable}"])))
+    lines.append(EYES_RECENT)
+    lines += [f"- {_ago(x.at, now)}, {x.app}: {x.activity}" for x in recent]
+    return "\n".join(lines)
+
+
 def build_messages(*, persona: str, feelings_tag: str, retrieved: Retrieved, turns: list[dict],
                    user_text: str | None, situation: str | None, now: float, examples: str = "",
-                   kind: str | None = None) -> list[dict]:
+                   kind: str | None = None, eyes: str | None = None) -> list[dict]:
     """examples (the made-up style exchanges) sit right after the persona, never inside the memory block; kind is
     the reply's turn kind (shaping.turn_kind, or "greeting"), which picks the reply-rules line and the facts-only
-    about-me block; an about-me turn with facts also gets about_me_situation."""
+    about-me block; an about-me turn with facts also gets about_me_situation. eyes (eyes_block) goes after the
+    memory block and the honesty line, never inside the block."""
     parts = [persona, *([examples] if examples else []), feelings_tag,
-             _memory_block(retrieved, now, about_me=kind == "about_me"), HONESTY_LINE]
+             _memory_block(retrieved, now, about_me=kind == "about_me"), HONESTY_LINE, *([eyes] if eyes else [])]
     if kind == "about_me" and retrieved.facts:
         situation = " ".join(filter(None, [situation, about_me_situation(retrieved.facts)]))
     if situation:
@@ -136,6 +163,29 @@ def remember_situation(fact: str) -> str:
 
 
 IDENTITY_SITUATION = "They're asking what you are. Say clearly that you're an AI, using the word AI, in your style."
+FEELINGS_SITUATION = ("They're asking whether you have feelings. You're an AI with your own kind of feelings — your "
+                      "state line shows them right now. Say so warmly in your style.")
+SEEING_SITUATION = ("They're asking about their screen and the image is what's on it right now ({window}). "
+                    "Answer about what you actually see, in your style.")
+_CANT_SEE = {"eyes off": "your eyes are switched off in settings",
+             "don't look": "they asked you not to look, so you're covering your eyes",
+             "no window": "there's no window in front of you to look at",
+             "minimized": "there's no window in front of you to look at",
+             "riya window": "the only window in front of you is your own",
+             "unknown process": "that window looks private, so you don't look at it",
+             "denylisted": "that window looks private (passwords, banking or a private window), so you don't look "
+                           "at it",
+             "online model unavailable": "your eyes need the online model and it isn't available right now",
+             "daily cap": "you've already looked at their screen enough times today",
+             "presence gaming": "they're in a game and you don't look while they play"}
+
+
+def cant_see_situation(why: str, window: str | None = None) -> str:
+    """A screen question she can't look for: the reason (a policy reason, or the words to say), so she answers
+    honestly; window (title and process) only when it's fine to guess from it."""
+    s = (f"They're asking about their screen, but you can't see right now: {_CANT_SEE.get(why, why)}. Say so "
+         "honestly in your style; don't pretend you can see it.")
+    return s + (f" All you know is the window in front: {window}. Guess from that only if it helps." if window else "")
 
 
 def bid_situation(reason: str, thread: Thread | None) -> str:

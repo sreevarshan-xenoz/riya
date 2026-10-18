@@ -13,11 +13,12 @@ class FakeModel:
         self.name, self.replies, self.fail, self.fail_after = name, list(replies), fail, fail_after
         self.finish_after, self.finish_reason = finish_reason, None  # finish_reason is set once a reply ran out
         self.delay = delay  # seconds to wait before each token, to make a reply slow
-        self.calls, self.temperatures = [], []
+        self.calls, self.temperatures, self.max_tokens = [], [], []
 
     def stream(self, messages, max_tokens=300, temperature=0.8):
         self.calls.append(messages)
         self.temperatures.append(temperature)
+        self.max_tokens.append(max_tokens)
         self.finish_reason = None
         if self.fail:
             raise self.fail
@@ -31,13 +32,14 @@ class FakeModel:
         self.finish_reason = self.finish_after
 
 
-def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None):
-    """A RiyaCore on fakes: returns (core, emitted messages, idle source, local model)."""
+def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, **eyes):
+    """A RiyaCore on fakes: returns (core, emitted messages, idle source, local model). eyes: vision, window_source,
+    grab (no window and no vision model by default, so she never looks)."""
     from riya.core.engine import RiyaCore
 
     clock = clock or FakeClock()
     db = open_db(tmp_path / "riya.db" if tmp_path is not None else ":memory:")
     emitted, src, local = [], FakeIdleSource(), FakeModel("local", local_replies)
     core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=src, local=local, online=online,
-                    emit=emitted.append)
+                    emit=emitted.append, **eyes)
     return core, emitted, src, local

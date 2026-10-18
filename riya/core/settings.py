@@ -1,14 +1,18 @@
 """User settings: typed defaults, validated patches, quiet hours and the Windows autostart shortcut."""
 import os
 import re
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
 
+from riya.core.eyes.policy import validate_patterns
 from riya.core.store import KV
 
 MODES = ("buddy", "panel", "window")
 _QUIET_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
+MAX_GLANCE_CAP = 2000
+GLANCE_GAP_RANGE = (10, 86400)  # seconds
+MAX_DENY_PATTERNS, MAX_PATTERN_LEN = 100, 300
 
 
 @dataclass
@@ -25,6 +29,12 @@ class Settings:
     quiet_hours: str | None = "23:30-08:00"
     buddy_position: list[int] | None = None
     sprite_pack: str | None = None
+    eyes_enabled: bool = True
+    glance_daily_cap: int = 150
+    glance_min_gap_s: int = 45
+    eyes_deny_titles: list[str] = field(default_factory=list)  # extra regexes, on top of the built-in denylist
+    eyes_deny_processes: list[str] = field(default_factory=list)
+    dont_look: bool = False
 
 
 def load_settings(kv: KV) -> Settings:
@@ -55,6 +65,15 @@ def _check(key: str, v) -> None:
         ok = v is None or (isinstance(v, list) and len(v) == 2 and all(_is_int(x) for x in v))
     elif key == "sprite_pack":
         ok = v is None or isinstance(v, str)
+    elif key == "glance_daily_cap":
+        ok = _is_int(v) and 0 <= v <= MAX_GLANCE_CAP
+    elif key == "glance_min_gap_s":
+        ok = (_is_int(v) or isinstance(v, float)) and GLANCE_GAP_RANGE[0] <= v <= GLANCE_GAP_RANGE[1]
+    elif key in ("eyes_deny_titles", "eyes_deny_processes"):
+        ok = (isinstance(v, list) and len(v) <= MAX_DENY_PATTERNS
+              and all(isinstance(p, str) and len(p) <= MAX_PATTERN_LEN for p in v))
+        if ok and (bad := validate_patterns(v)):
+            raise ValueError(f"invalid pattern in {key!r}: {', '.join(map(repr, bad))}")
     else:
         ok = isinstance(v, bool)
     if not ok:

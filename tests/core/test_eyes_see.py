@@ -132,3 +132,16 @@ def test_note_prompt_lists_the_sensitive_things_and_covers_notable():
     for needle in ("bank or card", "private messages", "dms", "email", "medical", "legal", "password-manager",
                    "incognito", "private browsing", "including notable"):
         assert needle in p, needle
+
+
+@pytest.mark.parametrize("activity", ["something private (a bank page)", "Something private: chat window",
+                                      "something private, a DM"])
+def test_private_activity_is_matched_by_prefix(activity):
+    n = parse_note(note_json(activity=activity, details="balance 5000", notable="password hunter2"))
+    assert n.details == "" and n.notable is None
+
+
+def test_describe_allows_400_tokens():
+    m = FakeModel("online", [note_json()])
+    describe(m, JPEG)
+    assert m.max_tokens == [400]

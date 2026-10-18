@@ -69,6 +69,18 @@ class Thread:
 
 
 @dataclass
+class Glance:
+    """A note from one look at their screen (the screenshot itself is never kept)."""
+    id: int
+    at: float
+    app: str
+    title: str
+    activity: str
+    details: str
+    notable: str | None
+
+
+@dataclass
 class Retrieved:
     facts: list[Fact]
     episodes: list[Episode]
@@ -78,6 +90,8 @@ class Retrieved:
 _FACT_COLS = "id, text, key, source, confidence, valid_from, valid_until, status, supersedes_id"
 _EPISODE_COLS = "id, started_at, ended_at, summary, user_mood, outcome"
 _THREAD_COLS = "id, text, due_at, status, last_raised_at"
+_GLANCE_COLS = "id, at, app, title, activity, details, notable"
+GLANCE_KEEP_S = 7 * DAY
 
 
 def _fact(row: sqlite3.Row) -> Fact:
@@ -364,6 +378,46 @@ class Memory:
         with self.db:
             self.db.executemany("delete from transcripts where id=?", ids)
         return len(ids)
+
+    # --- glances ---
+
+    @_locked
+    def add_glance(self, app: str, title: str, activity: str, details: str, notable: str | None) -> Glance:
+        """Keeps a glance note, dropping notes older than GLANCE_KEEP_S on the way."""
+        now = self.clock.now()
+        with self.db:
+            self.db.execute("delete from glances where at < ?", (now - GLANCE_KEEP_S,))
+            cur = self.db.execute("insert into glances(at, app, title, activity, details, notable) values(?,?,?,?,?,?)",
+                                  (now, app, title, activity, details, notable))
+        return Glance(cur.lastrowid, now, app, title, activity, details, notable)
+
+    def _glances(self, where: str = "", args: tuple = (), limit: int = -1) -> list[Glance]:
+        rows = self.db.execute(f"select {_GLANCE_COLS} from glances {where} order by at desc, id desc limit ?",
+                               (*args, limit))
+        return [Glance(**dict(r)) for r in rows]
+
+    @_locked
+    def recent_glances(self, n: int = 3) -> list[Glance]:
+        """The newest n notes, newest first."""
+        return self._glances(limit=n)
+
+    @_locked
+    def list_glances(self) -> list[Glance]:
+        return self._glances()
+
+    @_locked
+    def glances_between(self, start: float, end: float) -> list[Glance]:
+        return self._glances("where at >= ? and at <= ?", (start, end))
+
+    @_locked
+    def delete_glance(self, glance_id: int) -> None:
+        with self.db:
+            self.db.execute("delete from glances where id=?", (glance_id,))
+
+    @_locked
+    def purge_glances(self, max_age_s: float = GLANCE_KEEP_S) -> int:
+        with self.db:
+            return self.db.execute("delete from glances where at < ?", (self.clock.now() - max_age_s,)).rowcount
 
     # --- retrieval ---
 
