@@ -126,6 +126,27 @@ def test_fake_window_source():
     assert FakeWindowSource(i).foreground() is i and FakeWindowSource(None).foreground() is None
 
 
+def test_fake_window_source_reads_a_window_by_handle():
+    a, b = info(hwnd=1), info(hwnd=2, title="other")
+    src = FakeWindowSource(a, windows={2: b})
+    assert src.window(1) is a and src.window(2) is b and src.window(3) is None
+    src.foreground()
+    src.info = b
+    assert src.window(1) is a                     # a window seen in front stays open until it's removed
+    del src.windows[1]
+    assert src.window(1) is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_windows_window_by_handle_matches_the_foreground():
+    src = WindowsWindowSource()
+    w = src.foreground()
+    if w is not None:
+        again = src.window(w.hwnd)
+        assert again is not None and (again.hwnd, again.title, again.process) == (w.hwnd, w.title, w.process)
+    assert src.window(0) is None and src.window(0x7FFFFFF0) is None
+
+
 def test_dpi_awareness_never_raises_and_is_idempotent():
     set_dpi_awareness()
     set_dpi_awareness()

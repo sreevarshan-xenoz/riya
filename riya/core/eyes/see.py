@@ -81,13 +81,17 @@ def parse_note(text: str) -> GlanceNote | None:
                       None if notable.casefold() in ("", "null", "none") else notable)
 
 
-def describe(model: ChatModel, jpeg: bytes) -> GlanceNote | None:
-    """Ask the (online) model what's on the screen. Never raises: any failure is just no note."""
+def describe(model: ChatModel, jpeg: bytes) -> tuple[GlanceNote | None, str]:
+    """Ask the (online) model what's on the screen: (note, "ok"), or (None, why): "unavailable" when the request
+    failed (ModelUnavailable, a 429, the network, anything raised), "unparseable" when the reply held no usable note
+    (an empty reply too). Never raises."""
     try:
-        return parse_note(complete(model, vision_messages(jpeg, NOTE_PROMPT), max_tokens=NOTE_MAX_TOKENS))
-    except Exception as e:  # ModelUnavailable, a bad reply, anything: she simply has no note this time
+        text = complete(model, vision_messages(jpeg, NOTE_PROMPT), max_tokens=NOTE_MAX_TOKENS)
+    except Exception as e:  # she simply has no note this time
         log.info("no glance note: %s", e)
-        return None
+        return None, "unavailable"
+    note = parse_note(text)
+    return (note, "ok") if note is not None else (None, "unparseable")
 
 
 # A bare "this" is not enough (an accidental screenshot is a privacy cost): the verbs need a screen anchor.

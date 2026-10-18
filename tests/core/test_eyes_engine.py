@@ -36,6 +36,9 @@ def win(hwnd=1, title="main.py - riya - Visual Studio Code", process="Code.exe",
     return WindowInfo(hwnd, title, process, rect, monitor, minimized, is_riya)
 
 
+RIYA = WindowInfo(9, "Riya", "electron.exe", (1500, 500, 1800, 1020), MON, False, True)
+
+
 class Grabber:
     def __init__(self, data: bytes | None = None, on_grab=None):
         self.data, self.on_grab, self.calls = data or jpeg(), on_grab, []
@@ -191,12 +194,28 @@ def test_a_failed_glance_backs_off_for_30_minutes():
     assert local.calls == []                                # chat model untouched by glances
 
 
-def test_an_unparseable_note_also_backs_off():
-    core, _, _, _, clock, vision, source, _ = eyes_core(vision=FakeModel("vision", ["no idea, sorry"]))
+@pytest.mark.parametrize("reply", ["no idea, sorry", ""])
+def test_an_unparseable_or_empty_note_backs_off_for_5_minutes(reply):
+    core, _, _, _, clock, vision, source, _ = eyes_core(vision=FakeModel("vision", [reply, NOTE]))
     run(core, clock, 6)
     source.info = win(hwnd=2, title="b")
-    run(core, clock, 600)
+    run(core, clock, 280)
     assert len(vision.calls) == 1 and core.memory.list_glances() == []
+    run(core, clock, 40)
+    assert len(vision.calls) == 2 and len(core.memory.list_glances()) == 1
+
+
+@pytest.mark.parametrize("fail", [ModelUnavailable("online: <urlopen error [WinError 10061] refused>"),
+                                  ModelUnavailable("online: HTTP 503"), RuntimeError("socket blew up")])
+def test_an_outage_backs_off_for_30_minutes(fail):
+    core, _, _, _, clock, vision, source, _ = eyes_core(vision=FakeModel("vision", [NOTE], fail=fail))
+    run(core, clock, 6)
+    vision.fail = None
+    source.info = win(hwnd=2, title="b")
+    run(core, clock, 1700)
+    assert len(vision.calls) == 1
+    run(core, clock, 120)
+    assert len(vision.calls) == 2
 
 
 def test_same_window_is_glanced_again_after_5_minutes_only_when_it_changed():
@@ -368,10 +387,40 @@ def test_typing_to_her_looks_at_the_window_behind_her():
     core.vision = None                                        # no glances, just remember the window
     run(core, clock, 2)
     core.vision = vision
-    source.info = win(hwnd=9, title="Riya", process="electron.exe", is_riya=True)
+    source.info = RIYA
     run(core, clock, 30)
+    source.windows[1] = win(rect=(100, 100, 900, 700))       # moved meanwhile: the fresh rect is the one grabbed
     list(core.reply("can you see this error?"))
-    assert [i.hwnd for i in grab.calls] == [1]
+    assert [(i.hwnd, i.rect) for i in grab.calls] == [(1, (100, 100, 900, 700))]
+
+
+@pytest.mark.parametrize("change", ["minimized", "retitled", "denylisted", "closed", "other_process"])
+def test_the_window_behind_her_is_reread_before_the_grab(change):
+    core, _, _, local, clock, vision, source, grab = eyes_core()
+    core.vision = None
+    run(core, clock, 2)
+    core.vision = vision
+    source.info = RIYA
+    run(core, clock, 5)
+    if change == "closed":
+        del source.windows[1]
+    else:
+        source.windows[1] = {"minimized": win(minimized=True), "retitled": win(title="notes.txt - Notepad"),
+                             "denylisted": win(title="PayPal - Log in"),
+                             "other_process": win(process="KeePassXC.exe")}[change]
+    list(core.reply("can you see this error?"))
+    assert grab.calls == [] and vision.calls == []
+    system = last_system(local)
+    assert "you can't see right now: the window changed" in system
+    assert "PayPal" not in system and "main.py" not in system
+
+
+def test_a_background_glance_rereads_its_window_before_grabbing():
+    core, _, _, _, clock, vision, source, grab = eyes_core()
+    run(core, clock, 4)
+    source.window = lambda hwnd: win(title="Sign in to PayPal")   # retitled between the tick and the grab
+    run(core, clock, 3)
+    assert grab.calls == [] and vision.calls == []
 
 
 @pytest.mark.parametrize("setup,why", [
@@ -425,7 +474,87 @@ def test_dont_look_after_the_grab_but_before_the_send_never_sends_the_image():
     core._eyes_context = lambda: core.handle(DontLook(on=True))   # runs between the grab and the send
     assert list(core.reply("what's wrong with this?")) == ["Eyes covered~"]
     assert len(grab.calls) == 1 and vision.calls == []
-    assert "covering your eyes" in last_system(local) and core.policy.glances_today() == 0
+    system = last_system(local)
+    assert "covering your eyes" in system and core.policy.glances_today() == 0
+    assert "main.py" not in system and "Code.exe" not in system      # no guessing from the window either
+
+
+def test_eyes_closed_before_the_question_grabs_nothing():
+    core, _, _, local, _, vision, _, grab = eyes_core()
+    core._dont_look = True             # closed by another thread after the settings were read
+    list(core.reply("what's wrong with this?"))
+    assert grab.calls == [] and vision.calls == []
+
+
+def test_a_screen_question_waits_for_a_glance_in_flight_and_the_cap_holds():
+    vision = GateModel("vision", [NOTE, "A red test."])
+    core, _, _, local, clock, _, _, grab = eyes_core(vision=vision)
+    core.handle(SetSettings(patch={"glance_daily_cap": 1}))
+    run(core, clock, 4)
+    clock.advance(1)
+    core.tick()
+    assert vision.started.wait(5)
+    asker = threading.Thread(target=lambda: list(core.reply("what's wrong with this?")))
+    asker.start()
+    asker.join(0.3)
+    assert asker.is_alive() and len(grab.calls) == 1        # waiting: no second capture while the glance runs
+    vision.release.set()
+    asker.join(5)
+    assert len(vision.calls) == 1 and len(grab.calls) == 1   # the glance used the cap: the question can't look
+    assert core.policy.glances_today() == 1 and "enough times today" in last_system(local)
+
+
+def test_no_background_glance_starts_while_a_screen_question_runs():
+    vision = GateModel("vision", ["A red test."])
+    core, _, _, _, clock, _, _, grab = eyes_core(vision=vision)
+    clock.advance(10)
+    asker = threading.Thread(target=lambda: list(core.reply("what's wrong with this?")))
+    asker.start()
+    assert vision.started.wait(5)
+    for _ in range(10):
+        clock.advance(1)
+        assert core.tick() is None
+    assert len(grab.calls) == 1
+    vision.release.set()
+    asker.join(5)
+    assert len(vision.calls) == 1
+
+
+def test_a_stale_expression_is_never_sent_after_dont_look():
+    core, emitted, *_ = eyes_core()
+    real, other = core.feelings.expression, []
+
+    def slow_expression():
+        if not other:                  # don't-look arrives from the socket thread mid-computation
+            other.append(threading.Thread(target=core.handle, args=(DontLook(on=True),)))
+            other[0].start()
+            other[0].join(0.3)
+            return "happy"
+        return real()
+
+    core.feelings.expression = slow_expression
+    core._sync_expression()
+    other[0].join(5)
+    assert of(emitted, ExpressionMsg)[-1].name == "covering_eyes"
+
+
+def test_glances_today_survives_a_restart_the_same_day(tmp_path):
+    core, _, _, _, clock, *_ = eyes_core(tmp_path=tmp_path)
+    run(core, clock, 6)
+    assert core.policy.glances_today() == 1
+    again, *_ = eyes_core(tmp_path=tmp_path, clock=clock)
+    assert again.policy.glances_today() == 1
+    assert [m for m in again.hello_messages() if isinstance(m, EyesMsg)][0].glances_today == 1
+    clock.advance(DAY)
+    later, *_ = eyes_core(tmp_path=tmp_path, clock=clock)
+    assert later.policy.glances_today() == 0
+
+
+def test_a_forced_look_counts_toward_the_saved_total(tmp_path):
+    core, _, _, _, clock, vision, _, _ = eyes_core(tmp_path=tmp_path, vision=FakeModel("vision", ["Looks fine."]))
+    list(core.reply("what's wrong with this?"))
+    again, *_ = eyes_core(tmp_path=tmp_path, clock=clock)
+    assert again.policy.glances_today() == 1
 
 
 def test_a_failed_capture_is_said_honestly():
@@ -435,6 +564,17 @@ def test_a_failed_capture_is_said_honestly():
     core, _, _, local, _, vision, _, _ = eyes_core(grab=broken)
     list(core.reply("what's wrong with this?"))
     assert "you can't see right now: the screen capture didn't work" in last_system(local) and vision.calls == []
+
+
+def test_an_empty_screen_answer_backs_off_only_5_minutes():
+    vision = FakeModel("vision", ["", NOTE])
+    core, _, _, local, clock, _, source, _ = eyes_core(vision=vision, local_replies=["Hmm, can't see it~"])
+    assert list(core.reply("what's wrong with this?")) == ["Hmm, can't see it~"]
+    source.info = win(hwnd=2, title="b")
+    run(core, clock, 280)
+    assert len(vision.calls) == 1
+    run(core, clock, 40)
+    assert len(vision.calls) == 2
 
 
 def test_screen_question_while_gaming_is_refused_but_a_break_still_looks():

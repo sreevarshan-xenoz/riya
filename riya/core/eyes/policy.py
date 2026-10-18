@@ -81,6 +81,17 @@ class GlancePolicy:
         self._roll(self._now())
         return self._count
 
+    def today(self) -> tuple[str, int]:
+        """(local day as ISO date, glances counted on it), for saving across restarts."""
+        self._roll(self._now())
+        return self._day.isoformat(), self._count
+
+    def restore(self, day, count) -> None:
+        """A saved today(): its count carries over only when it was saved today; anything else is ignored."""
+        self._roll(self._now())
+        if day == self._day.isoformat() and isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            self._count = max(self._count, count)
+
     def allowed(self, *, info: WindowInfo | None, presence: str, eyes_enabled: bool, dont_look: bool, online_ok: bool,
                 extra_titles: Iterable[str] = (), extra_processes: Iterable[str] = (), force: bool = False) -> str | None:
         """None when she may look, else why not. `force` (a screen question) skips only min gap and backoff."""

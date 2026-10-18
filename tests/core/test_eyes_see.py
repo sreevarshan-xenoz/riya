@@ -92,17 +92,19 @@ def test_not_screen_questions(text):
 
 def test_describe_returns_a_note_and_sends_the_image():
     m = FakeModel("online", [note_json(notable="red test")])
-    assert describe(m, JPEG) == GlanceNote("VS Code", "fixing a failing test", "pytest shows one red test", "red test")
+    assert describe(m, JPEG) == (GlanceNote("VS Code", "fixing a failing test", "pytest shows one red test",
+                                            "red test"), "ok")
     content = m.calls[0][-1]["content"]
     assert content[0]["text"] == NOTE_PROMPT and content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
-def test_describe_never_raises():
-    assert describe(FakeModel("o", fail=ModelUnavailable("429")), JPEG) is None
-    assert describe(FakeModel("o", fail=RuntimeError("boom")), JPEG) is None
-    assert describe(FakeModel("o", fail=ModelUnavailable("x")), b"") is None
-    assert describe(FakeModel("o", ["I can't describe that."]), JPEG) is None
-    assert describe(FakeModel("o", ["{\"app\": \"x\", \"activity\": \"y\"", ], fail_after=1), JPEG) is None
+def test_describe_never_raises_and_says_what_went_wrong():
+    assert describe(FakeModel("o", fail=ModelUnavailable("HTTP 429")), JPEG) == (None, "unavailable")
+    assert describe(FakeModel("o", fail=RuntimeError("boom")), JPEG) == (None, "unavailable")
+    assert describe(FakeModel("o", fail=ModelUnavailable("x")), b"") == (None, "unavailable")
+    assert describe(FakeModel("o", ['{"app": "x", "activity": "y"'], fail_after=1), JPEG) == (None, "unavailable")
+    assert describe(FakeModel("o", ["I can't describe that."]), JPEG) == (None, "unparseable")
+    assert describe(FakeModel("o", [""]), JPEG) == (None, "unparseable")
 
 
 def test_parse_note_takes_the_first_parsing_object():

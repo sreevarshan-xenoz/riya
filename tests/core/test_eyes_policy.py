@@ -469,3 +469,31 @@ def test_clock_back_does_not_refresh_early():
     assert not p.wanted(a, shifted(40))
     clock.advance(2)
     assert p.wanted(a, shifted(40))
+
+
+def test_today_count_can_be_saved_and_restored_the_same_day():
+    p, clock = make()
+    p.record(info(), None)
+    p.record(info(hwnd=2), None)
+    day, n = p.today()
+    assert day == datetime.fromtimestamp(clock.now()).date().isoformat() and n == 2
+    again = GlancePolicy(clock)
+    again.restore(day, n)
+    assert again.glances_today() == 2
+
+
+@pytest.mark.parametrize("day,count", [("1999-01-01", 5), (None, 5), ("x", 5), ("today", "5"), ("today", -3),
+                                       ("today", True)])
+def test_restore_ignores_another_day_or_junk(day, count):
+    p, clock = make()
+    today = datetime.fromtimestamp(clock.now()).date().isoformat()
+    p.restore(today if day == "today" else day, count)
+    assert p.glances_today() == 0
+
+
+def test_restored_count_still_resets_at_midnight():
+    p, clock = make(cap=3)
+    p.restore(p.today()[0], 3)
+    assert p.allowed(**ok()) == "daily cap"
+    clock.advance(86400)
+    assert p.glances_today() == 0
