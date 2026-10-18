@@ -1,0 +1,358 @@
+{
+ "facts": [
+  {
+   "id": "f1",
+   "text": "The user prefers free and open-source tools over paid software",
+   "source": "user_said",
+   "key": "pref.tools"
+  },
+  {
+   "id": "f2",
+   "text": "The user likes dark mode in every editor and terminal",
+   "source": "user_said",
+   "key": "pref.theme"
+  },
+  {
+   "id": "f3",
+   "text": "The user drinks black coffee while coding late at night",
+   "source": "user_said",
+   "key": "pref.coffee"
+  },
+  {
+   "id": "f4",
+   "text": "The user prefers short direct answers without long explanations",
+   "source": "user_said",
+   "key": "pref.answers"
+  },
+  {
+   "id": "f5",
+   "text": "The user listens to lo-fi music while working",
+   "source": "user_said",
+   "key": "pref.music"
+  },
+  {
+   "id": "f6",
+   "text": "The user prefers Python over JavaScript for backend work",
+   "source": "user_said",
+   "key": "pref.backend"
+  },
+  {
+   "id": "f7",
+   "text": "The user's birthday is on 3 March",
+   "source": "user_said",
+   "key": "user.birthday"
+  },
+  {
+   "id": "f8",
+   "text": "The user has a dentist appointment on Friday morning",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f9",
+   "text": "The user's college project demo is on 5 December",
+   "source": "user_said",
+   "key": "user.demo_date"
+  },
+  {
+   "id": "f10",
+   "text": "The user plans to attend a hackathon in January",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f11",
+   "text": "The user's calculus exam is on 12 November",
+   "source": "inferred",
+   "key": "user.exam_date"
+  },
+  {
+   "id": "f12",
+   "text": "The user's calculus exam was moved to 19 November",
+   "source": "user_said",
+   "key": "user.exam_date"
+  },
+  {
+   "id": "f13",
+   "text": "The user's laptop has 8 GB of RAM",
+   "source": "inferred",
+   "key": "user.laptop_ram"
+  },
+  {
+   "id": "f14",
+   "text": "The user upgraded the laptop to 16 GB of RAM",
+   "source": "user_said",
+   "key": "user.laptop_ram"
+  },
+  {
+   "id": "f15",
+   "text": "The user's main editor is VS Code",
+   "source": "inferred",
+   "key": "user.editor"
+  },
+  {
+   "id": "f16",
+   "text": "The user switched to Neovim as the main editor",
+   "source": "user_said",
+   "key": "user.editor"
+  },
+  {
+   "id": "f17",
+   "text": "The user trains models on the Colab free tier T4 GPU",
+   "source": "inferred",
+   "key": "user.gpu_platform"
+  },
+  {
+   "id": "f18",
+   "text": "The user now trains models on a Kaggle GPU because the Colab limit ran out",
+   "source": "user_said",
+   "key": "user.gpu_platform"
+  },
+  {
+   "id": "f19",
+   "text": "The user's friend Arjun is a fellow developer who tests Riya builds",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f20",
+   "text": "The user's mentor Meera reviews the user's code on weekends",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f21",
+   "text": "The user's roommate Kiran plays the guitar every evening",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f22",
+   "text": "The user is building Riya, an AI desktop companion with a voice and an animated avatar",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f23",
+   "text": "Riya's memory uses SQLite and a small embedding model for retrieval",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f24",
+   "text": "The user is writing a college paper on speech emotion recognition",
+   "source": "user_said",
+   "key": null
+  },
+  {
+   "id": "f25",
+   "text": "The user maintains a small open-source repo that converts audio datasets",
+   "source": "user_said",
+   "key": null
+  }
+ ],
+ "questions": [
+  {
+   "q": "What kind of tools does the user like, free or paid software?",
+   "expect": [
+    "f1"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "Does the user prefer open-source tools?",
+   "expect": [
+    "f1"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "What theme does the user like in the editor, dark mode?",
+   "expect": [
+    "f2"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "What does the user drink when coding late at night?",
+   "expect": [
+    "f3"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "How long should answers be, does the user like short answers?",
+   "expect": [
+    "f4"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "What music does the user listen to while working?",
+   "expect": [
+    "f5"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "Which language does the user prefer for backend work?",
+   "expect": [
+    "f6"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "Does the user like long explanations or direct answers?",
+   "expect": [
+    "f4"
+   ],
+   "kind": "preference"
+  },
+  {
+   "q": "When is the user's birthday?",
+   "expect": [
+    "f7"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "What day is the dentist appointment?",
+   "expect": [
+    "f8"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "When is the college project demo?",
+   "expect": [
+    "f9"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "When is the hackathon the user plans to attend?",
+   "expect": [
+    "f10"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "Does the user have anything on Friday morning?",
+   "expect": [
+    "f8"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "Is there a demo coming up in December?",
+   "expect": [
+    "f9"
+   ],
+   "kind": "event"
+  },
+  {
+   "q": "When is the calculus exam?",
+   "expect": [
+    "f12"
+   ],
+   "kind": "correction"
+  },
+  {
+   "q": "How much RAM does the laptop have?",
+   "expect": [
+    "f14"
+   ],
+   "kind": "correction"
+  },
+  {
+   "q": "Which editor is the user's main editor?",
+   "expect": [
+    "f16"
+   ],
+   "kind": "correction"
+  },
+  {
+   "q": "Where does the user train models, Colab or a Kaggle GPU?",
+   "expect": [
+    "f18"
+   ],
+   "kind": "correction"
+  },
+  {
+   "q": "Who is Arjun?",
+   "expect": [
+    "f19"
+   ],
+   "kind": "person"
+  },
+  {
+   "q": "Who is the mentor Meera?",
+   "expect": [
+    "f20"
+   ],
+   "kind": "person"
+  },
+  {
+   "q": "Who is Kiran, the roommate?",
+   "expect": [
+    "f21"
+   ],
+   "kind": "person"
+  },
+  {
+   "q": "Which friend tests Riya builds?",
+   "expect": [
+    "f19"
+   ],
+   "kind": "person"
+  },
+  {
+   "q": "What is the user building, Riya?",
+   "expect": [
+    "f22"
+   ],
+   "kind": "project"
+  },
+  {
+   "q": "How does Riya's memory work, SQLite retrieval?",
+   "expect": [
+    "f23"
+   ],
+   "kind": "project"
+  },
+  {
+   "q": "What is the college paper about?",
+   "expect": [
+    "f24"
+   ],
+   "kind": "project"
+  },
+  {
+   "q": "What does the open-source repo do?",
+   "expect": [
+    "f25"
+   ],
+   "kind": "project"
+  },
+  {
+   "q": "What is the user's favorite football club?",
+   "expect": [],
+   "kind": "never_said"
+  },
+  {
+   "q": "What pet does the user have, a dog or a cat?",
+   "expect": [],
+   "kind": "never_said"
+  },
+  {
+   "q": "Which country did the user visit on holiday?",
+   "expect": [],
+   "kind": "never_said"
+  },
+  {
+   "q": "What is the user's salary at the bakery?",
+   "expect": [],
+   "kind": "never_said"
+  }
+ ]
+}
