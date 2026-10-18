@@ -189,3 +189,23 @@ test('BlinkScheduler.nextChange always lands on a real flip of isClosed', () => 
     t = next;
   }
 });
+
+test('leanFor leans toward the side of the window she is watching', () => {
+  const watching = (side) => ({ presence: 'focused', curiosity: 0, look: { side, watching: true } });
+  assert.deepEqual(leanFor(watching('left')), { rotateDeg: -6, dx: -12 });
+  assert.deepEqual(leanFor(watching('right')), { rotateDeg: 6, dx: 12 });
+  assert.deepEqual(leanFor(watching('center')), { rotateDeg: 0, dx: 0 });
+  assert.deepEqual(leanFor({ presence: 'talking', look: { side: 'right', watching: true } }), { rotateDeg: 6, dx: 12 });
+});
+
+test('leanFor ignores a look that is not watching and falls back to the curious lean', () => {
+  assert.deepEqual(leanFor({ presence: 'focused', curiosity: 0, look: { side: 'right', watching: false } }), { rotateDeg: 0, dx: 0 });
+  assert.deepEqual(leanFor({ presence: 'focused', curiosity: 0.9, look: { side: 'center', watching: true } }), { rotateDeg: -6, dx: -12 });
+  assert.deepEqual(leanFor({ presence: 'focused', curiosity: 0.9, look: null }), { rotateDeg: -6, dx: -12 });
+  assert.deepEqual(leanFor({ presence: 'focused', curiosity: 0, look: { side: null, watching: true } }), { rotateDeg: 0, dx: 0 });
+  assert.deepEqual(leanFor({ presence: 'focused', curiosity: 0, look: { side: 'sideways', watching: true } }), { rotateDeg: 0, dx: 0 });
+});
+
+test('leanFor stays still while gaming, whatever she is looking at', () => {
+  assert.deepEqual(leanFor({ presence: 'gaming', curiosity: 0.9, look: { side: 'left', watching: true } }), { rotateDeg: 0, dx: 0 });
+});

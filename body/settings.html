@@ -70,6 +70,49 @@
       <span class="label">Talk hotkey</span>
       <span id="hotkey" class="static"></span>
     </div>
+    <div class="row">
+      <span class="label">Don't look hotkey</span>
+      <span id="dontlook-hotkey" class="static"></span>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-eyes">
+    <h2 id="h-eyes">Eyes</h2>
+    <p class="note">She can glance at the window you are using, now and then, and keep a short note of what you were doing. The screenshot itself is never saved.</p>
+    <div class="row check" data-key="eyes_enabled">
+      <input id="eyes_enabled" type="checkbox"><label for="eyes_enabled">Let her look at my screen</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row">
+      <span class="label">Looks today</span>
+      <span id="eyes-count" class="static">—</span>
+      <p id="eyes-status" class="note" hidden></p>
+    </div>
+    <div class="row" data-key="glance_daily_cap">
+      <label for="glance_daily_cap">Most looks per day</label>
+      <input id="glance_daily_cap" type="number" min="1" max="1000" step="1">
+      <p class="note">From 1 to 1000.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="glance_min_gap_s">
+      <label for="glance_min_gap_s">Least seconds between looks</label>
+      <input id="glance_min_gap_s" type="number" min="10" max="3600" step="1">
+      <p class="note">From 10 to 3600.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="eyes_deny_titles">
+      <label for="eyes_deny_titles">Never look at windows titled</label>
+      <textarea id="eyes_deny_titles" rows="3" spellcheck="false" autocomplete="off" placeholder="one regular expression per line"></textarea>
+      <div class="inline"><button id="deny-titles-save" type="button">Save</button></div>
+      <p class="note">On top of the built-in list (banks, passwords, private browsing and the like).</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="eyes_deny_processes">
+      <label for="eyes_deny_processes">Never look at programs named</label>
+      <textarea id="eyes_deny_processes" rows="3" spellcheck="false" autocomplete="off" placeholder="one regular expression per line, e.g. keepass"></textarea>
+      <div class="inline"><button id="deny-processes-save" type="button">Save</button></div>
+      <p class="err" role="alert" hidden></p>
+    </div>
   </section>
 
   <section aria-labelledby="h-online">
@@ -91,6 +134,13 @@
     <p id="global-err" class="err" role="alert" hidden></p>
     <ul id="facts" class="list"></ul>
     <p id="facts-empty" class="empty" hidden>Nothing yet.</p>
+  </section>
+
+  <section aria-labelledby="h-glances">
+    <h2 id="h-glances">What she noticed on your screen</h2>
+    <p class="note">Short notes, kept for 7 days.</p>
+    <ul id="glances" class="list"></ul>
+    <p id="glances-empty" class="empty" hidden>No notes.</p>
   </section>
 
   <section aria-labelledby="h-threads">

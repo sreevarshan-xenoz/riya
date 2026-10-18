@@ -222,3 +222,8 @@ test("toImageCoords maps client coordinates into image pixels", () => {
   assert.deepEqual(toImageCoords(rect, 300, 600, 85, 170), { x: 150, y: 300 });
   assert.equal(toImageCoords({ left: 0, top: 0, width: 0, height: 0 }, 300, 600, 1, 1), null);
 });
+
+test("isSettingsError also spots a bad pattern in an Eyes setting", () => {
+  assert.equal(isSettingsError("invalid pattern in 'eyes_deny_titles': '(x'"), true);
+  assert.equal(isSettingsError("a pattern in the log"), false);
+});

@@ -35,6 +35,7 @@
   const blink = new BlinkScheduler();
   const motion = new Motion();
   const feelings = { presence: null, curiosity: 0 };
+  let look = null; // the core's latest `look`: which side her window is on, and whether she is watching it
   let connected = false;
   expression.setConnected(false);
 
@@ -230,6 +231,9 @@
         feelings.presence = msg.presence;
         feelings.curiosity = Number(msg.feelings && msg.feelings.curiosity) || 0;
         break;
+      case "look":
+        look = { side: msg.side, watching: msg.watching === true };
+        break;
       case "error":
         if (!isSettingsError(msg.message)) errorLine.show(msg.message, t); // the settings window shows those
         break;
@@ -242,7 +246,10 @@
   window.riya.onConnection((value) => {
     connected = Boolean(value);
     expression.setConnected(connected);
-    if (!connected) bubble.endCurrent(now());
+    if (!connected) {
+      look = null; // the core sends a fresh look when it comes back
+      bubble.endCurrent(now());
+    }
     refresh();
   });
 
@@ -294,7 +301,7 @@
 
   /** One breathing/lean step; the DOM is written only when the rounded transform changed. */
   function moveSprite() {
-    const css = motion.step(now(), leanFor({ presence: feelings.presence, curiosity: feelings.curiosity }));
+    const css = motion.step(now(), leanFor({ presence: feelings.presence, curiosity: feelings.curiosity, look }));
     if (css === shownTransform) return;
     shownTransform = css;
     els.sprite.style.transform = css;
