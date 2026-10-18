@@ -82,3 +82,14 @@ def test_a_failed_migration_leaves_the_v1_database_untouched(tmp_path, monkeypat
     assert conn.execute("select count(*) from sqlite_master where name='glances'").fetchone()[0] == 0
     conn.close()
     assert open_db(p).execute("select count(*) from facts").fetchone()[0] == 1
+
+
+def test_kv_keys_with_a_prefix_and_delete():
+    kv = KV(open_db(":memory:"))
+    for k in ("agents.logwatch.a", "agents.logwatch.b", "agents.logwatchX", "x%_.y", "other"):
+        kv.set(k, 1)
+    assert sorted(kv.keys_with("agents.logwatch.")) == ["agents.logwatch.a", "agents.logwatch.b"]
+    assert kv.keys_with("x%_") == ["x%_.y"]                   # literal, not a LIKE pattern
+    kv.delete("agents.logwatch.a")
+    kv.delete("missing")
+    assert kv.get("agents.logwatch.a") is None and kv.keys_with("agents.logwatch.") == ["agents.logwatch.b"]

@@ -14,6 +14,12 @@ class KV(dict):
     def set(self, key, value):
         self[key] = value
 
+    def keys_with(self, prefix):
+        return [k for k in self if k.startswith(prefix)]
+
+    def delete(self, key):
+        self.pop(key, None)
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -402,3 +408,77 @@ def test_lost_is_quiet_too_and_done_revives_at_once(env):
     clock.advance(60)
     add(f, "next stage\n")
     assert w.poll() == [("colab:run1/a", "running", "")]
+
+
+# --- bounds (final review M6) --------------------------------------------------------------------------------------
+
+def test_only_the_200_most_recently_modified_files_are_considered(env):
+    d, clock, kv, entry = env
+    w = LogWatch([entry], kv, clock)
+    assert w.poll() == []
+    for i in range(205):
+        p = d / f"r{i:03d}.out"
+        add(p, "step 1\n")
+        os.utime(p, (clock.now() + 1 + i, clock.now() + 1 + i))   # r000 is the oldest
+    clock.advance(60)
+    out = w.poll()
+    runs = {run for run, kind, _ in out if kind == "running"}
+    assert len(runs) == 200 and "colab:run1/r004" not in runs and "colab:run1/r005" in runs
+    assert not any(k.endswith("r000.out") for k in kv) and sum(k.endswith(".out") for k in kv) == 200
+
+
+def test_keys_of_files_that_no_longer_match_are_pruned_once_a_day(env):
+    d, clock, kv, entry = env
+    w = LogWatch([entry], kv, clock)
+    w.poll()
+    fresh(d / "a.out", "step 1\n", clock)
+    fresh(d / "b.out", "step 1\n", clock)
+    clock.advance(60)
+    w.poll()
+    files = lambda: sorted(k.rsplit("/", 1)[-1] for k in kv if k.endswith(".out"))  # noqa: E731
+    assert files() == ["a.out", "b.out"]
+    (d / "b.out").unlink()
+    clock.advance(60)
+    w.poll()
+    assert files() == ["a.out", "b.out"]                       # not before a day has passed
+    clock.advance(24 * 3600)
+    w.poll()
+    assert files() == ["a.out"]
+    assert "agents.logwatch.#poll" in kv and "agents.logwatch.#seen.colab" in kv
+
+
+def test_nothing_is_pruned_while_a_root_is_missing(env, tmp_path):
+    d, clock, kv, entry = env
+    gone = tmp_path / "drive"
+    gone.mkdir()
+    other = {**entry, "name": "drive", "glob": str(gone / "**" / "*.out")}
+    w = LogWatch([entry, other], kv, clock)
+    w.poll()
+    fresh(gone / "x.out", "step 1\n", clock)
+    clock.advance(60)
+    w.poll()
+    assert any(k.endswith("x.out") for k in kv)
+    fresh(d / "a.out", "step 1\n", clock)
+    clock.advance(60)
+    w.poll()
+    (gone / "x.out").unlink()
+    gone.rmdir()                                               # Drive not mounted
+    (d / "a.out").unlink()
+    clock.advance(2 * 24 * 3600)
+    w.poll()
+    assert any(k.endswith("x.out") for k in kv)                # under the missing root: kept
+    assert not any(k.endswith("a.out") for k in kv)            # elsewhere: pruned all the same
+
+
+def test_a_failing_entry_keeps_its_files(env, monkeypatch):
+    d, clock, kv, entry = env
+    w = LogWatch([entry], kv, clock)
+    w.poll()
+    fresh(d / "a.out", "step 1\n", clock)
+    clock.advance(60)
+    w.poll()
+    (d / "a.out").unlink()
+    monkeypatch.setattr("riya.agents.logwatch.glob.glob", lambda *a, **k: (_ for _ in ()).throw(OSError("io")))
+    clock.advance(2 * 24 * 3600)
+    w.poll()
+    assert any(k.endswith("a.out") for k in kv)
