@@ -513,7 +513,7 @@ def test_small_talk_is_capped_at_three_sentences_and_the_model_stream_is_closed(
     seen = spy(local)
     said = list(core.reply("hey riya"))
     assert said == ["One here.", "Two here.", "Three here."]
-    assert seen["max_tokens"] == [110] and seen["pulled"] == 6      # 3 sentences of 2 tokens, nothing more
+    assert seen["max_tokens"] == [110] and seen["pulled"] == 7  # 3 sentences of 2 tokens + 1 look-ahead ("~" folds)
     assert [m.text for m in emitted if isinstance(m, Say)] == said
     assert core.memory.unconsolidated()[-1]["text"] == "One here. Two here. Three here."
     assert core.turns[-1] == {"role": "assistant", "content": "One here. Two here. Three here."}
@@ -709,3 +709,22 @@ def test_a_sole_generic_sentence_is_kept_but_a_long_one_always_is():
 def test_a_dropped_generic_sentence_after_a_remember_ack_leaves_the_ack():
     core, *_ = make_core(local_replies=["No pressure."])
     assert list(core.reply("remember that I like tea")) == [ACKS[0]]
+
+
+# ---- final fix wave: I3, a letterless sentence folds into the one before ----
+def test_a_trailing_tilde_folds_into_its_sentence_and_the_voice_never_says_it():
+    from riya.core.shaping import tts_text
+    core, emitted, _, _ = make_core(local_replies=["Sleep well! ~"])
+    said = list(core.reply("good night riya"))
+    assert said == ["Sleep well! ~"] and "~" not in tts_text(said[0])
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+
+
+@pytest.mark.parametrize("reply, want", [
+    ("Hi! ~ Bye now.", ["Hi! ~", "Bye now."]),
+    ("Wow. ... Okay then. !! Fine.", ["Wow. ...", "Okay then. !!", "Fine."]),
+    ("... Hello there.", ["... Hello there."]),
+    ("One. ~ Two. ~ Three. ~ Four.", ["One. ~", "Two. ~", "Three. ~"])])
+def test_letterless_sentences_never_take_a_cap_slot_or_a_bubble(reply, want):
+    core, *_ = make_core(local_replies=[reply])
+    assert list(core.reply("hey riya")) == want

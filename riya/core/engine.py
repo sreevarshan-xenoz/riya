@@ -1,5 +1,6 @@
 """RiyaCore: wires memory, feelings, presence, initiative, routing and consolidation into replies and speaking first."""
 import logging
+import re
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
@@ -41,6 +42,11 @@ PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
+_TILDES = re.compile(r"[~\s]*")
+
+
+def _worded(text: str) -> bool:
+    return any(c.isalnum() for c in text)
 
 
 def _query(action: Action) -> str:
@@ -225,9 +231,27 @@ class RiyaCore:
         return next((m.end() for m in SENTENCE_END.finditer(buf) if buf.count("```", 0, m.end()) % 2 == 0), None)
 
     @staticmethod
+    def _cut(buf: str, final: bool = False) -> tuple[int, int] | None:
+        """The first sentence in buf as (end of its words, end of what folds into it). A sentence with no letter or
+        digit ("~", "…", "!!", an emoji) and a "~" opening the next one fold into the sentence before; one at the very
+        start folds into the next. None while the next worded sentence hasn't started; final (the stream ended) takes
+        the rest of buf."""
+        head, pos = None, 0
+        while (n := RiyaCore._boundary(buf[pos:])) is not None:
+            worded = _worded(buf[pos:pos + n])
+            if worded and head is not None:
+                return head, _TILDES.match(buf, pos).end()
+            pos += n
+            if worded:
+                head = pos
+        if head is not None and _worded(buf[pos:]):
+            return head, _TILDES.match(buf, pos).end()
+        return (len(buf) if head is None else head, len(buf)) if final and buf.strip() else None
+
+    @staticmethod
     def _sentences(stream: Iterator[str], parts: list[str], done: dict) -> Iterator[str]:
-        """The model's pieces as whole sentences, each with only the reply's first emoji (an emoji-only sentence
-        vanishes) and the first without a leading "Riya:" label. Closing this closes the model stream; done["stream"]
+        """The model's pieces as whole sentences (_cut), each with only the reply's first emoji (an emoji's leftovers
+        vanish) and the first without a leading "Riya:" label. Closing this closes the model stream; done["stream"]
         is set once the model ended by itself."""
         buf, used, first = "", 0, True
 
@@ -239,16 +263,22 @@ class RiyaCore:
             used += count_emoji(CODE_BLOCK.sub("", kept))
             return kept if kept == sentence or any(c.isalnum() for c in kept) else ""  # an emoji's leftovers vanish
 
+        def take(cut: tuple[int, int]) -> str:
+            nonlocal buf
+            head, end = cut
+            words, tail, buf = tidy(buf[:head]), tidy(buf[head:end]), buf[end:]
+            return f"{words} {tail}" if words and tail else words or tail
+
         try:
             for piece in stream:
                 parts.append(piece)
                 buf += piece
-                while (end := RiyaCore._boundary(buf)) is not None:
-                    sentence, buf = tidy(buf[:end]), buf[end:]
-                    if sentence:
+                while (cut := RiyaCore._cut(buf)) is not None:
+                    if sentence := take(cut):
                         yield sentence
-            if sentence := tidy(buf):
-                yield sentence
+            while (cut := RiyaCore._cut(buf, final=True)) is not None:
+                if sentence := take(cut):
+                    yield sentence
             done["stream"] = True
         finally:
             if hasattr(stream, "close"):
