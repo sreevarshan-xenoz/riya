@@ -47,7 +47,6 @@ CONSOLIDATE_RETRY_S = 600
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
-UNPARSEABLE_BACKOFF_S = 300  # after a reply with no usable note (or an empty one): 5 min
 GLANCE_WAIT_S = 30  # a screen question waits this long for a glance in flight to finish
 TODAY_KEY = "eyes.today"  # {"day", "count"}: the daily cap survives a restart
 PEEK_EVERY_S = 30  # same window past the refresh time: a local-only thumbnail check, at most this often
@@ -560,6 +559,14 @@ class RiyaCore:
         """A look happened (with _eyes_lock held); today's count is saved so the cap survives a restart."""
         self.policy.record(info, small)
         self._glanced = (_key(info), self.clock.now())
+        self._save_today()
+
+    def _sent(self) -> None:
+        """A vision request went out with nothing kept (with _eyes_lock held): it counts all the same."""
+        self.policy.sent()
+        self._save_today()
+
+    def _save_today(self) -> None:
         day, count = self.policy.today()
         self.kv.set(TODAY_KEY, {"day": day, "count": count})
 
@@ -609,9 +616,10 @@ class RiyaCore:
             self._glance_thread.start()
 
     def _glance(self, info: WindowInfo, gen: int, peek: bool) -> None:
-        """The worker: re-read the window and re-check the policy (still in front, nothing over it), grab, (for a peek) check the screen changed,
-        describe, keep the note. An outage backs off 30 min, a reply with no usable note 5 min; closing her eyes at any
-        point drops the look (never sent once closed)."""
+        """The worker: re-read the window and re-check the policy (still in front, nothing over it), grab, (for a
+        peek) check the screen changed, describe, keep the note. Every request sent counts. An outage backs off 30
+        min; replies with no usable note in a row 5, 15, 30, then 60 min. Closing her eyes at any point drops the look
+        (never sent once closed)."""
         try:
             with self._eyes_lock:
                 if not self._may_look(gen):
@@ -636,13 +644,18 @@ class RiyaCore:
             note, outcome = describe(self.vision, jpeg)
             del jpeg
             with self._eyes_lock:
-                if not self._may_look(gen):
-                    log.info("dropped a glance: her eyes closed while it was in flight")
-                    return
-                if note is None:
-                    self.policy.backoff(UNPARSEABLE_BACKOFF_S if outcome == "unparseable" else GLANCE_BACKOFF_S)
+                if not self._may_look(gen) or note is None:
+                    self._sent()
+                    self._emit_eyes()
+                    if note is not None:
+                        log.info("dropped a glance: her eyes closed while it was in flight")
+                    elif outcome == "unparseable":
+                        self.policy.unusable()
+                    else:
+                        self.policy.backoff(GLANCE_BACKOFF_S)
                     return
                 self._record(info, small)
+                self.policy.usable()
                 title = "" if is_private(note.activity) else info.title[:TITLE_CHARS]
                 self.memory.add_glance(note.app, title, note.activity, note.details, note.notable)
                 self._emit_eyes()
@@ -701,14 +714,15 @@ class RiyaCore:
     def _see_stream(self, messages: list[dict], seeing: SimpleNamespace, fallback: Callable[[str], list[dict]],
                     local_budget: int, budget: int) -> Iterator[str]:
         """The vision model's answer about the screen; its first piece counts the look. If her eyes closed since the
-        grab, the image is never sent; if the model fails before saying anything, glances back off (30 min, or 5 min
-        for an empty reply). Either way the local model answers from fallback(why) instead (text only, no image)."""
+        grab, the image is never sent; if the model fails before saying anything, the request still counts and
+        glances back off (30 min, or for empty replies in a row 5, 15, 30, then 60 min). Either way the local model
+        answers from fallback(why) instead (text only, no image)."""
         if not self._may_look(seeing.gen):
             seeing.fell_back = True
             yield from self.local.stream(fallback("don't look" if self._eyes_on else "eyes off"), local_budget,
                                          LOCAL_TEMPERATURE)
             return
-        stream, said, backoff = self.vision.stream(messages, budget), False, UNPARSEABLE_BACKOFF_S
+        stream, said, failed = self.vision.stream(messages, budget), False, False
         try:
             for piece in stream:
                 if not said:
@@ -724,11 +738,16 @@ class RiyaCore:
                 log.warning("the vision stream ended early: %s", e)
                 return
             log.warning("couldn't see for a screen question: %s", e)
-            backoff = GLANCE_BACKOFF_S
+            failed = True
         finally:
             stream.close()
         with self._eyes_lock:
-            self.policy.backoff(backoff)
+            self._sent()
+            if failed:
+                self.policy.backoff(GLANCE_BACKOFF_S)
+            else:
+                self.policy.unusable()
+        self._emit_eyes()
         seeing.fell_back = True
         yield from self.local.stream(fallback(COULDNT_SEE), local_budget, LOCAL_TEMPERATURE)
 

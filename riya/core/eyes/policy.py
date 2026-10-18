@@ -11,6 +11,7 @@ DENY_TITLES = ("password|1password|bitwarden|keepass|lastpass|bank|banking|paypa
                "inprivate|incognito|private browsing|windows security|credential|sign in to|login")
 DENY_PROCESSES = "keepass.*|1password.*|bitwarden.*|credentialuibroker"
 _LOOKING = ("focused", "talking")
+UNUSABLE_BACKOFF_S = (300, 900, 1800, 3600)  # consecutive replies with no usable note: 5, 15, 30, then 60 min
 # The desktop, the taskbar and the shell's own surfaces: "no window" (the desktop's rect is the whole monitor, so a
 # grab would send every window on it). These classes always; the shell's CoreWindow (Start, search) only in a shell
 # process; these processes whatever the class.
@@ -89,6 +90,7 @@ class GlancePolicy:
         self._seen_key: tuple[int, str] | None = None
         self._seen_at = self._prev
         self._until: float | None = None  # backoff ends
+        self._unusable = 0  # replies with no usable note in a row
 
     @staticmethod
     def _today(t: float):
@@ -169,6 +171,25 @@ class GlancePolicy:
         self._roll(now)
         self._count += 1
         self._last_at, self._last_key, self._last_thumb = now, (info.hwnd, info.title), thumb
+
+    def sent(self) -> None:
+        """A vision request went out but brought back no note (or was dropped): it still counts, and the min gap
+        runs from it; the window isn't marked as seen."""
+        now = self._now()
+        self._roll(now)
+        self._count += 1
+        self._last_at = now
+
+    def unusable(self) -> float:
+        """Another reply with no usable note (unparseable or empty): backs off 5, 15, 30, then 60 min; returns it."""
+        seconds = UNUSABLE_BACKOFF_S[min(self._unusable, len(UNUSABLE_BACKOFF_S) - 1)]
+        self._unusable += 1
+        self.backoff(seconds)
+        return seconds
+
+    def usable(self) -> None:
+        """A parsed note: the next unusable reply backs off 5 min again."""
+        self._unusable = 0
 
     def backoff(self, seconds: float) -> None:
         """No unforced glances for `seconds` (a forced one may try; failing re-arms this); never shortens a longer backoff."""

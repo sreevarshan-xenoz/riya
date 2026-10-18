@@ -168,7 +168,7 @@ def test_dont_look_switched_on_mid_glance_discards_the_note():
     core.handle(DontLook(on=True))
     vision.release.set()
     wait(core)
-    assert core.memory.list_glances() == [] and core.policy.glances_today() == 0
+    assert core.memory.list_glances() == [] and core.policy.glances_today() == 1   # it was sent: it counts
     assert of(emitted, EyesMsg)[-1].dont_look is True
 
 
@@ -204,6 +204,54 @@ def test_an_unparseable_or_empty_note_backs_off_for_5_minutes(reply):
     assert len(vision.calls) == 1 and core.memory.list_glances() == []
     run(core, clock, 40)
     assert len(vision.calls) == 2 and len(core.memory.list_glances()) == 1
+
+
+def test_consecutive_unusable_notes_back_off_5_15_30_60_minutes_and_a_note_resets_it():
+    vision = FakeModel("vision", ["", "nope", "", "{}", "", NOTE, ""])
+    core, _, _, _, clock, _, source, _ = eyes_core(vision=vision)
+    sent_at, stream = [], vision.stream
+    vision.stream = lambda *a, **k: (sent_at.append(clock.now()), stream(*a, **k))[1]
+    run(core, clock, 6 + 300 + 900 + 1800 + 3600 + 3600 + 5)
+    gaps = [round(b - a) for a, b in zip(sent_at, sent_at[1:])]
+    assert gaps == [300, 900, 1800, 3600, 3600]                  # the 6th reply is a note...
+    assert len(core.memory.list_glances()) == 1 and core.policy.glances_today() == 6
+    source.info = win(hwnd=2, title="notes.txt - Notepad", process="notepad.exe")
+    run(core, clock, 60)
+    assert len(sent_at) == 7 and core.policy.glances_today() == 7
+    assert core.policy.unusable() == 900                         # ...so the 7th, unusable, backed off 5 min again
+
+
+@pytest.mark.parametrize("vision", [FakeModel("vision", ["no idea"]), FakeModel("vision", [""]),
+                                    FakeModel("vision", [NOTE], fail=ModelUnavailable("HTTP 429"))])
+def test_every_sent_glance_counts_whatever_came_back(vision, tmp_path):
+    core, emitted, _, _, clock, _, _, _ = eyes_core(vision=vision, tmp_path=tmp_path)
+    run(core, clock, 6)
+    assert len(vision.calls) == 1 and core.memory.list_glances() == []
+    assert core.policy.glances_today() == 1 and of(emitted, EyesMsg)[-1].glances_today == 1
+    again, *_ = eyes_core(tmp_path=tmp_path, clock=clock)
+    assert again.policy.glances_today() == 1                     # saved like any other glance
+
+
+def test_unusable_replies_stop_at_the_daily_cap():
+    core, _, _, _, clock, vision, _, _ = eyes_core(vision=FakeModel("vision", [""]))
+    core.handle(SetSettings(patch={"glance_daily_cap": 2}))
+    run(core, clock, 6 + 300 + 900 + 1800)
+    assert len(vision.calls) == 2 and core.policy.glances_today() == 2
+
+
+@pytest.mark.parametrize("vision", [FakeModel("vision", [""]), FakeModel("vision", [NOTE], fail=ModelUnavailable("x"))])
+def test_a_failed_screen_question_still_counts(vision):
+    core, emitted, _, _, clock, _, _, _ = eyes_core(vision=vision, local_replies=["Can't see it~"])
+    list(core.reply("what's wrong with this?"))
+    assert len(vision.calls) == 1 and core.policy.glances_today() == 1
+    assert of(emitted, EyesMsg)[-1].glances_today == 1
+
+
+def test_empty_screen_answers_escalate_the_backoff_too():
+    core, _, _, _, clock, vision, _, _ = eyes_core(vision=FakeModel("vision", [""]), local_replies=["Hmm~"])
+    list(core.reply("what's wrong with this?"))
+    list(core.reply("what's wrong with this?"))
+    assert core.policy.unusable() == 1800                        # 300 and 900 were used by the two questions
 
 
 @pytest.mark.parametrize("fail", [ModelUnavailable("online: <urlopen error [WinError 10061] refused>"),
