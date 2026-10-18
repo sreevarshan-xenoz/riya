@@ -1,5 +1,5 @@
 from riya.core.clock import FakeClock
-from riya.core.presence import FakeIdleSource, Presence
+from riya.core.presence import BREAK_TAIL_S, TALKING_WINDOW_S, FakeIdleSource, Presence
 from riya.core.store import KV, open_db
 
 
@@ -79,7 +79,7 @@ def test_clock_going_backwards_never_negative():
     src.idle = 950; p.update()
     clock.t -= 7200; src.idle = 0
     ev = p.update()
-    assert all(e.away_s >= 0 for e in ev)
+    assert kinds(ev) == ["came_back"] and ev[0].away_s == 0
 
 
 def test_work_stretch_resets_on_break():
@@ -112,3 +112,45 @@ def test_persists_last_active_and_left_at():
     clock.advance(10); src.idle = 1000
     p.update()
     assert p.left_at == clock.t - 1000 and kv.get("presence.left_at") == p.left_at
+
+
+def test_sleep_gap_then_wake_locked_counts_whole_sleep():
+    clock, src, p = make()
+    p.update()
+    clock.advance(8 * 3600); src.is_locked = True
+    assert kinds(p.update()) == ["went_away"]
+    clock.advance(5); src.is_locked = False; src.idle = 0
+    ev = p.update()
+    assert kinds(ev) == ["came_back"] and abs(ev[0].away_s - 8 * 3600) < 10
+
+
+def test_sleep_gap_then_wake_with_high_idle_counts_whole_sleep():
+    clock, src, p = make()
+    p.update()
+    clock.advance(8 * 3600); src.idle = 1000
+    assert kinds(p.update()) == ["went_away"]
+    clock.advance(30); src.idle = 0
+    ev = p.update()
+    assert kinds(ev) == ["came_back"] and abs(ev[0].away_s - (8 * 3600 + 30)) < 2
+
+
+def test_clock_jump_back_while_talking_recovers():
+    clock, src, p = make()
+    p.update(); p.note_turn(); p.update()
+    clock.t -= 7200
+    p.update()
+    assert p.state == "talking"
+    clock.advance(TALKING_WINDOW_S + 1); p.update()
+    assert p.state == "focused"
+
+
+def test_clock_jump_back_in_break_tail_recovers():
+    clock, src, p = make()
+    p.update()
+    clock.advance(200); src.idle = 200; p.update()
+    src.idle = 0; p.update()
+    clock.t -= 7200
+    p.update()
+    assert p.state == "break" and p.work_stretch_s() >= 0
+    clock.advance(BREAK_TAIL_S + 1)
+    assert kinds(p.update()) == ["break_ended"] and p.state == "focused"

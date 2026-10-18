@@ -3,7 +3,6 @@ import sys
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from riya.core.clock import FakeClock
 from riya.core.store import KV
 
 AWAY_IDLE_S = 900
@@ -11,6 +10,10 @@ BREAK_IDLE_S = 120
 BREAK_TAIL_S = 60
 TALKING_WINDOW_S = 180
 _RESUME_IDLE_S = 5
+
+
+class Clock(Protocol):
+    def now(self) -> float: ...
 
 
 class IdleSource(Protocol):
@@ -113,7 +116,7 @@ State = Literal["away", "focused", "break", "talking", "gaming"]
 
 
 class Presence:
-    def __init__(self, source: IdleSource, clock: FakeClock, kv: KV):
+    def __init__(self, source: IdleSource, clock: Clock, kv: KV):
         self.source, self.clock, self.kv = source, clock, kv
         now = clock.now()
         self.state: State = "focused"
@@ -135,14 +138,22 @@ class Presence:
         now, idle, locked = self.clock.now(), self.source.idle_seconds(), self.source.locked()
         events: list[PresenceEvent] = []
         was = self.state
+        if now < self._last_update:  # clock jumped back: keep timed states progressing from the new now
+            self._tail_start = None if self._tail_start is None else min(self._tail_start, now)
+            self._last_turn = None if self._last_turn is None else min(self._last_turn, now)
+            self._work_start = min(self._work_start, now)
+        slept = now - self._last_update > AWAY_IDLE_S  # the laptop slept: away since the last update
         if was == "away":
             if not locked and idle < _RESUME_IDLE_S:
-                events.append(PresenceEvent("came_back", max(0.0, now - idle - (self.left_at or now))))
+                left = now if self.left_at is None else self.left_at
+                events.append(PresenceEvent("came_back", max(0.0, now - idle - left)))
                 self._resume(now)
         elif locked or idle >= AWAY_IDLE_S:
             self.state, self.left_at = "away", now if locked else now - idle
+            if slept:
+                self.left_at = min(self.left_at, self._last_update)
             events.append(PresenceEvent("went_away"))
-        elif now - self._last_update > AWAY_IDLE_S:  # the laptop slept: away since the last update
+        elif slept:
             if idle < _RESUME_IDLE_S:
                 events.append(PresenceEvent("came_back", max(0.0, now - idle - self._last_update)))
                 self._resume(now)
@@ -174,7 +185,7 @@ class Presence:
             self.state = "break"
             return [] if was == "break" else [PresenceEvent("break_started")]
         if was == "break":
-            if self._tail_start is None:  # input resumed: the work stretch restarts here
+            if self._tail_start is None:  # input resumed: the work stretch restarts here (brief's test resumes and waits 61 s in one update)
                 self._tail_start = self._work_start = now
             if now - self._tail_start < BREAK_TAIL_S:
                 return []
