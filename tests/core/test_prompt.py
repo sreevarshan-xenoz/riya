@@ -325,3 +325,10 @@ def test_eyes_block_sits_after_the_memory_block_and_before_the_situation():
     system = _system(Retrieved([EXAM], [], []), situation="S", kind="small", eyes="### What they're doing now: x")
     order = [system.index(s) for s in [MEMORY_END, HONESTY_LINE, "### What they're doing now: x", "[Situation] S"]]
     assert order == sorted(order)
+
+
+def test_eyes_block_without_the_now_line():
+    from riya.core.prompt import eyes_block
+    block = eyes_block([_glance(3, NOW - 120, notable="TypeError in test_x")], NOW, now_line=False)
+    assert "What they're doing now" not in block and "TypeError" not in block
+    assert "- 2 min ago, VS Code: fixing a failing test" in block
