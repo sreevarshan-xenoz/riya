@@ -91,3 +91,98 @@ def test_delete_with_episodes_removes_source_episode(mem):
 def test_identical_tokenless_text_is_a_duplicate(mem):
     assert mem.add_fact("💞", source="user_said") is not None
     assert mem.add_fact("💞", source="user_said") is None
+
+
+def test_cjk_restatement_supersedes_instead_of_colliding(mem):
+    a = mem.add_fact("The user's name is 小明", source="user_said", key="user.name")
+    b = mem.add_fact("The user's name is 小红", source="user_said", key="user.name")
+    assert b is not None and [f.id for f in mem.list_facts()] == [b.id]
+    assert mem.history(b.id)[1].id == a.id
+
+
+def test_tamil_and_hindi_facts_are_distinct_and_embedded(mem):
+    e = HashEmbedder()
+    assert e.embed(["எனக்கு தேநீர் பிடிக்கும்"]).any() and e.embed(["मुझे चाय पसंद है"]).any()
+    assert mem.add_fact("எனக்கு தேநீர் பிடிக்கும்", source="user_said") is not None
+    assert mem.add_fact("மேலும் ஒரு வேறு தகவல்", source="user_said") is not None
+    assert mem.add_fact("मुझे चाय पसंद है", source="user_said") is not None
+    assert mem.add_fact("मेरा घर दिल्ली में है", source="user_said") is not None
+    assert len(mem.list_facts()) == 4
+
+
+def test_accented_text_round_trips_and_matches_decomposed_form(mem):
+    mem.add_fact("The user's favourite place is Café Noir", source="user_said")
+    assert mem.list_facts()[0].text == "The user's favourite place is Café Noir"
+    assert mem.add_fact("the user's favourite place is Café noir", source="inferred") is None
+
+
+def test_user_said_overrides_forgotten_marker_but_inference_stays_blocked(mem):
+    f = mem.add_fact("The user's old project is called Nova", source="user_said", key="user.old_project")
+    mem.delete_fact(f.id)
+    assert mem.add_fact("The user's old project is called Nova", source="inferred", key="user.old_project") is None
+    assert mem.add_fact("The user's old project is called Nova", source="looked_up") is None
+    again = mem.add_fact("The user's old project is called Nova", source="user_said", key="user.old_project")
+    assert again is not None and again.status == "active"
+
+
+def test_delete_removes_whole_supersession_chain(mem):
+    old = mem.add_fact("The user's exam is on Thursday", source="user_said")
+    new = mem.correct(old.id, "The user's exam is on Friday")
+    mem.delete_fact(new.id)
+    assert mem.db.execute("select count(*) from facts").fetchone()[0] == 0
+    assert mem.db.execute("select count(*) from forgotten").fetchone()[0] == 2
+    assert mem.add_fact("The user's exam is on Thursday", source="inferred") is None
+    assert mem.add_fact("The user's exam is on Friday", source="inferred") is None
+
+
+def test_delete_from_the_oldest_version_also_removes_the_chain(mem):
+    old = mem.add_fact("The user's exam is on Thursday", source="user_said")
+    mem.correct(old.id, "The user's exam is on Friday")
+    mem.delete_fact(old.id)
+    assert mem.db.execute("select count(*) from facts").fetchone()[0] == 0
+
+
+def test_user_said_resolves_a_conflict_pair(mem):
+    mem.add_fact("The user lives in Chennai", source="inferred", key="user.city")
+    mem.add_fact("The user lives in Bangalore", source="inferred", key="user.city")
+    said = mem.add_fact("The user lives in Madurai", source="user_said", key="user.city")
+    assert [f.id for f in mem.list_facts()] == [said.id]
+
+
+def test_correct_resolves_a_conflict_pair(mem):
+    a = mem.add_fact("The user lives in Chennai", source="inferred", key="user.city")
+    mem.add_fact("The user lives in Bangalore", source="inferred", key="user.city")
+    new = mem.correct(a.id, "The user lives in Madurai")
+    assert [f.id for f in mem.list_facts()] == [new.id]
+
+
+def test_correct_rejects_superseded_and_unknown_ids(mem):
+    old = mem.add_fact("The user's exam is on Thursday", source="user_said", key="user.exam_day")
+    mem.correct(old.id, "The user's exam is on Friday")
+    with pytest.raises(ValueError):
+        mem.correct(old.id, "The user's exam is on Saturday")
+    with pytest.raises(KeyError):
+        mem.correct(9999, "anything")
+
+
+def test_bogus_source_is_rejected_and_leaves_existing_fact_alone(mem):
+    f = mem.add_fact("The user prefers tea", source="inferred", key="user.drink")
+    with pytest.raises(ValueError):
+        mem.add_fact("The user prefers coffee", source="bogus", key="user.drink")
+    assert [(x.id, x.status) for x in mem.list_facts()] == [(f.id, "active")]
+
+
+def test_failed_insert_rolls_back_the_supersession_update(mem):
+    import sqlite3
+
+    f = mem.add_fact("The user prefers tea", source="inferred", key="user.drink")
+    with pytest.raises(sqlite3.IntegrityError):
+        mem.add_fact("The user prefers coffee", source="user_said", key="user.drink", confidence=None)
+    mem.db.commit()
+    assert [(x.id, x.status) for x in mem.list_facts(include_superseded=True)] == [(f.id, "active")]
+
+
+def test_embeddings_from_another_embedder_dim_never_match_or_raise(mem):
+    mem.add_fact("The user likes tea", source="user_said")
+    other = Memory(mem.db, HashEmbedder(dim=64), mem.clock)
+    assert other.add_fact("The user likes coffee", source="inferred") is not None
