@@ -728,3 +728,22 @@ def test_a_trailing_tilde_folds_into_its_sentence_and_the_voice_never_says_it():
 def test_letterless_sentences_never_take_a_cap_slot_or_a_bubble(reply, want):
     core, *_ = make_core(local_replies=[reply])
     assert list(core.reply("hey riya")) == want
+
+
+def test_an_about_me_turn_with_facts_tells_her_she_does_remember_them():
+    core, _, _, local = make_core(local_replies=["You're a student and you love lo-fi~"])
+    core.memory.add_fact("The user is a college student", source="user_said")
+    core.memory.add_fact("The user said: their favourite colour is teal", source="user_said")
+    list(core.reply("what do you remember about me?"))
+    situation = next(ln for ln in local.calls[-1][0]["content"].split("\n\n") if ln.startswith("[Situation]"))
+    assert situation.startswith("[Situation] You DO remember these things about them: ")
+    assert "they're a college student" in situation and "their favourite colour is teal" in situation
+    assert "don't say you don't remember" in situation
+
+
+def test_an_about_me_turn_with_no_facts_says_nothing_yet():
+    from riya.core.prompt import NO_ABOUT_ME_LINE
+    core, _, _, local = make_core()
+    list(core.reply("tell me everything you know about me"))
+    system = local.calls[-1][0]["content"]
+    assert NO_ABOUT_ME_LINE in system and "You DO remember" not in system

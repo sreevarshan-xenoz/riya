@@ -24,13 +24,15 @@ RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it
 STALE_THREAD_S = 7 * DAY  # an open thread this far past due is dropped by the daily purge
 ABOUT_ME_RE = re.compile(
     r"\bwhat (?:do|did) you (?:remember|know) about me\b|\beverything you (?:remember|know) about me\b"
-    r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)(?: about me\b|\s*(?:[.?!]|$))"
+    r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)"
+    r"(?: about me\b|(?:,?\s+riya)?\s*(?:[.?!]|$))"
     r"|\bwhat have i (?:told|said to) you\b", re.IGNORECASE)
 
 
 def about_me(query: str) -> bool:
     """What do you remember about me? and the like: answered from her best facts, not by similarity. "Tell me what
-    you remember" counts only at the end of the sentence or followed by "about me", not "...about my sister's X"."""
+    you remember" counts only at the end of the sentence (", Riya" may follow) or followed by "about me", not
+    "...about my sister's X"."""
     return ABOUT_ME_RE.search(query) is not None
 
 
