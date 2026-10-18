@@ -1,13 +1,20 @@
-"""Riya's long-term memory: facts with provenance, supersession and forgetting."""
+"""Riya's long-term memory: facts, episodes, follow-up threads and transcripts, with hybrid retrieval."""
+import json
+import math
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
 from riya.core.embed import Embedder
 
 RANK = {"user_said": 2, "looked_up": 1, "inferred": 0}
+QUALITY = {"user_said": 1.0, "looked_up": 0.7, "inferred": 0.5}
 LIVE = "('active','conflict')"
+EPISODE_FORGET_SIM = 0.6
+DAY = 86400.0
 
 
 @dataclass
@@ -23,11 +30,47 @@ class Fact:
     supersedes_id: int | None
 
 
+@dataclass
+class Episode:
+    id: int
+    started_at: float
+    ended_at: float
+    summary: str
+    user_mood: str | None
+    outcome: str | None
+
+
+@dataclass
+class Thread:
+    id: int
+    text: str
+    due_at: float
+    status: str
+    last_raised_at: float | None
+
+
+@dataclass
+class Retrieved:
+    facts: list[Fact]
+    episodes: list[Episode]
+    threads: list[Thread]
+
+
 _FACT_COLS = "id, text, key, source, confidence, valid_from, valid_until, status, supersedes_id"
+_EPISODE_COLS = "id, started_at, ended_at, summary, user_mood, outcome"
+_THREAD_COLS = "id, text, due_at, status, last_raised_at"
 
 
 def _fact(row: sqlite3.Row) -> Fact:
-    return Fact(**{k: row[k] for k in row.keys()})
+    return Fact(**{k: row[k] for k in _FACT_COLS.split(", ")})
+
+
+def _episode(row: sqlite3.Row) -> Episode:
+    return Episode(**{k: row[k] for k in _EPISODE_COLS.split(", ")})
+
+
+def _thread(row: sqlite3.Row) -> Thread:
+    return Thread(**{k: row[k] for k in _THREAD_COLS.split(", ")})
 
 
 def _vec(blob: bytes) -> np.ndarray:
@@ -134,15 +177,20 @@ class Memory:
         ids = self._chain(fact_id)
         marks = ",".join("?" * len(ids))
         rows = self.db.execute(f"select text, key, episode_id from facts where id in ({marks})", ids).fetchall()
+        vecs = [self._embed(r["text"]) for r in rows]
         now = self.clock.now()
         with self.db:
             self.db.execute(f"delete from facts where id in ({marks})", ids)
-            for r in rows:
-                if delete_episodes and r["episode_id"] is not None:
-                    self.db.execute("delete from episodes where id=?", (r["episode_id"],))
+            for r, vec in zip(rows, vecs):
                 self.db.execute(
                     "insert into forgotten(description, key, embedding, at) values(?,?,?,?)",
-                    (r["key"] or r["text"][:60], r["key"], self._embed(r["text"]).tobytes(), now))
+                    (r["key"] or r["text"][:60], r["key"], vec.tobytes(), now))
+            if delete_episodes:
+                doomed = {r["episode_id"] for r in rows if r["episode_id"] is not None}
+                for ep in self.db.execute("select id, embedding from episodes").fetchall():
+                    if any(self._max_sim(v, [ep]) >= EPISODE_FORGET_SIM for v in vecs):
+                        doomed.add(ep["id"])
+                self.db.executemany("delete from episodes where id=?", [(i,) for i in doomed])
 
     def list_facts(self, include_superseded: bool = False) -> list[Fact]:
         where = "" if include_superseded else "where status != 'superseded'"
@@ -155,3 +203,102 @@ class Memory:
             seen.add(cur.id)
             cur = self.get_fact(cur.supersedes_id) if cur.supersedes_id is not None else None
         return out
+
+    # --- episodes and threads ---
+
+    def add_episode(self, started_at: float, ended_at: float, summary: str, user_mood: str | None = None,
+                    outcome: str | None = None) -> Episode:
+        with self.db:
+            cur = self.db.execute(
+                "insert into episodes(started_at, ended_at, summary, user_mood, outcome, embedding) values(?,?,?,?,?,?)",
+                (started_at, ended_at, summary, user_mood, outcome, self._embed(summary).tobytes()))
+        return _episode(self.db.execute(f"select {_EPISODE_COLS} from episodes where id=?", (cur.lastrowid,)).fetchone())
+
+    def recent_episodes(self, n: int = 3) -> list[Episode]:
+        rows = self.db.execute(f"select {_EPISODE_COLS} from episodes order by ended_at desc, id desc limit ?", (n,))
+        return [_episode(r) for r in rows]
+
+    def add_thread(self, text: str, due_at: float, episode_id: int | None = None) -> Thread:
+        with self.db:
+            cur = self.db.execute(
+                "insert into threads(text, due_at, status, created_at, episode_id) values(?,?,?,?,?)",
+                (text, due_at, "open", self.clock.now(), episode_id))
+        return _thread(self.db.execute(f"select {_THREAD_COLS} from threads where id=?", (cur.lastrowid,)).fetchone())
+
+    def due_threads(self) -> list[Thread]:
+        rows = self.db.execute(
+            f"select {_THREAD_COLS} from threads where status='open' and due_at<=? order by due_at desc, id desc",
+            (self.clock.now(),))
+        return [_thread(r) for r in rows]
+
+    def mark_thread(self, thread_id: int, status: str | None = None, raised_at: float | None = None) -> None:
+        with self.db:
+            self.db.execute("update threads set status=coalesce(?, status), last_raised_at=coalesce(?, last_raised_at)"
+                            " where id=?", (status, raised_at, thread_id))
+
+    # --- transcripts ---
+
+    def append_transcript(self, role: str, text: str) -> int:
+        with self.db:
+            cur = self.db.execute("insert into transcripts(at, role, text) values(?,?,?)",
+                                  (self.clock.now(), role, text))
+        return cur.lastrowid
+
+    def unconsolidated(self) -> list[dict]:
+        rows = self.db.execute("select id, at, role, text from transcripts where consolidated=0 order by id")
+        return [dict(r) for r in rows]
+
+    def mark_consolidated(self, ids: list[int]) -> None:
+        with self.db:
+            self.db.executemany("update transcripts set consolidated=1 where id=?", [(i,) for i in ids])
+
+    def purge_transcripts(self, max_age_s: float = 30 * DAY) -> int:
+        with self.db:
+            return self.db.execute("delete from transcripts where at < ?", (self.clock.now() - max_age_s,)).rowcount
+
+    @staticmethod
+    def _day(at: float) -> str:
+        return datetime.fromtimestamp(at).strftime("%Y-%m-%d")
+
+    def transcript_days(self) -> list[str]:
+        return sorted({self._day(r["at"]) for r in self.db.execute("select at from transcripts")})
+
+    def delete_transcript_day(self, day: str) -> int:
+        ids = [(r["id"],) for r in self.db.execute("select id, at from transcripts") if self._day(r["at"]) == day]
+        with self.db:
+            self.db.executemany("delete from transcripts where id=?", ids)
+        return len(ids)
+
+    # --- retrieval ---
+
+    @staticmethod
+    def _score(sim: float, age_s: float, quality: float) -> float:
+        return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
+
+    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2) -> Retrieved:
+        vec, now = self._embed(query), self.clock.now()
+        facts, episodes = [], []
+        for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
+            sim = self._max_sim(vec, [r])
+            if sim >= self.min_sim:
+                facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+        for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
+            sim = self._max_sim(vec, [r])
+            if sim >= self.min_sim:
+                episodes.append((self._score(sim, now - r["ended_at"], QUALITY["inferred"]), _episode(r)))
+        facts.sort(key=lambda p: p[0], reverse=True)
+        episodes.sort(key=lambda p: p[0], reverse=True)
+        return Retrieved([f for _, f in facts[:k_facts]], [e for _, e in episodes[:k_episodes]], self.due_threads())
+
+    # --- legacy import ---
+
+    def import_legacy_json(self, path: str | Path) -> Episode | None:
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        summary = data.get("summary") if isinstance(data, dict) else None
+        if not isinstance(summary, str) or not summary.strip():
+            return None
+        now = self.clock.now()
+        return self.add_episode(now, now, summary.strip(), outcome="imported")
