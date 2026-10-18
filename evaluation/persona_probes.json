@@ -1,5 +1,5 @@
 {
-  "style_phrases": ["three hours on one bug", "want me to just fix it", "just fix it", "servile"],
+  "style_phrases": ["three hours on one bug", "want me to just fix it"],
   "conversations": [
     {
       "id": "greeting_smalltalk",
