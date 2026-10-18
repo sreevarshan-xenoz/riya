@@ -24,12 +24,13 @@ RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it
 STALE_THREAD_S = 7 * DAY  # an open thread this far past due is dropped by the daily purge
 ABOUT_ME_RE = re.compile(
     r"\bwhat (?:do|did) you (?:remember|know) about me\b|\beverything you (?:remember|know) about me\b"
-    r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)\b|\bwhat have i (?:told|said to) you\b",
-    re.IGNORECASE)
+    r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)(?: about me\b|\s*(?:[.?!]|$))"
+    r"|\bwhat have i (?:told|said to) you\b", re.IGNORECASE)
 
 
 def about_me(query: str) -> bool:
-    """What do you remember about me? and the like: answered from her best facts, not by similarity."""
+    """What do you remember about me? and the like: answered from her best facts, not by similarity. "Tell me what
+    you remember" counts only at the end of the sentence or followed by "about me", not "...about my sister's X"."""
     return ABOUT_ME_RE.search(query) is not None
 
 
@@ -371,22 +372,24 @@ class Memory:
     @_locked
     def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2) -> Retrieved:
         """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
-        it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets her
-        best facts by trust and recency instead of by similarity. Due threads pass the same gate as facts."""
+        it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets the
+        facts that pass the gate first, then is filled to 8 with her best facts by trust and recency. Due threads
+        pass the same gate as facts."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         mine = about_me(query)
-        facts, episodes = [], []
+        facts, rest, episodes = [], [], []
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
-            if mine:
-                facts.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
-            elif self.eligible(sim, qtokens, r["text"]):
+            if self.eligible(sim, qtokens, r["text"]):
                 facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            elif mine:
+                rest.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["summary"]):
                 episodes.append((self._score(sim, now - r["ended_at"], QUALITY["inferred"]), _episode(r)))
         facts.sort(key=lambda p: p[0], reverse=True)
+        facts += sorted(rest, key=lambda p: p[0], reverse=True)  # empty unless about-me
         episodes.sort(key=lambda p: p[0], reverse=True)
         latest = self.recent_episodes(2)
         picked = latest[:1] + [e for e in latest[1:] if now - e.ended_at <= RECENT_EPISODE_S] + [

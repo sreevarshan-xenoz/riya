@@ -262,3 +262,25 @@ def test_both_latest_episodes_survive_the_cap_of_three(mem, clock):
     last = mem.add_episode(now - DAY, now - DAY, "Chose a new mechanical keyboard")
     got = [e.id for e in mem.retrieve("calculus exam").episodes]
     assert len(got) == 3 and got[:2] == [last.id, prev.id] and got[2] in (a.id, b.id)
+
+
+# ---- v0.2 task 3: N1 ordering and the narrowed about-me question ----
+@pytest.mark.parametrize("q, mine", [
+    ("Tell me everything you remember.", True), ("tell me what you know about me?", True),
+    ("tell me what you remember", True), ("What do you remember about me?", True),
+    ("tell me what you remember about my sister's wedding", False),
+    ("tell me everything you know about rust lifetimes", False)])
+def test_tell_me_what_you_remember_is_about_me_only_at_the_end_or_about_me(q, mine):
+    from riya.core.memory import about_me
+    assert about_me(q) is mine
+
+
+def test_about_me_puts_similar_facts_first_then_fills_to_eight(mem, clock):
+    guitar = mem.add_fact("The user plays the guitar badly", source="inferred")
+    clock.advance(60 * DAY)  # old and only inferred: on trust and recency alone it wouldn't make the cut
+    for i in range(10):
+        mem.add_fact(f"The user fact number {i} is about topic{i}", source="user_said")
+        clock.advance(DAY)
+    got = mem.retrieve("what do you know about me and my guitar?").facts
+    assert len(got) == 8 and got[0].id == guitar.id
+    assert got[1].text == "The user fact number 9 is about topic9"  # then the best of the rest
