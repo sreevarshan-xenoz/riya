@@ -2,7 +2,8 @@
 from riya.core.memory import Fact, Retrieved, Thread
 
 NO_MEMORY_LINE = "You have no stored memory about this. If asked, say you don't remember instead of guessing."
-HONESTY_LINE = "Only mention memories listed here. Never invent memories or facts about them."
+HONESTY_LINE = ("Only mention memories listed here. Never invent memories or facts about them. "
+                "If what they ask about isn't listed, say you don't remember.")
 SPEAK_FIRST_TURN = "(no message yet: you speak first)"
 
 _SOURCES = {"user_said": "user said", "inferred": "you inferred", "looked_up": "looked up"}
