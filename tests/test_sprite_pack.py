@@ -1,15 +1,18 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
-from PIL import Image
+from PIL import Image, ImageChops
 
-from colab.sprites import gen_expressions, gen_outfits
+from colab.sprites import build_pack as build_pack_module, gen_expressions, gen_outfits
+from colab.sprites.build_pack import build_pack, normalise
 from colab.sprites.gen_expressions import (
     face_box, face_mask, job_list, parse_face_box, parse_only, run_jobs, stable_seed,
 )
@@ -328,3 +331,157 @@ def test_missing_candidate_regenerates_with_exactly_the_outfit_sheets_prompt_and
     gen_outfits.main(["--refs", str(tmp_path), "--out", str(sheet_out), "--seeds", "22"])
     assert [c["prompt"] for c in sheet_calls] == [calls[0]["prompt"]]
     assert calls[0]["negative_prompt"] == sheet_calls[0]["negative_prompt"] and FakeTorch.seeds[-1] == 22
+
+
+def fake_remove(img):
+    img = img.convert("RGB")
+    differs = ImageChops.difference(img, Image.new("RGB", img.size, (128, 128, 128))).convert("L")
+    img.putalpha(differs.point(lambda v: 255 if v else 0))  # grey pixels turn transparent
+    return img
+
+
+def frame(color):
+    im = Image.new("RGB", (832, 1216), (128, 128, 128))
+    im.paste(Image.new("RGB", (200, 900), color), (316, 316))
+    return im
+
+
+def test_normalise_keeps_anchor_same_for_all_frames():
+    a, b = normalise(fake_remove(frame((255, 0, 0)))), normalise(fake_remove(frame((0, 0, 255))))
+    assert a.size == b.size == (768, 1344)
+    assert a.getbbox() == b.getbbox()
+
+
+def test_build_pack_writes_valid_manifest_and_lists_missing(tmp_path):
+    raw, out = tmp_path / "raw", tmp_path / "pack"
+    raw.mkdir()
+    for name in ["neutral_closed", "neutral_open", "happy_closed"]:
+        frame((255, 0, 0)).save(raw / f"{name}.png")
+    missing = build_pack(raw, out, fake_remove)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["expressions"]["neutral"]["open"] == "neutral_open.png"
+    assert "neutral.blink" in missing and "happy.open" in missing and len(missing) == 14 * 3 - 3
+    assert Image.open(out / "neutral_closed.png").getpixel((0, 0))[3] == 0
+
+
+def test_build_pack_requires_neutral_closed(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    frame((255, 0, 0)).save(raw / "happy_closed.png")
+    with pytest.raises(ValueError):
+        build_pack(raw, tmp_path / "pack", fake_remove)
+
+
+def raw_frames(folder, names):
+    folder.mkdir(exist_ok=True)
+    for name in names:
+        frame((255, 0, 0)).save(folder / f"{name}.png")
+    return folder
+
+
+def schema_errors(manifest):
+    schema = json.loads((ROOT / "body" / "sprite-manifest.schema.json").read_text(encoding="utf-8"))
+    return list(Draft7Validator(schema).iter_errors(manifest))
+
+
+def test_manifest_is_exactly_the_schema_shape_with_no_nulls_missing_list_or_empty_expressions(tmp_path):
+    out = tmp_path / "pack"
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed", "happy_open"])  # happy has no closed: legal, the body falls back
+    build_pack(raw, out, fake_remove)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert schema_errors(manifest) == []
+    assert set(manifest) == {"name", "version", "canvas", "crops", "expressions"}
+    assert manifest["name"] == "riya-v1" and manifest["version"] == 1
+    assert manifest["canvas"] == {"width": 768, "height": 1344}
+    assert manifest["expressions"] == {"neutral": {"closed": "neutral_closed.png"}, "happy": {"open": "happy_open.png"}}
+    assert sorted(p.name for p in out.iterdir()) == ["happy_open.png", "manifest.json", "neutral_closed.png"]
+
+
+def test_upper_crop_is_the_face_box_through_the_normalise_transform_extended_down_and_clamped(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
+    build_pack(raw, tmp_path / "a", fake_remove)
+    crop = json.loads((tmp_path / "a" / "manifest.json").read_text())["crops"]["upper"]
+    assert crop == [236, 277, 296, 871]  # scale 768/832, bottom offset 222, +40% of 1344 below the box
+    build_pack(raw, tmp_path / "b", fake_remove, face_override=(0, 900, 832, 1200))  # the extension runs past the canvas
+    crop = json.loads((tmp_path / "b" / "manifest.json").read_text())["crops"]["upper"]
+    x, y, w, h = crop
+    assert (x, w, y + h) == (0, 768, 1344) and all(isinstance(v, int) for v in crop)
+    assert schema_errors(json.loads((tmp_path / "b" / "manifest.json").read_text())) == []
+
+
+def test_every_frame_has_the_canvas_size_and_the_same_bottom_centred_anchor(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed", "sad_blink"])
+    build_pack(raw, tmp_path / "pack", fake_remove)
+    boxes = []
+    for name in ("neutral_closed", "sad_blink"):
+        with Image.open(tmp_path / "pack" / f"{name}.png") as im:
+            assert im.size == (768, 1344) and im.mode == "RGBA"
+            boxes.append(im.getbbox())
+    # the 832x1216 frame scales to 768x1122 and sits at y=222..1344; the art (y 316..1216) ends on the canvas bottom
+    assert boxes[0] == boxes[1] and boxes[0][3] == 1344
+
+
+def test_rebuild_overwrites_and_removes_frames_no_longer_in_raw(tmp_path):
+    out = tmp_path / "pack"
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed", "sad_open"])
+    build_pack(raw, out, fake_remove)
+    (out / "notes.txt").write_text("keep me")
+    (out / "stale.tmp.png").write_bytes(b"half")
+    (raw / "sad_open.png").unlink()
+    build_pack(raw, out, fake_remove)
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert "sad" not in manifest["expressions"]
+    assert sorted(p.name for p in out.iterdir()) == ["manifest.json", "neutral_closed.png", "notes.txt"]
+
+
+def test_build_pack_ignores_non_frame_pngs_in_raw(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed", "base", "review_sheet", "bogus_closed", "happy_wink"])
+    build_pack(raw, tmp_path / "pack", fake_remove)
+    assert sorted(p.name for p in (tmp_path / "pack").iterdir()) == ["manifest.json", "neutral_closed.png"]
+
+
+def test_mismatched_frame_size_fails_clearly_before_writing_anything(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
+    Image.new("RGB", (400, 600), (128, 128, 128)).save(raw / "happy_closed.png")
+    with pytest.raises(ValueError, match=r"happy_closed\.png.*400x600"):
+        build_pack(raw, tmp_path / "pack", fake_remove)
+    assert not (tmp_path / "pack").exists()
+
+
+def test_build_pack_and_default_remover_import_without_rembg():
+    code = (
+        "import sys, colab.sprites.build_pack as b;"
+        "assert callable(b.default_remover) and 'rembg' not in sys.modules and 'torch' not in sys.modules"
+        " and 'diffusers' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=ROOT)
+
+
+def test_build_pack_script_help_and_cli_main(tmp_path, monkeypatch, capsys):
+    script = subprocess.run([sys.executable, "colab/sprites/build_pack.py", "--help"], check=True, cwd=ROOT,
+                            capture_output=True, text=True)
+    assert "--raw" in script.stdout and "--out" in script.stdout
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
+    monkeypatch.setattr(build_pack_module, "default_remover", lambda: fake_remove)
+    build_pack_module.main(["--raw", str(raw), "--out", str(tmp_path / "pack")])
+    printed = capsys.readouterr().out
+    assert "neutral.open" in printed and "happy.closed" in printed and (tmp_path / "pack" / "manifest.json").exists()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_the_body_accepts_the_built_pack(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed", "neutral_open", "neutral_blink", "happy_closed", "happy_open"])
+    build_pack(raw, tmp_path / "pack", fake_remove)
+    script = (
+        "const fs = require('fs'), path = require('path');"
+        "const { validateManifest } = require(path.resolve('body/src/sprite-logic.js'));"
+        "const dir = process.argv[1], expressions = JSON.parse(process.argv[2]);"
+        "const m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));"
+        "const warnings = validateManifest(m, expressions);"
+        "for (const e of Object.values(m.expressions)) for (const f of Object.values(e)) fs.accessSync(path.join(dir, f));"
+        "console.log(JSON.stringify(warnings));"
+    )
+    out = subprocess.run(["node", "-e", script, str(tmp_path / "pack"), json.dumps(protocol_expressions())], check=True,
+                         cwd=ROOT, capture_output=True, text=True)
+    warnings = json.loads(out.stdout)
+    assert "missing happy.blink" in warnings and "missing neutral.closed" not in warnings and len(warnings) == 14 * 3 - 5
