@@ -253,3 +253,19 @@ def test_a_delete_during_consolidation_is_never_undone(mem):
     deleted.set()
     adder[0].join(2); deleter.join(2)
     assert mem.list_facts() == []
+
+
+# ---- v0.2 task 3: negations are content ----
+def test_negations_are_content_tokens():
+    from riya.core.embed import STOPWORDS, content_tokens
+    assert not {"no", "not", "never", "nor"} & STOPWORDS
+    assert not any(w.endswith("n't") for w in STOPWORDS)
+    assert content_tokens("The user is not vegetarian") != content_tokens("The user is vegetarian")
+    assert content_tokens("The user doesn't eat meat") != content_tokens("The user does eat meat")
+    assert {"never", "nor", "no"} <= content_tokens("never sushi, nor ramen, no thanks")
+
+
+def test_a_negated_fact_is_not_a_duplicate(mem):
+    assert mem.add_fact("The user is vegetarian", source="user_said") is not None
+    assert mem.add_fact("The user is not vegetarian", source="user_said") is not None
+    assert [f.text for f in mem.list_facts()] == ["The user is vegetarian", "The user is not vegetarian"]

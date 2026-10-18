@@ -1,7 +1,11 @@
-from riya.core.memory import Fact, Retrieved, Thread
-from riya.core.persona import load_traits_file, persona_prompt
-from riya.core.prompt import (HONESTY_LINE, NO_MEMORY_LINE, SPEAK_FIRST_TURN, build_messages,
-                              greeting_situation)
+from pathlib import Path
+
+import pytest
+
+from riya.core.memory import Episode, Fact, Retrieved, Thread
+from riya.core.persona import STYLE_HEADER, load_traits_file, persona_prompt, style_examples
+from riya.core.prompt import (HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE, NO_MEMORY_LINE,
+                              SPEAK_FIRST_TURN, build_messages, greeting_situation, reply_rule)
 
 NOW = 1_800_000_000.0
 EXAM = Fact(1, "The user has an exam on Thursday", "user.exam", "user_said", 0.9, NOW, None, "active", None)
@@ -47,7 +51,6 @@ def test_speaking_first():
 
 
 def test_fact_and_episode_line_formats():
-    from riya.core.memory import Episode
     conflict = Fact(2, "Lives in Pune", None, "inferred", 0.5, NOW, None, "conflict", None)
     eps = [Episode(1, NOW - 90000, NOW - 86400, "Talked about exams", None, None),
            Episode(2, NOW - 3000, NOW - 60, "Fixed a bug", None, None),
@@ -82,3 +85,108 @@ def test_bid_situation_is_short_and_playful():
 def test_honesty_line_says_to_admit_what_is_not_listed():
     assert HONESTY_LINE.startswith("Only mention memories listed here.")
     assert "If what they ask about isn't listed, say you don't remember." in HONESTY_LINE
+
+
+# ---- v0.2 task 3: persona layers, delimited memory block, reply rules ----
+CORE_DIR = Path(__file__).resolve().parents[2] / "riya" / "core"
+EP = Episode(1, NOW - 90000, NOW - 86400, "Talked about exams", None, None)
+
+
+def _system(retrieved, **kw):
+    return build_messages(persona="P", feelings_tag="[F]", retrieved=retrieved, turns=[], user_text="hi",
+                          situation=kw.pop("situation", None), now=NOW, **kw)[0]["content"]
+
+
+def _block(system):
+    start = system.index(MEMORY_START)
+    return system[start:system.index(MEMORY_END, start) + len(MEMORY_END)]
+
+
+def test_local_persona_is_short_second_person_and_honest():
+    text = (CORE_DIR / "persona_local.md").read_text(encoding="utf-8")
+    assert len(text.split()) <= 180
+    p = persona_prompt("local").lower()
+    assert "you are riya" in p and "you're an ai" in p and "memory block" in p
+    assert "you are riya" in persona_prompt("online").lower() and p != persona_prompt("online").lower()
+    assert persona_prompt() == persona_prompt("online")
+
+
+def test_companion_layer_lost_its_example_quote():
+    assert "three hours on one bug" not in (CORE_DIR / "companion.md").read_text(encoding="utf-8")
+    assert "three hours on one bug" not in persona_prompt("online")
+
+
+def test_style_examples_are_labelled_made_up_and_six_to_eight_exchanges():
+    text = style_examples()
+    assert STYLE_HEADER == "Made-up examples of your style. They never happened. Never mention them."
+    assert text.startswith(STYLE_HEADER)
+    lines = text.splitlines()
+    users, riyas = [ln for ln in lines if ln.startswith("User: ")], [ln for ln in lines if ln.startswith("Riya: ")]
+    assert 6 <= len(users) <= 8 and len(riyas) == len(users)
+    assert all(len(ln.split()) >= 7 for ln in riyas)  # 6+ words after "Riya:", so the scorecard can spot a leak
+
+
+def test_memory_block_is_delimited():
+    system = _system(Retrieved([EXAM], [EP], [THREAD]))
+    assert MEMORY_START == "### What you know about them (the only true things you know):" and MEMORY_END == "### End"
+    block = _block(system)
+    assert "- The user has an exam on Thursday (user said)" in block and "Talked about exams" in block
+    assert "Follow up: Ask how the exam went" in block
+
+
+def test_empty_memory_block_is_still_delimited():
+    system = _system(Retrieved([], [], []))
+    assert NO_MEMORY_LINE in _block(system)
+
+
+def test_system_sections_are_in_order():
+    system = _system(Retrieved([EXAM], [], []), situation="S", examples="EXAMPLES", kind="small")
+    order = [system.index(s) for s in ["P", "EXAMPLES", "[F]", MEMORY_START, MEMORY_END, HONESTY_LINE,
+                                       "[Situation] S", "### Reply rules:"]]
+    assert order == sorted(order)
+
+
+def test_style_examples_never_sit_inside_the_memory_block():
+    ex = style_examples()
+    for retrieved in (Retrieved([], [], []), Retrieved([EXAM], [EP], [THREAD])):
+        for kind in (None, "small", "about_me"):
+            system = _system(retrieved, examples=ex, kind=kind)
+            assert ex in system and ex not in _block(system)
+            assert system.index(ex) < system.index(MEMORY_START)
+
+
+@pytest.mark.parametrize("kind, rule", [
+    ("small", "### Reply rules: Reply in at most 3 sentences."),
+    ("explain", "### Reply rules: Explain clearly in at most 8 sentences."),
+    ("about_me", "### Reply rules: List what's in the memory block, nothing else.")])
+def test_reply_rules_line_per_turn_kind(kind, rule):
+    assert reply_rule(kind) == rule
+    assert _system(Retrieved([], [], []), kind=kind).endswith(rule)
+
+
+def test_no_reply_rules_line_without_a_turn_kind():
+    assert "### Reply rules" not in _system(Retrieved([], [], [])) and reply_rule(None) is None
+
+
+def test_about_me_block_holds_only_facts():
+    system = _system(Retrieved([EXAM], [EP], [THREAD]), kind="about_me")
+    block = _block(system)
+    assert "exam on Thursday" in block and "Talked about exams" not in block and "Follow up" not in block
+    assert system.index("Talked about exams") > system.index(MEMORY_END)
+
+
+def test_about_me_with_no_facts_says_she_knows_little():
+    block = _block(_system(Retrieved([], [EP], []), kind="about_me"))
+    assert NO_ABOUT_ME_LINE in block and "Talked about exams" not in block
+
+
+def test_local_route_gets_local_persona_and_online_route_gets_the_full_one():
+    from tests.fakes import FakeModel, make_core
+    online = FakeModel("online", ["Recursion is a function calling itself."])
+    core, _, _, local = make_core(local_replies=["Hey you."], online=online)
+    list(core.reply("hi riya"))
+    list(core.reply("explain recursion to me"))
+    local_sys, online_sys = local.calls[-1][0]["content"], online.calls[-1][0]["content"]
+    assert local_sys.startswith(persona_prompt("local")) and online_sys.startswith(persona_prompt("online"))
+    assert style_examples() in local_sys and style_examples() in online_sys
+    assert local_sys.endswith(reply_rule("small")) and online_sys.endswith(reply_rule("explain"))

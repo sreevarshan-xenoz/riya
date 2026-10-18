@@ -7,12 +7,13 @@ from typing import Protocol
 
 import numpy as np
 
+NEGATIONS = frozenset({"no", "not", "never", "nor"})  # content: "is vegetarian" and "is not vegetarian" differ
 STOPWORDS = frozenset(
     "a an the and or but if so of to in on at by for with from as is are was were be been am do does did "
     "has have had it its this that these those i me my we our they them their he him his she her "
-    "will would can could should about into than then there here what which who not no "
+    "will would can could should about into than then there here what which who "
     "user s riya you".split()
-)
+) - NEGATIONS  # never any "n't" word either; tokenize() splits "isn't" into "isn" + "t", both content
 
 
 def tokenize(text: str) -> list[str]:

@@ -16,7 +16,7 @@ from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
 from riya.core.models import ChatModel
-from riya.core.persona import load_traits, persona_prompt
+from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import bid_situation, build_messages, greeting_situation
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
@@ -67,7 +67,9 @@ class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None):
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
-        self.persona = persona if persona is not None else persona_prompt()
+        # the small local model gets the short persona, the online one the full sheet; persona= overrides both
+        self.personas = {k: persona if persona is not None else persona_prompt(k) for k in ("local", "online")}
+        self.examples = style_examples()
         self.memory = Memory(db, embedder, clock)
         self.kv = KV(db, self.memory.lock)
         traits, saved = load_traits(), self.kv.get("feelings")
@@ -142,12 +144,14 @@ class RiyaCore:
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
-            messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=self._retrieve(query, threads), turns=self.turns,
-                                      user_text=user_text, situation=situation, now=self.clock.now())
             route_text = user_text or ""
-            budget, cap = self._shape(kind, route_text)
-            if self.router.route(route_text) == "online":
+            turn, budget, cap = self._shape(kind, route_text)
+            route = self.router.route(route_text)  # decided first, so the prompt carries the matching persona
+            messages = build_messages(persona=self.personas[route], examples=self.examples,
+                                      feelings_tag=self.feelings.prompt_tag(),
+                                      retrieved=self._retrieve(query, threads), turns=self.turns,
+                                      user_text=user_text, situation=situation, now=self.clock.now(), kind=turn)
+            if route == "online":
                 thinking = True
                 self.feelings.on_event("thinking")
                 self._sync_expression()
@@ -180,12 +184,13 @@ class RiyaCore:
                 log.exception("couldn't record the %s", kind)
 
     @staticmethod
-    def _shape(kind: str, text: str) -> tuple[int, int]:
-        """(token budget, sentence cap) for an utterance: a greeting has its own, a reply depends on the turn."""
+    def _shape(kind: str, text: str) -> tuple[str | None, int, int]:
+        """(turn kind, token budget, sentence cap) for an utterance: a greeting has its own budget and cap and no turn
+        kind (so no reply-rules line); a reply's depend on the turn."""
         if kind == "greet":
-            return BUDGETS["greeting"], CAPS["greeting"]
+            return None, BUDGETS["greeting"], CAPS["greeting"]
         k = turn_kind(text, about_me=about_me(text), needs_thinking=needs_thinking(text))
-        return BUDGETS[k], CAPS[k]
+        return k, BUDGETS[k], CAPS[k]
 
     @staticmethod
     def _boundary(buf: str) -> int | None:
@@ -245,7 +250,8 @@ class RiyaCore:
 
     def _bid(self, action: Action) -> None:
         try:
-            messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
+            messages = build_messages(persona=self.personas["local"], examples=self.examples,
+                                      feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(action.reason, action.thread),
                                       now=self.clock.now())
