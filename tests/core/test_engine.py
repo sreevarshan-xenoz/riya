@@ -658,9 +658,9 @@ def test_the_remember_acks_rotate_in_order():
     assert firsts == ACKS + [ACKS[0]]
 
 
-def test_the_ack_counts_as_one_of_the_three_sentences_and_a_normal_turn_has_none():
+def test_after_the_ack_the_model_adds_at_most_one_sentence_and_a_normal_turn_has_no_ack():
     core, *_ = make_core(local_replies=["One. Two. Three. Four."])
-    assert list(core.reply("remember that I like tea")) == [ACKS[0], "One.", "Two."]
+    assert list(core.reply("remember that I like tea")) == [ACKS[0], "One."]
     assert list(core.reply("what's up")) == ["One.", "Two.", "Three."]
 
 
@@ -758,3 +758,16 @@ def test_the_ai_clause_is_only_on_identity_turns_and_greetings_get_the_memory_cl
     assert local.calls[-1][0]["content"].endswith(reply_rule("small", identity=True))
     list(core.speak_first(Action("greet", True, None, "back")))
     assert local.calls[-1][0]["content"].endswith(reply_rule("greeting"))
+
+
+def test_a_saved_remember_turn_is_small_talk_on_the_local_model_even_if_it_sounds_technical():
+    from tests.fakes import FakeModel
+    from riya.core.prompt import reply_rule
+    online = FakeModel("online", ["Debugging is when you find bugs. Step one. Step two."])
+    core, _, _, local = make_core(local_replies=["Ooh, parser day. Two. Three."], online=online)
+    seen = spy(local)
+    said = list(core.reply("remember that I need to debug the parser tomorrow"))
+    assert said == [ACKS[0], "Ooh, parser day."] and online.calls == []
+    assert seen["max_tokens"] == [110] and local.calls[-1][0]["content"].endswith(reply_rule("small"))
+    list(core.reply("explain how to debug a parser"))
+    assert len(online.calls) == 1  # a normal technical turn still goes online
