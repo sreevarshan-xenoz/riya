@@ -59,7 +59,8 @@ def test_make_sheet_draws_a_labelled_grid(tmp_path):
 
 def test_save_image_atomic_writes_png_without_leftovers(tmp_path):
     out = save_image_atomic(Image.new("RGB", (8, 8), "red"), tmp_path / "a.png")
-    assert out == tmp_path / "a.png" and Image.open(out).size == (8, 8)
+    with Image.open(out) as im:
+        assert out == tmp_path / "a.png" and im.size == (8, 8)
     assert [p.name for p in tmp_path.iterdir()] == ["a.png"]
 
 
@@ -567,7 +568,8 @@ def test_build_pack_writes_valid_manifest_and_lists_missing(tmp_path):
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["expressions"]["neutral"]["open"] == "neutral_open.png"
     assert "neutral.blink" in missing and "happy.open" in missing and len(missing) == 14 * 3 - 3
-    assert Image.open(out / "neutral_closed.png").getpixel((0, 0))[3] == 0
+    with Image.open(out / "neutral_closed.png") as im:
+        assert im.getpixel((0, 0))[3] == 0
 
 
 def test_build_pack_requires_neutral_closed(tmp_path):
