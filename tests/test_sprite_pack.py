@@ -397,16 +397,40 @@ def test_manifest_is_exactly_the_schema_shape_with_no_nulls_missing_list_or_empt
     assert sorted(p.name for p in out.iterdir()) == ["happy_open.png", "manifest.json", "neutral_closed.png"]
 
 
-def test_upper_crop_is_the_face_box_through_the_normalise_transform_extended_down_and_clamped(tmp_path):
+def crop_box_height(box_width, crop):
+    """The body's cropBox(boxWidth, canvas, crop).height (body/src/stage-logic.js): h * boxWidth / w."""
+    return crop[3] * box_width / crop[2]
+
+
+def test_upper_crop_is_head_and_shoulders_through_the_normalise_transform_and_clamped(tmp_path):
     raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
     build_pack(raw, tmp_path / "a", fake_remove)
     crop = json.loads((tmp_path / "a" / "manifest.json").read_text())["crops"]["upper"]
-    assert crop == [236, 277, 296, 871]  # scale 768/832, bottom offset 222, +40% of 1344 below the box
-    build_pack(raw, tmp_path / "b", fake_remove, face_override=(0, 900, 832, 1200))  # the extension runs past the canvas
+    # raw box 96..736 x 6..672 (2x the face width, 0.15h above, 0.7h below) at scale 768/832, bottom offset 222
+    assert crop == [88, 227, 592, 616]
+    assert 0.8 <= crop[2] / crop[3] <= 1.4 and crop_box_height(320, crop) <= 400
+    build_pack(raw, tmp_path / "b", fake_remove, face_override=(0, 900, 832, 1200))  # runs past the canvas
     crop = json.loads((tmp_path / "b" / "manifest.json").read_text())["crops"]["upper"]
     x, y, w, h = crop
     assert (x, w, y + h) == (0, 768, 1344) and all(isinstance(v, int) for v in crop)
     assert schema_errors(json.loads((tmp_path / "b" / "manifest.json").read_text())) == []
+
+
+@pytest.mark.parametrize("box", [(256, 60, 576, 420), (300, 120, 540, 400), (200, 40, 640, 500)])
+def test_upper_crop_fits_the_panel_for_plausible_face_boxes(box):
+    crop = build_pack_module.upper_crop((832, 1216), box)
+    assert 0.8 <= crop[2] / crop[3] <= 1.4 and crop_box_height(320, crop) <= 400
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_the_bodys_crop_box_for_the_default_crop_is_at_most_400_tall():
+    crop = build_pack_module.upper_crop((832, 1216), BOX)
+    script = (
+        "const { cropBox } = require(require('path').resolve('body/src/stage-logic.js'));"
+        "console.log(cropBox(320, { width: 768, height: 1344 }, JSON.parse(process.argv[1])).height);"
+    )
+    out = subprocess.run(["node", "-e", script, json.dumps(crop)], check=True, cwd=ROOT, capture_output=True, text=True)
+    assert float(out.stdout) == pytest.approx(crop_box_height(320, crop)) and float(out.stdout) <= 400
 
 
 def test_every_frame_has_the_canvas_size_and_the_same_bottom_centred_anchor(tmp_path):

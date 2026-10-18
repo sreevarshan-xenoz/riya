@@ -25,7 +25,7 @@ from colab.sprites.gen_expressions import Box, face_box, parse_face_box
 
 CANVAS = (768, 1344)
 RAW_SIZE = (832, 1216)  # what gen_expressions generates; the face box is in these coordinates
-CROP_EXTENSION = 0.4  # the upper crop runs this fraction of the canvas height below the face box
+CROP_WIDTH, CROP_ABOVE, CROP_BELOW = 2.0, 0.15, 0.7  # head and shoulders, in face-box widths / heights
 SCHEMA = Path(__file__).resolve().parents[2] / "body" / "sprite-manifest.schema.json"
 
 
@@ -45,12 +45,16 @@ def normalise(img: Image.Image, canvas: tuple[int, int] = CANVAS) -> Image.Image
 
 
 def upper_crop(raw_size: tuple[int, int], box: Box, canvas: tuple[int, int] = CANVAS) -> list[int]:
-    """[x, y, w, h] in canvas pixels: the face box through the normalise transform, extended down, clamped to the canvas."""
+    """[x, y, w, h] in canvas pixels framing head and shoulders: centred on the face box at CROP_WIDTH x its width,
+    from CROP_ABOVE x its height above it to CROP_BELOW x its height below it, mapped through the normalise transform
+    and clamped to the canvas."""
     scale, _, (ox, oy) = _fit(raw_size, canvas)
     x0, y0, x1, y1 = box
-    left, top = max(0, math.floor(x0 * scale + ox)), max(0, math.floor(y0 * scale + oy))
-    right = min(canvas[0], math.ceil(x1 * scale + ox))
-    bottom = min(canvas[1], math.ceil(y1 * scale + oy + CROP_EXTENSION * canvas[1]))
+    fw, fh, cx = x1 - x0, y1 - y0, (x0 + x1) / 2
+    rx0, rx1 = cx - CROP_WIDTH * fw / 2, cx + CROP_WIDTH * fw / 2
+    ry0, ry1 = y0 - CROP_ABOVE * fh, y1 + CROP_BELOW * fh
+    left, top = max(0, math.floor(rx0 * scale + ox)), max(0, math.floor(ry0 * scale + oy))
+    right, bottom = min(canvas[0], math.ceil(rx1 * scale + ox)), min(canvas[1], math.ceil(ry1 * scale + oy))
     return [left, top, max(1, right - left), max(1, bottom - top)]
 
 
