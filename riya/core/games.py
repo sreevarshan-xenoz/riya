@@ -32,7 +32,8 @@ _ACCEPT = re.compile(r"(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|absolutely|d
                      r"|let's do it|lets do it|let's play|why not|sounds good|i'm in|go on)\b")
 _DECLINE = frozenset("no nah nope not later but don't dont maybe".split())
 _ACCEPT_MAX_WORDS = 5
-_AGENTS = re.compile(r"\b(?:agents?|claude|colab|run|training|build|tests?)\b")
+_AGENTS = re.compile(r"\b(?:agents?|claude|colab|training\s+run|my\s+(?:run|build|tests?|training))\b",
+                     re.I)  # a bare run, build or test stays a game word
 
 
 def _lower(text: str) -> str:
@@ -402,7 +403,8 @@ def guard(s: GameState, sentence: str) -> str:
 
 
 def about_agents(text: str) -> bool:
-    """The message mentions their agents or runs (agent, claude, colab, run, training, build, test): chat mid-game."""
+    """The message mentions their agents (agent, claude, colab, "training run", "my run/build/test(s)/training"): chat
+    mid-game. A bare run, build or test is a game word ("can it run?")."""
     return bool(_AGENTS.search(_lower(text)))
 
 
