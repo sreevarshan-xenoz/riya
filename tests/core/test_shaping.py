@@ -76,14 +76,35 @@ def test_limit_emoji_keeps_the_first_and_tidies_spaces():
 
 
 @pytest.mark.parametrize("text", ["வணக்கம், எப்படி இருக்கீங்க?", "Café naïve résumé — señor", "plain  text, 1 < 2 ~ ok",
-                                  "a  b ```x```"])
+                                  "a  b"])
 def test_tamil_and_accents_pass_through_unchanged(text):
     assert limit_emoji(text) == text
     assert tts_text(text) == " ".join(text.split())
 
 
 def test_tts_text_strips_emoji_and_stage_directions():
-    assert tts_text("Hmph \U0001F624 *giggles* you're late (not really)!") == "Hmph you're late!"
+    assert tts_text("Hmph \U0001F624 *giggles* you're late. (laughs) Fine!") == "Hmph you're late. Fine!"
     assert tts_text("*sighs*") == ""
     assert tts_text("\U0001F600\U0001F44D") == ""
     assert tts_text("a\n\n  b\tc") == "a b c"
+
+
+def test_tts_text_strips_only_narrow_stage_directions():
+    kept = "3 * 4 and 5 * 6 = f(x) (the cell's powerhouse)"
+    out = tts_text("Compute 3 * 4 and 5 * 6 = f(x) (the cell's powerhouse) *really*.")
+    assert out == "Compute " + kept + "."
+    assert tts_text("(laughs) Fine. *giggles* Okay (sighs).") == "Fine. Okay."
+    assert tts_text("It costs (about 5 dollars) and *a very long aside that goes on for far too many words* ok") == (
+        "It costs (about 5 dollars) and *a very long aside that goes on for far too many words* ok")
+    assert tts_text("Hmph. (one two three four five) fine") == "Hmph. (one two three four five) fine"
+    assert tts_text("2**3 is **bold** maths") == "2**3 is bold maths"
+
+
+def test_tts_text_replaces_a_fenced_block_and_leaves_it_alone():
+    assert tts_text("Try this. ```py\nx = (1 * 2) # (laughs)\n``` Done.") == "Try this. here's the code Done."
+    assert tts_text("Here: ```py\nx = 1") == "Here: here's the code"
+
+
+def test_limit_emoji_never_touches_a_fenced_block():
+    code = "```py\nprint('\U0001F600')   \U0001F44D\n```"
+    assert limit_emoji(f"Hi \U0001F600 {code} bye \U0001F44D", 1) == f"Hi \U0001F600 {code} bye"

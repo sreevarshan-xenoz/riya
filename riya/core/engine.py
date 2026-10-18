@@ -24,7 +24,7 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, Er
                                 SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
-from riya.core.shaping import BUDGETS, CAPS, cap_sentences, count_emoji, limit_emoji, turn_kind
+from riya.core.shaping import BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, limit_emoji, turn_kind
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -188,6 +188,12 @@ class RiyaCore:
         return BUDGETS[k], CAPS[k]
 
     @staticmethod
+    def _boundary(buf: str) -> int | None:
+        """Where the first sentence in buf ends; a sentence end inside an open code fence doesn't count, so a fenced
+        block (and its indentation) goes out whole, byte for byte."""
+        return next((m.end() for m in SENTENCE_END.finditer(buf) if buf.count("```", 0, m.end()) % 2 == 0), None)
+
+    @staticmethod
     def _sentences(stream: Iterator[str], parts: list[str], done: dict) -> Iterator[str]:
         """The model's pieces as whole sentences, each with only the reply's first emoji (an emoji-only sentence
         vanishes). Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
@@ -196,16 +202,16 @@ class RiyaCore:
         def tidy(sentence: str) -> str:
             nonlocal used
             sentence = sentence.strip()
-            kept = limit_emoji(sentence, max(0, 1 - used))
-            used += count_emoji(kept)
+            kept = limit_emoji(sentence, max(0, 1 - used))  # never touches fenced code
+            used += count_emoji(CODE_BLOCK.sub("", kept))
             return kept if kept == sentence or any(c.isalnum() for c in kept) else ""  # an emoji's leftovers vanish
 
         try:
             for piece in stream:
                 parts.append(piece)
                 buf += piece
-                while m := SENTENCE_END.search(buf):
-                    sentence, buf = tidy(buf[:m.end()]), buf[m.end():]
+                while (end := RiyaCore._boundary(buf)) is not None:
+                    sentence, buf = tidy(buf[:end]), buf[end:]
                     if sentence:
                         yield sentence
             if sentence := tidy(buf):

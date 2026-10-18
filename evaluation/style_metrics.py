@@ -5,7 +5,7 @@ import re
 import statistics
 
 from riya.core.appraise import SENTENCE_END
-from riya.core.shaping import EMOJI, count_emoji  # noqa: F401  (the emoji policy and its regex live in core)
+from riya.core.shaping import CODE_BLOCK, EMOJI, count_emoji  # noqa: F401  (the emoji policy and its regex live in core)
 
 GENERIC_PHRASES: tuple[str, ...] = (
     "you've got this", "no pressure", "let me know", "i'm here to", "i'm here for you", "feel free",
@@ -26,7 +26,6 @@ VALUE_AFTER_IT = re.compile(r"\b[Ii]t(?:'s| was| is)\s+(?:(?:probably|maybe|like
 REMEMBER_ACK = re.compile(r"\b(?:remember(?:ed)?|got it|noted|won't forget|will not forget|never forget|saved|stored"
                           r"|keep that|write that|writing that)\b", re.I)
 
-CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
 ATTRIBUTION = re.compile(r"\byou (?:said|told me|mentioned|asked)\b|\bi remember (?:that )?you\b"
                          r"|\byou(?:'re| are) (?:the type|someone who)\b", re.I)
 STOP = set("""a an and or but so to of in on at for with from by as is are was were be been being am do does did done

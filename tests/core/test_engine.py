@@ -567,3 +567,39 @@ def test_bid_keeps_its_40_token_budget_and_one_emoji():
     core._bid(Action("bid", False, None, "test"))
     assert seen["max_tokens"] == [40]
     assert [m.text for m in emitted if isinstance(m, Say)] == ["Water \U0001F4A7 break?"]
+
+
+BLOCK = "```py\n# do it.\n    x = f(1)\n```"
+
+
+def test_a_fenced_block_keeps_its_indentation_byte_for_byte():
+    reply = f"Try this. {BLOCK} Done."
+    core, emitted, *_ = make_core(local_replies=[reply])
+    said = list(core.reply("hey riya"))
+    assert said == ["Try this.", f"{BLOCK} Done."]
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert core.memory.unconsolidated()[-1]["text"] == reply
+
+
+def test_a_fenced_block_survives_a_cap_and_counts_as_one_sentence():
+    core, *_ = make_core(local_replies=[f"One. {BLOCK} Two. Three. Four. Five."])
+    said = list(core.reply("hey riya"))
+    assert said == ["One.", f"{BLOCK} Two.", "Three."]
+    recorded = core.memory.unconsolidated()[-1]["text"]
+    assert recorded == " ".join(said) and BLOCK in recorded
+
+
+def test_the_engine_lock_is_free_after_a_cap_close_and_after_a_barge_in():
+    core, *_ = make_core(local_replies=[RAMBLE])
+
+    def free() -> bool:
+        got = core._lock.acquire(blocking=False)
+        if got:
+            core._lock.release()
+        return got
+    list(core.reply("hey riya"))                      # capped
+    assert free()
+    it = core.reply("hey riya again")
+    next(it)
+    it.close()                                        # barge-in
+    assert free()
