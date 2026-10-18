@@ -66,8 +66,9 @@ _PERSON = {"my": "their", "mine": "theirs", "i": "they", "me": "them", "i'm": "t
            "i'll": "they'll", "i'd": "they'd", "myself": "themselves"}
 # a standalone word: not touching a letter, digit, _ . / @ - or apostrophe ("I/O", "i.e.", "me@x.com", "my-app.me");
 # a full stop right after is fine when it ends the sentence ("it's mine.")
-_FIRST_PERSON = re.compile(r"(?<![\w'\u2019./@-])(?:i['\u2019](?:m|ve|ll|d)|myself|mine|my|me|i)"
-                           r"(?![\w'\u2019/@-]|\.\S)", re.I)
+_FIRST_PERSON = re.compile(r"(?<![\w'\u2019./@-])(?:i['\u2019](?:m|ve|ll|d)|myself|mine|my|me"
+                           r"|i(?:\s+(?:am|was|have)\b)?)(?![\w'\u2019/@-]|\.\S)", re.I)
+_VERB = {"am": "are", "was": "were", "have": "have"}  # "I am" -> "they are"
 _QUOTED = re.compile("(\"[^\"]*\"|\u201c[^\u201d]*\u201d|(?<!\\w)'[^']*'(?!\\w)|(?<!\\w)\u2018[^\u2019]*\u2019(?!\\w)"
                      "|`[^`]*`)")  # their quoted words stay theirs: my friend said "I love you"
 _NUMERAL_AFTER = re.compile(r"\b(?:war|chapter|part|type|phase|level|act|season|episode|henry|louis|elizabeth|george"
@@ -78,19 +79,20 @@ _CODE = re.compile(r"`|\w\(|[{};=]")  # "for i in range(3)": a lowercase i there
 
 def third_person(text: str) -> str:
     """The user's words about themselves, rewritten for her memory: "my favourite colour" -> "their favourite colour".
-    "My" stays capitalised; "I" becomes a plain "they", as the text follows the "The user said:" prefix. Quoted
-    words, roman numerals, a mine you dig, addresses, file names and code variables are left alone."""
+    "My" stays capitalised; "I" becomes a plain "they", as the text follows the "The user said:" prefix, and "I am",
+    "I was", "I have" become "they are", "they were", "they have". Quoted words, roman numerals, a mine you dig, addresses, file names and code variables are left alone."""
     code = bool(_CODE.search(text))
 
     def rewrite(seg: str) -> str:
         def swap(m: re.Match) -> str:
-            raw, before = m.group(), seg[:m.start()]
+            (raw, *verb), before = m.group().split(), seg[:m.start()]
             word = raw.replace("\u2019", "'").lower()
             if (raw == "I" and _NUMERAL_AFTER.search(before) or word == "mine" and _PLACE_MINE.search(before)
                     or raw == "i" and code):
-                return raw
+                return m.group()
             out = _PERSON[word]
-            return out.capitalize() if raw[0].isupper() and not word.startswith("i") else out
+            out = out.capitalize() if raw[0].isupper() and not word.startswith("i") else out
+            return " ".join([out, *(_VERB[v.lower()] for v in verb)])
         return _FIRST_PERSON.sub(swap, seg)
     return "".join(part if i % 2 else rewrite(part) for i, part in enumerate(_QUOTED.split(text)))
 
