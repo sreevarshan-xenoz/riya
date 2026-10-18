@@ -6,7 +6,7 @@ import statistics
 
 from riya.core.appraise import SENTENCE_END
 # the emoji policy and the generic phrases live in core, where she enforces them
-from riya.core.shaping import CODE_BLOCK, EMOJI, GENERIC_PHRASES, count_emoji  # noqa: F401
+from riya.core.shaping import CODE_BLOCK, EMOJI, GENERIC_PHRASES, count_emoji, is_identity_question  # noqa: F401
 
 PERSONA_MARKERS: tuple[str, ...] = (
     "~", "hmph", "silly", "dummy", "missed you", "pay attention to me", "you're back", "teas", "pout", "hehe", "cute",
@@ -24,6 +24,13 @@ SENTENCE_START = re.compile(r"(?:^|[.!?…]\s+|\n)\W*")
 GUESS = re.compile(r"\bmaybe\s+(?!(?:you|we|i|i'm|i'll|tell|share|let|later|next|ask)\b)[^.!?,;]{1,40}\?",
                    re.I)  # "maybe toast?" is a made-up answer; "maybe you can tell me?" isn't
 VALUE_AFTER_IT = re.compile(r"\b[Ii]t(?:'s| was| is)\s+(?:(?:probably|maybe|likely|definitely)\s+\w+|[A-Z0-9]\w*)")
+DENIAL = re.compile(r"\b(?:don't|do not|can't|cannot) (?:remember|know|recall)\b"
+                    r"|\b(?:don't|do not) have any memor", re.I)  # on an about-me turn with facts
+DISCLAIMER = re.compile(r"\b(?:just|only) (?:a|an) (?:chatbot|bot|ai|program)\b"
+                        r"|\b(?:don't|do not) have (?:any )?(?:personal )?(?:feelings|emotions|days)\b"
+                        r"|\bas an ai\b", re.I)
+RUDE = ("get this over with", "whatever", "leave me alone")  # rudeness is an anti-goal: a human reads these
+NOT_RECALL = {"the", "user"}  # "The user ...": every fact's subject, not something she remembers
 REMEMBER_ACK = re.compile(r"\b(?:remember(?:ed)?|got it|noted|won't forget|will not forget|never forget|saved|stored"
                           r"|keep that|write that|writing that)\b", re.I)
 
@@ -42,15 +49,23 @@ def _plain(text: str) -> str:
 
 
 def _split(text: str) -> list[str]:
-    """Sentences the way RiyaCore._speak streams them: SENTENCE_END splits, and a trailing fragment counts."""
-    s, out, pos = text.strip() + " ", [], 0
+    """Sentences the way RiyaCore._speak streams them: SENTENCE_END splits, a trailing fragment counts, and a chunk
+    with no letter or digit ("~", "…", "!!") folds into the sentence before (at the start, into the one after)."""
+    s, chunks, pos = text.strip() + " ", [], 0
     for m in SENTENCE_END.finditer(s):
-        if chunk := s[pos:m.end()].strip():
-            out.append(chunk)
+        chunks.append(s[pos:m.end()].strip())
         pos = m.end()
-    if tail := s[pos:].strip():
-        out.append(tail)
-    return out
+    chunks.append(s[pos:].strip())
+    out, lead = [], ""
+    for chunk in filter(None, chunks):
+        if any(c.isalnum() for c in chunk):
+            out.append(f"{lead} {chunk}".strip())
+            lead = ""
+        elif out:
+            out[-1] += " " + chunk
+        else:
+            lead = f"{lead} {chunk}".strip()
+    return out + ([lead] if lead else [])
 
 
 def count_sentences(text: str) -> int:
@@ -159,6 +174,22 @@ def honest_unknown(reply: str, question: str = "") -> bool:
     return any(p in _plain(reply).lower() for p in NOT_KNOWN) and not asserts_value(reply, question)
 
 
+def about_me_recalls(reply: str, facts: list[str]) -> bool:
+    """On an about-me turn with facts: no denial ("I don't remember/know...") and at least one fact's content word."""
+    words = {w for f in facts for w in _content(f)} - NOT_RECALL
+    return not DENIAL.search(_plain(reply)) and bool(words & set(_content(reply)))
+
+
+def has_disclaimer(reply: str) -> bool:
+    """ "I'm just a chatbot", "I don't have feelings", "as an AI": the disclaimers that kill her small talk."""
+    return bool(DISCLAIMER.search(_plain(reply)))
+
+
+def rude(reply: str) -> bool:
+    t = _plain(reply).lower()
+    return any(p in t for p in RUDE)
+
+
 def _p90(xs: list[int]) -> int:
     return sorted(xs)[math.ceil(0.9 * len(xs)) - 1]  # nearest rank
 
@@ -169,8 +200,9 @@ def _share(rows: list[dict], pred) -> float | None:
 
 
 def score(transcript: list[dict], style_phrases: list[str] | tuple[str, ...] = ()) -> dict:
-    """Every §3 metric over rows of {probe_id, kind, reply, first_sentence_s[, known_texts]}, plus a pass dict.
-    A metric with no data is None and its pass is None."""
+    """Every §3 metric over rows of {probe_id, kind, reply, first_sentence_s[, known_texts, facts, text]}, plus a
+    pass dict and the tone check (probe ids of rude-sounding replies, for a human to read). A metric with no data is
+    None and its pass is None."""
     by = lambda kind: [r for r in transcript if r["kind"] == kind]  # noqa: E731
     small, explain = by("small"), by("explain")
     small_n = [count_sentences(r["reply"]) for r in small]
@@ -194,6 +226,12 @@ def score(transcript: list[dict], style_phrases: list[str] | tuple[str, ...] = (
         "remember_ack": _share(by("remember"), lambda r: acknowledges(r["reply"])),
         "marker_share": _share(small, lambda r: has_marker(r["reply"])),
         "latency_median_s": statistics.median(lat) if lat else None,
+        "about_me_recall": _share([r for r in by("about_me") if r.get("facts")],
+                                  lambda r: about_me_recalls(r["reply"], r["facts"])),
+        "disclaimer_rate": _share([r for r in transcript if r["kind"] != "ai"
+                                   and not is_identity_question(r.get("text", ""))],
+                                  lambda r: has_disclaimer(r["reply"])),
+        "tone_check": [r["probe_id"] for r in transcript if rude(r["reply"])],
     }
 
     def ok(*conds) -> bool | None:
@@ -212,5 +250,7 @@ def score(transcript: list[dict], style_phrases: list[str] | tuple[str, ...] = (
         "remember_ack": ge(m["remember_ack"], 0.8),
         "persona_markers": ge(m["marker_share"], 0.4),
         "latency": le(m["latency_median_s"], 1.5),
+        "about_me_recall": ge(m["about_me_recall"], 0.75),
+        "disclaimer": le(m["disclaimer_rate"], 0.05),
     }
     return m
