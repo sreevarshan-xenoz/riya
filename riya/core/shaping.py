@@ -132,7 +132,8 @@ def limit_emoji(text: str, max_n: int = 1) -> str:
 
 
 def tts_text(text: str) -> str:
-    """What the voice should say: a fenced block becomes "here's the code"; no emoji; only short stage directions go.
+    """What the voice should say: a fenced block becomes "here's the code"; no emoji, no "~"; only short stage
+    directions go.
     *giggles*: not right after a word character, at most 6 words. (laughs softly): 1-3 words, one of them a STAGE_WORDS
     word, so asides like "(the powerhouse)" and "f(x)" are read as written. Whitespace is collapsed."""
     removed = 0
@@ -155,5 +156,6 @@ def tts_text(text: str) -> str:
     out, n = CODE_BLOCK.subn(f" {CODE_SAID} ", text)
     out = _PARENS.sub(parens, _STARS.sub(stars, _BOLD.sub(r"\g<1>", out)))
     out, k = EMOJI.subn("", out)
+    out, t = re.subn("~", " ", out)  # her "~" is for the eyes only
     out = " ".join(out.split())
-    return _SPACE_BEFORE_PUNCT.sub(r"\g<1>", out) if n + k + removed else out
+    return _SPACE_BEFORE_PUNCT.sub(r"\g<1>", out) if n + k + t + removed else out

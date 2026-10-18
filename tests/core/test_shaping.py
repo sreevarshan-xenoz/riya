@@ -76,7 +76,7 @@ def test_limit_emoji_keeps_the_first_and_tidies_spaces():
     assert count_emoji(limit_emoji("\U0001F600\U0001F600\U0001F600")) == 1
 
 
-@pytest.mark.parametrize("text", ["வணக்கம், எப்படி இருக்கீங்க?", "Café naïve résumé — señor", "plain  text, 1 < 2 ~ ok",
+@pytest.mark.parametrize("text", ["வணக்கம், எப்படி இருக்கீங்க?", "Café naïve résumé — señor", "plain  text, 1 < 2 = ok",
                                   "a  b"])
 def test_tamil_and_accents_pass_through_unchanged(text):
     assert limit_emoji(text) == text
@@ -88,6 +88,12 @@ def test_tts_text_strips_emoji_and_stage_directions():
     assert tts_text("*sighs*") == ""
     assert tts_text("\U0001F600\U0001F44D") == ""
     assert tts_text("a\n\n  b\tc") == "a b c"
+
+
+def test_tts_text_strips_every_tilde():
+    assert tts_text("Sleep well! ~") == "Sleep well!"
+    assert tts_text("Finally~ You left me~~ alone ~!") == "Finally You left me alone!"
+    assert tts_text("~") == ""
 
 
 def test_tts_text_strips_only_narrow_stage_directions():
