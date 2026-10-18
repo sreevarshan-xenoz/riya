@@ -89,7 +89,7 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "eyes"]
+        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "agents", "eyes"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
@@ -340,14 +340,22 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
         made["hooks"] = HookServer()
         return made["hooks"], thread
 
+    def start_logwatch(core):                                  # never the real watcher: it would read G:
+        made["logwatch"] = (threading.Event(), threading.Thread(target=lambda: None))
+        assert core is made["core"]
+        made["logwatch"][1].start()
+        return made["logwatch"]
+
     monkeypatch.setattr(runner, "build_core", build_core)
     monkeypatch.setattr(runner, "start_hook_receiver", start_hook_receiver)
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["server"].should_exit and made["body_present"]() is False
-    inbox = made["core"].agent_inbox                           # the runner owns the queue; the receiver feeds it
+    inbox = made["core"].agent_inbox                           # the core's inbox; the receiver feeds it
     made["enqueue"]({"hook_event_name": "Stop"})
     assert inbox.get_nowait() == {"hook_event_name": "Stop"} and made["hooks"].should_exit
+    assert made["logwatch"][0].is_set()                        # the log watcher is stopped on shutdown
 
 
 def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
@@ -373,6 +381,12 @@ def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
 
     monkeypatch.setattr(runner, "build_core", build_core)
     monkeypatch.setattr(runner, "start_hook_receiver", lambda enqueue: None)
+    def start_logwatch(core):
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return threading.Event(), thread
+
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["core"].agent_inbox is not None

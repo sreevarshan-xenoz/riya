@@ -305,6 +305,85 @@
   },
   "core_to_body": {
     "$defs": {
+      "AgentInfo": {
+        "description": "One of the user's agents (a Claude Code session or a Colab run); detail is a sanitized summary, <= 80 chars.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "needs_attention": {
+            "title": "Needs Attention",
+            "type": "boolean"
+          },
+          "since": {
+            "title": "Since",
+            "type": "number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "status",
+          "since",
+          "detail",
+          "needs_attention"
+        ],
+        "title": "AgentInfo",
+        "type": "object"
+      },
+      "AgentsMsg": {
+        "description": "The agents list (attention first, at most 20), sent on change and on hello. hooks_seen_at: when a Claude Code\nhook last reached her (None: never), for the settings page's install status.",
+        "properties": {
+          "hooks_seen_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hooks Seen At"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/AgentInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "type": {
+            "const": "agents",
+            "default": "agents",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AgentsMsg",
+        "type": "object"
+      },
       "EpisodeInfo": {
         "properties": {
           "ended_at": {
@@ -599,7 +678,8 @@
             "enum": [
               "reply",
               "greet",
-              "bid"
+              "bid",
+              "report"
             ],
             "title": "Kind",
             "type": "string"
@@ -729,6 +809,7 @@
     },
     "discriminator": {
       "mapping": {
+        "agents": "#/$defs/AgentsMsg",
         "error": "#/$defs/ErrorMsg",
         "expression": "#/$defs/ExpressionMsg",
         "eyes": "#/$defs/EyesMsg",
@@ -776,6 +857,9 @@
       },
       {
         "$ref": "#/$defs/EyesMsg"
+      },
+      {
+        "$ref": "#/$defs/AgentsMsg"
       }
     ]
   },

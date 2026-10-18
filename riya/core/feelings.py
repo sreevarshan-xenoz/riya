@@ -156,6 +156,10 @@ class Feelings:
         elif name == "thinking_done" and self._override and self._override[0] == "thinking":
             self._override = None
 
+    def show(self, expression: str, seconds: float) -> None:
+        """A short-lived expression the engine picks (an agent report: worried, curious or happy)."""
+        self._set_override(expression, seconds)
+
     # ---- time ---------------------------------------------------------------------------------------
     def tick(self, present: bool) -> None:
         now = self.clock.now()
