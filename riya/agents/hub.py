@@ -67,6 +67,7 @@ class AgentEvent:
     agent_id: str
     name: str
     text: str
+    error: str | None = None  # a StopFailure's error type ("rate_limit"); None for every other event
 
 
 class AgentHub:
@@ -163,7 +164,9 @@ class AgentHub:
     def _ev_StopFailure(self, a, p):
         err = p.get("error", p.get("error_details", ""))
         if self._set(a, "failed", summarize(err if isinstance(err, str) else _tool_summary(err))):
-            return [self._event(a)]
+            ev = self._event(a)
+            ev.error = summarize(err, 40) if isinstance(err, str) and err.strip() else None
+            return [ev]
 
     def _ev_PostToolUseFailure(self, a, p):
         a.tool_errors += 1
