@@ -11,7 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from riya.core.appraise import SENTENCE_END
-from riya.core.consolidate import Consolidator, remember_intent
+from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
@@ -122,7 +122,7 @@ class RiyaCore:
         self.memory.append_transcript("user", text)
         saved = None
         if (said := remember_intent(text)) is not None:
-            saved = f"The user said: {said}"
+            saved = f"The user said: {third_person(said)}"
             self.memory.add_fact(saved, source="user_said")
         self.feelings.on_user_text(text)
         self.presence.note_turn()

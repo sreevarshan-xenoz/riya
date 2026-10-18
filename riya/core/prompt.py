@@ -6,7 +6,7 @@ from riya.core.shaping import CAPS
 NO_MEMORY_LINE = "(nothing stored about this yet)"
 NO_ABOUT_ME_LINE = "Nothing yet. You don't know much about them so far: say so, and don't guess."
 HONESTY_LINE = ("Only mention memories listed here. Never invent memories or facts about them. "
-                "If what they ask about isn't listed, say you don't remember.")
+                "If they ask about something in their life that isn't listed, say you don't know.")
 SPEAK_FIRST_TURN = "(no message yet: you speak first)"
 MEMORY_START = "### What you know about them (the only true things you know):"
 MEMORY_END = "### End"

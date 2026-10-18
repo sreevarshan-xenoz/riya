@@ -1,7 +1,9 @@
 import json
 
+import pytest
+
 from riya.core.clock import FakeClock
-from riya.core.consolidate import Consolidator, Proposals, parse_proposals, remember_intent
+from riya.core.consolidate import Consolidator, Proposals, parse_proposals, remember_intent, third_person
 from riya.core.embed import HashEmbedder
 from riya.core.memory import Memory
 from riya.core.models import ModelUnavailable
@@ -181,3 +183,16 @@ def test_a_success_resets_the_failure_count():
     c.model_getter = lambda: FakeModel(replies=["not json"])
     c.run()
     assert len(mem.unconsolidated()) == 1
+
+
+@pytest.mark.parametrize("said, want", [
+    ("my favourite colour is teal", "their favourite colour is teal"),
+    ("I hate cilantro", "they hate cilantro"),
+    ("I'm allergic to cats and the dog is mine", "they're allergic to cats and the dog is theirs"),
+    ("I've got a cat, I'll call her Mimi, I'd like you to call me Sree",
+     "they've got a cat, they'll call her Mimi, they'd like you to call them Sree"),
+    ("MY exam is on Friday, I promised myself", "Their exam is on Friday, they promised themselves"),
+    ("I\u2019m vegetarian", "they're vegetarian"),
+    ("mymy and Mike and time stay", "mymy and Mike and time stay")])
+def test_third_person_rewrites_first_person_words_only(said, want):
+    assert third_person(said) == want
