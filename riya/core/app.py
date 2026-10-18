@@ -1,7 +1,7 @@
 """The localhost WebSocket app: a Hub fans core messages out to every connected body, /ws carries the protocol."""
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -50,8 +50,16 @@ class Hub:
             q.put_nowait(msg)
 
 
-def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore]) -> FastAPI:
+def drain(sentences: Iterator[str]) -> None:
+    for _ in sentences:
+        pass
+
+
+def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore],
+               speak: Callable[[Iterator[str]], None] | None = None) -> FastAPI:
+    """speak consumes a typed reply's sentences (the voice loop speaks them); by default they are only drained."""
     hub = Hub()
+    speak = speak or drain
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -62,7 +70,7 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore]) 
     app = FastAPI(lifespan=lifespan)
     app.state.hub = hub
 
-    async def receive(ws: WebSocket, core: RiyaCore, q: asyncio.Queue) -> None:
+    async def receive(ws: WebSocket, core: RiyaCore, q: asyncio.Queue, texts: asyncio.Queue) -> None:
         while True:
             raw = await ws.receive_text()
             try:
@@ -71,9 +79,17 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore]) 
                 q.put_nowait(ErrorMsg(message=str(e)))
                 continue
             if isinstance(msg, UserText):
-                await run_in_threadpool(lambda: list(core.reply(msg.text, "typed")))
+                texts.put_nowait(msg.text)  # answered in order by reply_worker; other messages don't wait behind it
             else:
                 await run_in_threadpool(core.handle, msg)
+
+    async def reply_worker(core: RiyaCore, texts: asyncio.Queue) -> None:
+        while True:
+            text = await texts.get()
+            try:
+                await run_in_threadpool(speak, core.reply(text, "typed"))
+            except Exception:  # a broken speaker must not close the socket
+                log.exception("couldn't speak a typed reply")
 
     async def send(ws: WebSocket, q: asyncio.Queue) -> None:
         while True:
@@ -88,7 +104,9 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore]) 
         try:
             for msg in core.hello_messages():
                 await ws.send_text(dump(msg))
-            tasks = [asyncio.create_task(receive(ws, core, q)), asyncio.create_task(send(ws, q))]
+            texts: asyncio.Queue = asyncio.Queue()
+            tasks = [asyncio.create_task(receive(ws, core, q, texts)), asyncio.create_task(send(ws, q)),
+                     asyncio.create_task(reply_worker(core, texts))]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for t in done:
                 if t.exception() and not isinstance(t.exception(), WebSocketDisconnect):

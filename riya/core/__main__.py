@@ -9,12 +9,14 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from riya.core.app import create_app
+from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
+from riya.core.listen import ListenGate
 from riya.core.models import OpenAICompatModel, load_dotenv, load_online_from_env
 from riya.core.presence import make_idle_source
+from riya.core.protocol import Mouth
 from riya.core.store import open_db
 
 DEFAULT_HOST = "127.0.0.1"
@@ -49,16 +51,43 @@ def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None]) -> R
     return core
 
 
-def deliver(sentences: Iterator[str], voice: bool) -> None:
-    """The one place a tick's utterance is consumed. Task 13 plugs the speaker in here when voice is on."""
-    list(sentences)
+def build_voice(core: RiyaCore, publish: Callable[[BaseModel], None]):
+    """Loads her voice (Pocket TTS), ears (Moonshine) and VAD (Silero); mouth levels go to every body."""
+    import sounddevice  # noqa: F401  (fail here, not on the first reply, when there's no audio stack)
+
+    from riya.stt_moonshine import MoonshineStreamSTT
+    from riya.voice import PocketTTS, SileroVAD, VoiceLoop
+    return VoiceLoop(core, MoonshineStreamSTT("small"), PocketTTS(core.settings.voice), SileroVAD(),
+                     ListenGate(core.clock), on_mouth=lambda level: publish(Mouth(level=level)))
+
+
+class Speaker:
+    """Typed replies from the body: spoken by the voice loop once it's running, drained before that or without it."""
+
+    def __init__(self):
+        self.loop = None
+
+    def __call__(self, sentences: Iterator[str]) -> None:
+        if self.loop is None:
+            drain(sentences)
+        else:
+            self.loop.answer(sentences, reason="typed")
+
+
+def deliver(sentences: Iterator[str], loop) -> None:
+    """The one place a tick's utterance (her speaking first) is consumed: spoken, then the mic listens for an answer."""
+    if loop is None:
+        drain(sentences)
+    else:
+        loop.answer(sentences, reason="spoke_first")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    app = create_app(lambda emit: build_core(args, emit))
+    speaker = Speaker()
+    app = create_app(lambda emit: build_core(args, emit), speak=speaker)
     server = uvicorn.Server(uvicorn.Config(app, host=DEFAULT_HOST, port=args.port, log_level="warning"))
     thread = threading.Thread(target=server.run, name="riya-ws", daemon=True)
     thread.start()
@@ -69,13 +98,21 @@ def main(argv: list[str] | None = None) -> None:
             time.sleep(0.1)
         core = app.state.core
         log.info("Riya core listening on ws://%s:%d/ws", DEFAULT_HOST, args.port)
+        if not args.no_voice:
+            try:
+                speaker.loop = build_voice(core, app.state.hub.publish)
+                threading.Thread(target=speaker.loop.run, name="riya-voice", daemon=True).start()
+            except Exception:
+                log.exception("voice failed to start; running text-only")
         while thread.is_alive():
             if (sentences := core.tick()) is not None:
-                deliver(sentences, voice=not args.no_voice)
+                deliver(sentences, speaker.loop)
             time.sleep(1.0)
     except KeyboardInterrupt:
         pass
     finally:
+        if speaker.loop is not None:
+            speaker.loop.stop()
         server.should_exit = True
         thread.join(timeout=5)
 

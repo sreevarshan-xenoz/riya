@@ -1,4 +1,5 @@
 import re
+import time
 
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
@@ -8,8 +9,9 @@ from riya.core.store import open_db
 
 
 class FakeModel:
-    def __init__(self, name="fake", replies=("Okay.",), fail=None, fail_after=None):
+    def __init__(self, name="fake", replies=("Okay.",), fail=None, fail_after=None, delay=0.0):
         self.name, self.replies, self.fail, self.fail_after = name, list(replies), fail, fail_after
+        self.delay = delay  # seconds to wait before each token, to make a reply slow
         self.calls = []
 
     def stream(self, messages, max_tokens=300, temperature=0.8):
@@ -20,6 +22,8 @@ class FakeModel:
         for i, tok in enumerate(re.findall(r"\S+\s*", text)):
             if self.fail_after is not None and i == self.fail_after:
                 raise ModelUnavailable("dropped mid-stream")
+            if self.delay:
+                time.sleep(self.delay)
             yield tok
 
 
