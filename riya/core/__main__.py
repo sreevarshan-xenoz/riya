@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import queue
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -9,6 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from riya.agents.hooks import start_hook_receiver
 from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
@@ -137,6 +139,7 @@ def main(argv: list[str] | None = None) -> None:
     server = uvicorn.Server(uvicorn.Config(app, host=DEFAULT_HOST, port=args.port, log_level="warning"))
     thread = threading.Thread(target=server.run, name="riya-ws", daemon=True)
     thread.start()
+    hooks = None
     try:
         while not hasattr(app.state, "core"):
             if not thread.is_alive():
@@ -144,6 +147,9 @@ def main(argv: list[str] | None = None) -> None:
             time.sleep(0.1)
         core = app.state.core
         log.info("Riya core listening on ws://%s:%d/ws", DEFAULT_HOST, args.port)
+        inbox = queue.SimpleQueue()  # hook events cross from the receiver's thread; the tick drains it
+        core.agent_inbox = inbox
+        hooks = start_hook_receiver(inbox.put)
         if not args.no_voice:
             try:
                 speaker.loop = build_voice(core, app.state.hub.publish)
@@ -158,6 +164,9 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if speaker.loop is not None:
             speaker.loop.stop()
+        if hooks is not None:
+            hooks[0].should_exit = True
+            hooks[1].join(timeout=5)
         server.should_exit = True
         thread.join(timeout=5)
 
