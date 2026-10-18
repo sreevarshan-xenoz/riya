@@ -7,9 +7,9 @@
 
 base.png is the picked candidate outfit_<id>_<seed>.png copied from --outfits (regenerated with the same prompt and
 seed only if that file is missing). Check the face box first: --preview-box writes base_box.png and stops. Then writes
-<expression>_<closed|open|blink>.png for the 14 expressions and review_sheet.png (14 rows x 3 columns). Each closed
-frame is inpainted from base.png over the face box; its open and blink frames from that closed frame, over only the
-mouth or the eye band.
+<expression>_<closed|open|blink>.png for the 14 expressions, review_sheet.png (14 rows x 3 columns) and face_sheet.png
+(the same grid of face-box crops at native resolution, to judge identity drift). Each closed frame is inpainted from
+base.png over the face box; its open and blink frames from that closed frame, over only the mouth or the eye band.
 
 <out>/run.json records the outfit, seed, face box and reroll counts. A resume with a different outfit, seed or face box
 is refused unless --reset-run is given; without --face-box the recorded box is used. Resumable: finished frames are
@@ -257,12 +257,16 @@ def write_box_preview(out: Path, box: Box) -> Path:
     return save_image_atomic(image, Path(out) / "base_box.png")
 
 
-def write_review_sheet(out: Path) -> Path:
-    """review_sheet.png: one row per expression in protocol order, columns closed/open/blink, missing frames blank."""
+def write_review_sheets(out: Path, box: Box) -> list[Path]:
+    """review_sheet.png (whole frames, scaled down) and face_sheet.png (the face box at native resolution, to judge
+    drift): one row per expression in protocol order, columns closed/open/blink, missing frames blank."""
     done = {p.name for p in existing_pngs(out)}
     cells = [(e, v) for e in EXPRESSION_PROMPTS for v in VARIANT_PROMPTS]
     paths = [out / f"{e}_{v}.png" if f"{e}_{v}.png" in done else None for e, v in cells]
-    return make_sheet(paths, [f"{e}/{v}" for e, v in cells], out / "review_sheet.png", cols=len(VARIANT_PROMPTS))
+    labels, cols = [f"{e}/{v}" for e, v in cells], len(VARIANT_PROMPTS)
+    face_cell = (box[2] - box[0], box[3] - box[1])
+    return [make_sheet(paths, labels, out / "review_sheet.png", cols=cols),
+            make_sheet(paths, labels, out / "face_sheet.png", cols=cols, cell=face_cell, crop=box)]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -368,8 +372,8 @@ def main(argv: list[str] | None = None) -> None:
 
         run_jobs(jobs, args.out, outfit, seed, box, inpaint, rerolls)
 
-    sheet = write_review_sheet(args.out)
-    print("sheet:", sheet)
+    for sheet in write_review_sheets(args.out, box):
+        print("sheet:", sheet)
 
 
 if __name__ == "__main__":
