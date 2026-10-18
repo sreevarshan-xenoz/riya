@@ -2,6 +2,8 @@ import json
 import threading
 from datetime import datetime, timedelta
 
+import pytest
+
 from riya.core.clock import FakeClock
 from riya.core.models import ModelUnavailable
 from riya.core.protocol import (ErrorMsg, ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings,
@@ -38,21 +40,42 @@ def test_remember_intent_saves_fact_immediately():
     assert any("I hate mornings" in f.text for f in core.memory.list_facts())
 
 
-def test_coming_home_scenario():
+def coming_home(tmp_path, absence="no_tick"):
+    """The spec's scenario: she learns about the exam, they leave for 2 days, she greets them about it. Returns the
+    greeting, the prompt it was generated from, her missing-you at that moment, and the emitted messages."""
+    greeting = "You're back!! I missed you. How did the calculus exam go?"
     clock = FakeClock()
     core, emitted, src, local = make_core(clock, local_replies=[
-        "Aww, you'll do great.", CONSOLIDATION, "You're back!! I missed you. How did the calculus exam go?"])
+        "Aww, you'll do great.", CONSOLIDATION, greeting], tmp_path=tmp_path)
     list(core.reply("I have my calculus exam on Thursday and I'm nervous"))
     run_ticks(core, clock, 660, step=60)          # 11 quiet minutes -> consolidation
     assert core.memory.list_facts()[0].key == "user.exam"
     src.idle = 950
     run_ticks(core, clock, 60, step=60)           # goes away
-    clock.advance(2 * 86400)
+    if absence == "ticking":
+        run_ticks(core, clock, 2 * 86400, step=3600)
+    elif absence == "restart":
+        clock.advance(86400)
+        core, emitted, src, local = make_core(clock, local_replies=[greeting], tmp_path=tmp_path)
+        src.idle = 950
+        clock.advance(86400)
+    else:
+        clock.advance(2 * 86400)
+    missing_then = []
+    stream = local.stream
+    local.stream = lambda messages, *a, **kw: missing_then.append(core.feelings.state.missing) or stream(
+        messages, *a, **kw)
     src.idle = 0
     spoken = run_ticks(core, clock, 1)
+    return core, spoken, local.calls[-1][0]["content"], missing_then, emitted
+
+
+@pytest.mark.parametrize("absence", ["no_tick", "ticking", "restart"])
+def test_coming_home_scenario(tmp_path, absence):
+    core, spoken, prompt, missing_then, emitted = coming_home(tmp_path, absence)
     assert spoken and "missed you" in " ".join(spoken[0])
-    prompt = local.calls[-1][0]["content"]
-    assert "2 days" in prompt and "calculus exam" in prompt and "missed" in prompt
+    assert "2 days" in prompt and "calculus exam" in prompt
+    assert "You missed them" in prompt and missing_then and missing_then[-1] >= 0.4
     assert any(isinstance(m, ExpressionMsg) and m.name == "missed_you" for m in emitted)
     assert any(isinstance(m, Say) and m.kind == "greet" and m.spoken for m in emitted)
     assert core.memory.due_threads() == []        # thread followed up, not raised twice

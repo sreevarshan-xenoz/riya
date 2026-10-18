@@ -173,3 +173,26 @@ def test_mood_returns_to_baseline_over_days():
     clock.advance(7 * 86400)
     f.tick(present=False)
     assert abs(f.state.mood - MOOD_BASELINE) <= 0.25 * gap
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+def test_return_never_lowers_missing_and_short_absences_change_nothing():
+    clock = FakeClock()
+    f = Feelings(clock, TRAITS)
+    f.on_return(away_s=2 * 86400)
+    high = f.state.missing
+    f.on_return(away_s=3600)
+    assert f.state.missing == high
+    clock.advance(30)
+    before, face = dict(vars(f.state)), f.expression()
+    f.on_return(away_s=600)
+    assert dict(vars(f.state)) == before and f.expression() == face
+
+
+def test_from_dict_ignores_unknown_user_mood_keys():
+    clock = FakeClock()
+    d = Feelings(clock, TRAITS).to_dict()
+    d["state"]["user_mood"] = {"valence": -0.6, "confidence": 0.5, "label": "down", "added_later": 1}
+    g = Feelings.from_dict(d, clock, TRAITS)
+    assert g.state.user_mood.label == "down" and g.state.user_mood.confidence == 0.5

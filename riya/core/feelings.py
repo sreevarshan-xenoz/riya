@@ -20,6 +20,7 @@ MAX_TURN_DELTA = 0.35
 MOOD_BASELINE = 0.1
 MOOD_RETURN_TAU_S = 3 * 86400  # mood drifts back to baseline over days
 USER_MOOD_HALF_LIFE_S = 1800
+MIN_ABSENCE_S = 900  # shorter absences (a quick lock) leave her feelings alone
 BASE_AROUSAL, BASE_CURIOSITY, BASE_WARMTH, BASE_PLAYFULNESS = 0.3, 0.5, 0.6, 0.4
 _MISSING_POINTS = ((0, 0.0), (2, 0.10), (24, 0.50), (48, 0.85))
 
@@ -105,8 +106,12 @@ class Feelings:
         self._override = (name, None if seconds is None else self.clock.now() + seconds)
 
     def on_return(self, away_s: float) -> None:
+        """Call after tick(present=False) has brought her up to now, so the absence itself doesn't fade missing."""
+        if away_s < MIN_ABSENCE_S:
+            return
         s = self.state
-        s.missing = min(1.0, missing_curve(max(0.0, away_s) / 3600) * self.traits.get("clinginess", 0.8) / 0.8)
+        missing = min(1.0, missing_curve(away_s / 3600) * self.traits.get("clinginess", 0.8) / 0.8)
+        s.missing = max(s.missing, missing)
         cap = MAX_TURN_DELTA * 2
         self._bump("valence", 0.4 * s.missing, cap=cap)
         self._bump("arousal", 0.3 * s.missing, 0.0, 1.0, cap=cap)
@@ -208,7 +213,9 @@ class Feelings:
     def from_dict(cls, d: dict, clock, traits: dict[str, float]) -> "Feelings":
         f = cls(clock, traits)
         raw = dict(d.get("state", {}))
-        um = UserMood(**raw.pop("user_mood", {}))
+        um_raw = raw.pop("user_mood", None)
+        um_known = {x.name for x in fields(UserMood)}
+        um = UserMood(**{k: v for k, v in um_raw.items() if k in um_known}) if isinstance(um_raw, dict) else UserMood()
         known = {x.name for x in fields(FeelingState)} - {"user_mood"}
         f.state = FeelingState(**{k: v for k, v in raw.items() if k in known}, user_mood=um)
         f._last = d.get("saved_at", clock.now())
