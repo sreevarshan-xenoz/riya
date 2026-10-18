@@ -59,10 +59,11 @@ Run the same command without `--preview-box` (keep the `--face-box` you settled 
 !python colab/sprites/gen_expressions.py --choice $J/sprites/choice.json --refs "$J/riya images" --out $J/sprites/frames
 ```
 
-It writes `<expression>_<closed|open|blink>.png` for the 14 expressions, `review_sheet.png` and `face_sheet.png`, and
+It writes `<expression>_<closed|open|blink>.png` for the 14 expressions (41 frames: `covering_eyes` has no blink, her
+hands cover her eyes and the body falls back to closed), `review_sheet.png` and `face_sheet.png`, and
 records the outfit, seed, face box and reroll counts in `frames/run.json`. After a disconnect, run the same command
 again: it resumes. It refuses (exit 2) if `choice.json` or `--face-box` no longer match `run.json`; `--reset-run`
-accepts the change (frames already made are kept).
+accepts the change (frames already made are kept; the face box stays the recorded one unless you pass `--face-box`).
 
 ## 5. Colab: review, and reroll what's wrong
 
@@ -73,7 +74,7 @@ shape and eye colour everywhere?). To redo an expression:
 !python colab/sprites/gen_expressions.py --choice $J/sprites/choice.json --refs "$J/riya images" --out $J/sprites/frames --reroll pouty,sad
 ```
 
-That deletes the three frames of each named expression and regenerates them with the next seed for it. Each `--reroll`
+That deletes the frames of each named expression (three, two for `covering_eyes`) and regenerates them with the next seed for it. Each `--reroll`
 moves on one seed, so if the session drops mid-reroll, resume **without** `--reroll`. `--only pouty,sad` is different:
 it only restricts which expressions are generated and never redoes a finished frame. Repeat until every row is right.
 

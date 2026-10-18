@@ -8,7 +8,8 @@ box from <raw>/run.json (written by gen_expressions; --face-box overrides it). R
 (and the hands for covering_eyes) every frame reuses neutral_closed's alpha, so the silhouette never flickers. Fits every
 frame onto one 768x1344 canvas with the same bottom-centred transform (so she never jumps between expressions), and
 writes the frames plus a manifest that validates against body/sprite-manifest.schema.json. Frames that are absent are
-omitted from the manifest and printed as `<expression>.<variant>`. Re-running overwrites the pack and removes frames
+omitted from the manifest and printed as `<expression>.<variant>` (except covering_eyes.blink, which is never generated:
+the body falls back to closed). Re-running overwrites the pack and removes frames
 that are no longer in --raw. rembg is imported only when the real remover is used.
 """
 import argparse
@@ -23,7 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # run as a script 
 from PIL import Image, ImageChops
 
 from colab.sprites.common import EXPRESSION_PROMPTS, VARIANT_PROMPTS, existing_pngs, save_image_atomic, save_json_atomic
-from colab.sprites.gen_expressions import DEFAULT_FACE_BOX, Box, box_mask, hands_box, parse_face_box, read_run
+from colab.sprites.gen_expressions import (
+    DEFAULT_FACE_BOX, NOT_GENERATED, Box, box_mask, hands_box, parse_face_box, read_run,
+)
 
 CANVAS = (768, 1344)
 CROP_WIDTH, CROP_ABOVE, CROP_BELOW = 2.0, 0.15, 0.7  # head and shoulders, in face-box widths / heights
@@ -99,7 +102,8 @@ def build_pack(
     raw_dir: Path, out_dir: Path, remove_bg: Callable[[Image.Image], Image.Image], name: str = "riya-v1",
     face_override: Box | None = None,
 ) -> list[str]:
-    """Build the pack in `out_dir` from `raw_dir`; returns the missing `<expression>.<variant>` names (never written out).
+    """Build the pack in `out_dir` from `raw_dir`; returns the missing `<expression>.<variant>` names (never written out;
+    covering_eyes.blink is not listed, it is never generated).
 
     Raises ValueError if neutral_closed.png is missing or a raw frame's size differs from the others, before writing anything.
     """
@@ -147,7 +151,7 @@ def build_pack(
     for stale in out_dir.glob("*.png"):  # frames of an earlier build, and leftovers of an interrupted one
         if stale.name.endswith(".tmp.png") or (stale.name in frame_names and stale.name not in keep):
             stale.unlink()
-    return [f"{e}.{v}" for e, v in cells if (e, v) not in present]
+    return [f"{e}.{v}" for e, v in cells if (e, v) not in present and (e, v) not in NOT_GENERATED]
 
 
 def main(argv: list[str] | None = None) -> None:
