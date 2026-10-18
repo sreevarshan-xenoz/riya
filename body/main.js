@@ -10,11 +10,11 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipc
 const { boundsFor, clampToArea } = require("./src/geometry");
 const { getPackPath, resolveManifestFrames } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
+const { pickHotkey, modeToApply, repositionTarget, shouldSendToCore } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
 const REPO_ROOT = path.resolve(__dirname, "..");
-const MODES = ["buddy", "panel", "window"];
-const TALK_HOTKEY = "Control+Alt+Space";
+const TALK_HOTKEYS = ["Control+Alt+Space", "Control+Alt+F9"]; // first one that registers wins
 const FIRST_SETTINGS_WAIT_MS = 1500;
 const DRAG_INTERVAL_MS = 1000 / 60;
 const REPLAY_TYPES = ["hello", "settings", "state", "expression"];
@@ -28,6 +28,8 @@ const state = {
   bridgeQueue: [],
   connected: false,
   readyPending: false,
+  hotkey: null,
+  userDragged: false,
   ignoring: false,
   drag: null,
   quitting: false,
@@ -64,6 +66,7 @@ app.on("web-contents-created", (_event, contents) => {
 // ---- core relay -----------------------------------------------------------------------------------------------------
 
 function sendToCore(msg) {
+  if (!shouldSendToCore(msg, state.connected)) return;
   if (state.bridge && state.bridgeReady) state.bridge.webContents.send("bridge:send", msg);
   else state.bridgeQueue.push(msg);
 }
@@ -119,6 +122,7 @@ function onCoreMessage(msg) {
   if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
     state.settings = { ...msg.settings };
     ensureMode(state.settings.mode);
+    applyLateSavedPosition();
   }
   broadcast("core:message", msg);
 }
@@ -160,6 +164,8 @@ function loadPack() {
   }
 }
 
+/** The active talk-hotkey accelerator (e.g. "Control+Alt+F9" when the preferred one was taken), or null. */
+ipcMain.handle("hotkey:get", (event) => (isStageSender(event.sender) ? state.hotkey : null));
 ipcMain.handle("pack:get", (event) => (isStageSender(event.sender) ? loadPack() : null));
 
 // ---- windows --------------------------------------------------------------------------------------------------------
@@ -232,10 +238,11 @@ function createStageWindow(mode) {
   return win;
 }
 
-/** (Re)create the stage window for `mode` unless it is already showing. Ignores unknown modes. */
-function ensureMode(mode) {
+/** (Re)create the stage window for `mode` unless it is already showing. An unknown mode keeps the current one (buddy if none). */
+function ensureMode(requested) {
   clearTimeout(state.firstSettingsTimer);
-  if (!MODES.includes(mode) || (state.win && state.mode === mode)) return;
+  const mode = modeToApply(requested, state.mode);
+  if (state.win && state.mode === mode) return;
   stopDrag(false);
   const old = state.win;
   log(`mode -> ${mode}`);
@@ -244,6 +251,26 @@ function ensureMode(mode) {
   if (old && !old.isDestroyed()) old.destroy();
   refreshTrayMenu();
   sendBodyReady();
+}
+
+/** The core's settings can arrive after buddy is already shown: move her to the saved position (unless she was dragged). */
+function applyLateSavedPosition() {
+  const win = state.win;
+  if (!win || win.isDestroyed()) return;
+  const current = win.getPosition();
+  const savedPos = state.settings.buddy_position;
+  const target = repositionTarget({
+    mode: state.mode,
+    dragging: Boolean(state.drag),
+    userDragged: state.userDragged,
+    current,
+    savedPos,
+    workArea: workAreaFor(state.mode, savedPos),
+  });
+  if (target) {
+    log(`saved position arrived late, moving to ${target.x},${target.y}`);
+    win.setBounds(target);
+  }
 }
 
 function showWindow() {
@@ -307,6 +334,7 @@ function stopDrag(save) {
   if (!save || drag.win.isDestroyed()) return;
   const [x, y] = drag.win.getPosition();
   state.settings.buddy_position = [x, y];
+  state.userDragged = true;
   sendToCore({ type: "set_settings", patch: { buddy_position: [x, y] } });
 }
 
@@ -368,12 +396,11 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionCheckHandler(() => false);
     createBridge();
     createTray();
-    if (!globalShortcut.register(TALK_HOTKEY, () => sendToCore({ type: "talk_hotkey" }))) {
-      log(`could not register ${TALK_HOTKEY} (already taken?)`);
-    }
+    state.hotkey = pickHotkey(TALK_HOTKEYS, (accelerator) =>
+      globalShortcut.register(accelerator, () => sendToCore({ type: "talk_hotkey" })));
+    log(state.hotkey ? `talk hotkey: ${state.hotkey}` : `no talk hotkey registered (tried ${TALK_HOTKEYS.join(", ")})`);
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, relayout);
     // Wait briefly for the core's settings so she opens in the right mode; show buddy if the core isn't there.
-    state.firstSettingsTimer = setTimeout(() => ensureMode(MODES.includes(state.settings.mode) ? state.settings.mode : "buddy"),
-      FIRST_SETTINGS_WAIT_MS);
+    state.firstSettingsTimer = setTimeout(() => ensureMode(state.settings.mode), FIRST_SETTINGS_WAIT_MS);
   }).catch((err) => fail("startup failed", err));
 }
