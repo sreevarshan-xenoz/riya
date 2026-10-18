@@ -8,6 +8,8 @@ import math
 import re
 from dataclasses import asdict, dataclass, field, fields
 
+import numpy as np
+
 from riya.core.appraise import NEG, POS, appraise
 
 EXPRESSIONS = ("neutral", "happy", "excited", "missed_you", "pouty", "flustered", "teasing", "worried", "sad",
@@ -16,6 +18,8 @@ AFFECT_HALF_LIFE_S = 300
 MOOD_TAU_S = 6 * 3600
 MISSING_HALF_LIFE_S = 240
 MAX_TURN_DELTA = 0.35
+MOOD_BASELINE = 0.1
+MOOD_RETURN_TAU_S = 3 * 86400  # mood drifts back to baseline over days
 USER_MOOD_HALF_LIFE_S = 1800
 BASE_AROUSAL, BASE_CURIOSITY, BASE_WARMTH, BASE_PLAYFULNESS = 0.3, 0.5, 0.6, 0.4
 _MISSING_POINTS = ((0, 0.0), (2, 0.10), (24, 0.50), (48, 0.85))
@@ -28,6 +32,20 @@ def missing_curve(hours: float) -> float:
         if hours <= h1:
             return m0 + (m1 - m0) * (max(hours, h0) - h0) / (h1 - h0)
     return 0.0
+
+
+# Valence and mood are coupled linear ODEs: v' = -k(v - m), m' = (v - m)/MOOD_TAU - (m - base)/MOOD_RETURN_TAU.
+# Their deviation from MOOD_BASELINE evolves as exp(A*dt), solved once by eigendecomposition so that one big tick
+# gives exactly the same result as many small ones.
+_K = math.log(2) / AFFECT_HALF_LIFE_S
+_A = np.array([[-_K, _K], [1 / MOOD_TAU_S, -1 / MOOD_TAU_S - 1 / MOOD_RETURN_TAU_S]])
+_EIGVALS, _EIGVECS = np.linalg.eig(_A)
+_EIGINV = np.linalg.inv(_EIGVECS)
+
+
+def _valence_mood_step(valence: float, mood: float, dt: float) -> tuple[float, float]:
+    y = _EIGVECS @ (np.exp(_EIGVALS * dt) * (_EIGINV @ np.array([valence - MOOD_BASELINE, mood - MOOD_BASELINE])))
+    return float(y[0].real) + MOOD_BASELINE, float(y[1].real) + MOOD_BASELINE
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
@@ -142,14 +160,13 @@ class Feelings:
             return
         s = self.state
         f = 0.5 ** (dt / AFFECT_HALF_LIFE_S)
-        s.valence = _toward(s.valence, s.mood, f)
+        s.valence, s.mood = _valence_mood_step(s.valence, s.mood, dt)
         s.arousal = _toward(s.arousal, BASE_AROUSAL, f)
         s.concern = _toward(s.concern, 0.0, f)
         s.surprise = _toward(s.surprise, 0.0, f)
         s.curiosity = _toward(s.curiosity, BASE_CURIOSITY, f)
         s.warmth = _toward(s.warmth, BASE_WARMTH, f)
         s.playfulness = _toward(s.playfulness, BASE_PLAYFULNESS, f)
-        s.mood = _clip(_toward(s.mood, s.valence, math.exp(-dt / MOOD_TAU_S)), -1, 1)
         if present:
             s.missing *= 0.5 ** (dt / MISSING_HALF_LIFE_S)
         elif s.energy < 0.9:
