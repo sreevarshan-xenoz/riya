@@ -310,6 +310,19 @@ def test_main_resumes_without_torch_and_writes_a_14_by_3_review_sheet(tmp_path):
     gen_expressions.main(["--choice", str(tmp_path / "choice.json"), "--refs", str(tmp_path), "--out", str(out)])
     with Image.open(out / "review_sheet.png") as sheet:
         assert sheet.size == (3 * (256 + 8) + 8, 14 * (372 + 28 + 8) + 8)
+    with Image.open(out / "face_sheet.png") as sheet:  # the 320x360 face box at native resolution
+        assert sheet.size == (3 * (320 + 8) + 8, 14 * (360 + 28 + 8) + 8)
+
+
+def test_make_sheet_can_crop_each_image_at_native_resolution(tmp_path):
+    src = Image.new("RGB", (832, 1216), (128, 128, 128))
+    src.paste((200, 0, 0), (300, 100, 302, 102))  # a 2x2 dot inside the face box
+    src.save(tmp_path / "f.png")
+    out = make_sheet([tmp_path / "f.png", None], ["a", "b"], tmp_path / "s.png", cols=2, cell=(320, 360), crop=BOX)
+    with Image.open(out) as sheet:
+        assert sheet.size == (2 * (320 + 8) + 8, 360 + 28 + 8 + 8)
+        assert sheet.getpixel((8 + 300 - 256, 8 + 100 - 60)) == (200, 0, 0)  # not scaled: one pixel stays one pixel
+        assert sheet.getpixel((8 + 300 - 256 + 2, 8 + 100 - 60)) == (128, 128, 128)
 
 
 class FakeTorch:
