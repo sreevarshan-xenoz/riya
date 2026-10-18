@@ -14,7 +14,7 @@ from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent
 from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
-from riya.core.memory import Memory
+from riya.core.memory import Memory, about_me
 from riya.core.models import ChatModel
 from riya.core.persona import load_traits, persona_prompt
 from riya.core.presence import Presence
@@ -22,8 +22,9 @@ from riya.core.prompt import bid_situation, build_messages, greeting_situation
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
                                 Hello, MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings,
                                 SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
-from riya.core.router import Router
+from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
+from riya.core.shaping import BUDGETS, CAPS, cap_sentences, count_emoji, limit_emoji, turn_kind
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -31,7 +32,6 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "scripts" / "start_riya.ps1"
 MODEL_DOWN = "Riya's local model isn't responding"
 KEEP_TURNS = 24
 BID_IGNORED_S = 300
-BID_MAX_TOKENS = 40
 GREET_DEFER_MAX_S = 1800
 SAVE_EVERY_S = 30
 STATE_EVERY_S = 30
@@ -138,6 +138,7 @@ class RiyaCore:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread)."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
+        sentences, done = None, {"stream": False}
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
@@ -145,26 +146,18 @@ class RiyaCore:
                                       retrieved=self._retrieve(query, threads), turns=self.turns,
                                       user_text=user_text, situation=situation, now=self.clock.now())
             route_text = user_text or ""
+            budget, cap = self._shape(kind, route_text)
             if self.router.route(route_text) == "online":
                 thinking = True
                 self.feelings.on_event("thinking")
                 self._sync_expression()
-            buf = ""
-            for piece in self.router.stream(messages, route_text):
-                parts.append(piece)
-                buf += piece
-                while m := SENTENCE_END.search(buf):
-                    sentence, buf = buf[:m.end()].strip(), buf[m.end():]
-                    if sentence:
-                        thinking = self._end_thinking(thinking)
-                        self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
-                        said.append(sentence)
-                        yield sentence
-            if buf.strip():
+            stream = self.router.stream(messages, route_text, budget)
+            sentences = cap_sentences(self._sentences(stream, parts, done), cap)
+            for sentence in sentences:
                 thinking = self._end_thinking(thinking)
-                self.emit(Say(utterance_id=uid, text=buf.strip(), spoken=spoken, kind=kind))
-                said.append(buf.strip())
-                yield buf.strip()
+                self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
+                said.append(sentence)
+                yield sentence
             outcome = "done"
         except GeneratorExit:
             outcome = "closed"
@@ -173,7 +166,10 @@ class RiyaCore:
             log.exception("model failed during a %s", kind)
             self.emit(ErrorMsg(message=MODEL_DOWN))
         finally:
-            text = "".join(parts).strip() if outcome == "done" else " ".join(said) if outcome == "closed" else None
+            if sentences is not None:
+                sentences.close()  # stops the model stream however the utterance ended
+            whole = outcome == "done" and done["stream"]  # the model finished on its own: keep its own spacing
+            text = (limit_emoji("".join(parts).strip()) if whole else " ".join(said)) if outcome != "failed" else None
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
@@ -182,6 +178,42 @@ class RiyaCore:
                     after(outcome)
             except Exception:
                 log.exception("couldn't record the %s", kind)
+
+    @staticmethod
+    def _shape(kind: str, text: str) -> tuple[int, int]:
+        """(token budget, sentence cap) for an utterance: a greeting has its own, a reply depends on the turn."""
+        if kind == "greet":
+            return BUDGETS["greeting"], CAPS["greeting"]
+        k = turn_kind(text, about_me=about_me(text), needs_thinking=needs_thinking(text))
+        return BUDGETS[k], CAPS[k]
+
+    @staticmethod
+    def _sentences(stream: Iterator[str], parts: list[str], done: dict) -> Iterator[str]:
+        """The model's pieces as whole sentences, each with only the reply's first emoji (an emoji-only sentence
+        vanishes). Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
+        buf, used = "", 0
+
+        def tidy(sentence: str) -> str:
+            nonlocal used
+            sentence = sentence.strip()
+            kept = limit_emoji(sentence, max(0, 1 - used))
+            used += count_emoji(kept)
+            return kept if kept == sentence or any(c.isalnum() for c in kept) else ""  # an emoji's leftovers vanish
+
+        try:
+            for piece in stream:
+                parts.append(piece)
+                buf += piece
+                while m := SENTENCE_END.search(buf):
+                    sentence, buf = tidy(buf[:m.end()]), buf[m.end():]
+                    if sentence:
+                        yield sentence
+            if sentence := tidy(buf):
+                yield sentence
+            done["stream"] = True
+        finally:
+            if hasattr(stream, "close"):
+                stream.close()
 
     def _retrieve(self, query: str, threads: list | None):
         r = self.memory.retrieve(query)
@@ -211,7 +243,7 @@ class RiyaCore:
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(action.reason, action.thread),
                                       now=self.clock.now())
-            line = "".join(self.local.stream(messages, max_tokens=BID_MAX_TOKENS)).strip()
+            line = limit_emoji("".join(self.local.stream(messages, max_tokens=BUDGETS["bid"])).strip())
         except Exception:
             log.exception("model failed during a bid")
             return

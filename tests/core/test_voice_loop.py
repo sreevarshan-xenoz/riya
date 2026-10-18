@@ -270,3 +270,9 @@ def test_a_silent_bid_opens_the_mic_for_a_nameless_answer():
     assert loop.gate.accept("yeah okay, five minutes", gaming=False) == "yeah okay, five minutes"
     clock.advance(121)
     assert loop.gate.accept("random tv noise", gaming=False) is None
+
+
+def test_say_speaks_tts_text_and_skips_sentences_that_become_empty():
+    loop, *_ = make_loop()
+    loop.say(iter(["Hmph \U0001F624 *giggles* you're late!", "*sighs*", "\U0001F600", "Fine (not really)."]))
+    assert [c[0] for c in loop.tts.calls] == ["Hmph you're late!", "Fine."]

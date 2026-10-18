@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from riya.core.clock import FakeClock
+from riya.core.initiative import Action
 from riya.core.models import ModelUnavailable
 from riya.core.protocol import (ErrorMsg, ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings,
                                 StateMsg)
@@ -302,7 +303,6 @@ def test_fullscreen_without_input_never_bids_or_opens_the_mic():
 
 
 def test_a_bid_never_opens_the_mic_while_gaming():
-    from riya.core.initiative import Action
     clock = FakeClock()
     core, emitted, src, _ = make_core(clock, local_replies=["psst"])
     hooked = []
@@ -486,3 +486,84 @@ def test_memories_list_episodes_and_open_threads_and_both_can_be_removed():
     core.handle(ThreadResolve(id=thread.id))
     assert emitted[-1].threads == []
     assert core.memory.db.execute("select status from threads where id=?", (thread.id,)).fetchone()[0] == "resolved"
+
+
+# --- v0.2 reply shaping ---------------------------------------------------------------------------------------------
+
+def spy(local):
+    """Record each stream call's max_tokens and how many tokens were pulled from the model."""
+    seen = {"max_tokens": [], "pulled": 0}
+    stream = local.stream
+
+    def wrapped(messages, max_tokens=300, temperature=0.8):
+        seen["max_tokens"].append(max_tokens)
+        for tok in stream(messages, max_tokens, temperature):
+            seen["pulled"] += 1
+            yield tok
+    local.stream = wrapped
+    return seen
+
+
+RAMBLE = "One here. Two here. Three here. Four here. Five here. Six here. Seven here. Eight here. Nine here. Ten here. "
+
+
+def test_small_talk_is_capped_at_three_sentences_and_the_model_stream_is_closed():
+    core, emitted, _, local = make_core(local_replies=[RAMBLE])
+    seen = spy(local)
+    said = list(core.reply("hey riya"))
+    assert said == ["One here.", "Two here.", "Three here."]
+    assert seen["max_tokens"] == [110] and seen["pulled"] == 6      # 3 sentences of 2 tokens, nothing more
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert core.memory.unconsolidated()[-1]["text"] == "One here. Two here. Three here."
+    assert core.turns[-1] == {"role": "assistant", "content": "One here. Two here. Three here."}
+
+
+def test_explain_and_about_me_turns_get_their_own_budget_and_cap():
+    core, _, _, local = make_core(local_replies=[RAMBLE])
+    seen = spy(local)
+    assert len(list(core.reply("explain how a rainbow forms"))) == 8
+    assert len(list(core.reply("what do you remember about me?"))) == 6
+    assert seen["max_tokens"] == [380, 160]
+
+
+def test_a_short_reply_is_recorded_as_streamed():
+    core, *_ = make_core(local_replies=["Hey you.\n\nI was waiting~"])
+    list(core.reply("hi riya"))
+    assert core.memory.unconsolidated()[-1]["text"] == "Hey you.\n\nI was waiting~"
+
+
+def test_barge_in_on_a_capped_reply_records_only_what_was_said():
+    core, *_ = make_core(local_replies=[RAMBLE])
+    it = core.reply("hey riya")
+    assert next(it) == "One here."
+    it.close()
+    assert core.memory.unconsolidated()[-1]["text"] == "One here."
+
+
+def test_only_the_first_emoji_survives_in_the_bubble_and_the_transcript():
+    core, emitted, _, _ = make_core(local_replies=["Hi \U0001F600 there. Bye \U0001F44D now. Ok \U0001F525 sure."])
+    said = list(core.reply("hey riya"))
+    assert said == ["Hi \U0001F600 there.", "Bye now.", "Ok sure."]
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert core.memory.unconsolidated()[-1]["text"] == "Hi \U0001F600 there. Bye now. Ok sure."
+
+
+def test_an_emoji_only_sentence_is_dropped_and_does_not_count_toward_the_cap():
+    core, *_ = make_core(local_replies=["A \U0001F600 one. \U0001F44D! B two. C three. D four."])
+    assert list(core.reply("hey riya")) == ["A \U0001F600 one.", "B two.", "C three."]
+
+
+def test_greeting_uses_its_own_budget_and_cap():
+    core, emitted, src, local = make_core(local_replies=[RAMBLE])
+    seen = spy(local)
+    spoken = list(core.speak_first(Action("greet", True, None, "back")))
+    assert spoken == ["One here.", "Two here.", "Three here."] and seen["max_tokens"] == [90]
+    assert [m.kind for m in emitted if isinstance(m, Say)] == ["greet"] * 3
+
+
+def test_bid_keeps_its_40_token_budget_and_one_emoji():
+    core, emitted, _, local = make_core(local_replies=["Water \U0001F4A7 break? \U0001F600"])
+    seen = spy(local)
+    core._bid(Action("bid", False, None, "test"))
+    assert seen["max_tokens"] == [40]
+    assert [m.text for m in emitted if isinstance(m, Say)] == ["Water \U0001F4A7 break?"]

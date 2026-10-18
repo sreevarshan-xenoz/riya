@@ -5,6 +5,7 @@ import re
 import statistics
 
 from riya.core.appraise import SENTENCE_END
+from riya.core.shaping import EMOJI, count_emoji  # noqa: F401  (the emoji policy and its regex live in core)
 
 GENERIC_PHRASES: tuple[str, ...] = (
     "you've got this", "no pressure", "let me know", "i'm here to", "i'm here for you", "feel free",
@@ -25,12 +26,6 @@ VALUE_AFTER_IT = re.compile(r"\b[Ii]t(?:'s| was| is)\s+(?:(?:probably|maybe|like
 REMEMBER_ACK = re.compile(r"\b(?:remember(?:ed)?|got it|noted|won't forget|will not forget|never forget|saved|stored"
                           r"|keep that|write that|writing that)\b", re.I)
 
-_VS = "[\uFE0F\U0001F3FB-\U0001F3FF]*"  # variation selector and skin tones ride along with their emoji
-_PICTO = ("[\U0001F300-\U0001FAFF\U0001F000-\U0001F2FF\u2600-\u27BF\u2B50\u2B55\u2B1B\u2B1C\u231A\u231B"
-          "\u23E9-\u23FA\u2934\u2935\u2B05-\u2B07\u203C\u2049]")
-_TEXT_GLYPHS = "\u2713\u2714\u266A\u263A"  # check marks, a note, a smiley: pictographs, emoji only with a VS16
-EMOJI = re.compile(rf"[\U0001F1E6-\U0001F1FF]{{2}}|[0-9#*]\uFE0F?\u20E3"
-                   rf"|(?![{_TEXT_GLYPHS}](?!\uFE0F)){_PICTO}{_VS}(?:\u200D{_PICTO}{_VS})*")
 CODE_BLOCK = re.compile(r"```.*?(?:```|\Z)", re.S)
 ATTRIBUTION = re.compile(r"\byou (?:said|told me|mentioned|asked)\b|\bi remember (?:that )?you\b"
                          r"|\byou(?:'re| are) (?:the type|someone who)\b", re.I)
@@ -65,11 +60,6 @@ def count_sentences(text: str) -> int:
         n += len(_split(text[pos:m.start()])) + 1
         pos = m.end()
     return n + len(_split(text[pos:]))
-
-
-def count_emoji(text: str) -> int:
-    """Emoji clusters (a ZWJ sequence, flag or skin-toned emoji is one). Indic, Tamil, CJK and accented letters aren't."""
-    return len(EMOJI.findall(text))
 
 
 def has_generic(text: str) -> bool:
