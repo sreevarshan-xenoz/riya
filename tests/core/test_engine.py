@@ -422,3 +422,42 @@ def test_the_daily_purge_resolves_week_old_threads():
     stale = core.memory.add_thread("Ask about the old trip", due_at=clock.now() - 8 * 86400)
     run_ticks(core, clock, 1)
     assert core.memory.db.execute("select status from threads where id=?", (stale.id,)).fetchone()[0] == "resolved"
+
+
+# --- final review: consolidation timing -----------------------------------------------------------------------------
+
+def test_lid_closed_right_after_the_exam_talk_still_greets_about_the_exam():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=[
+        "Aww, you'll do great.", CONSOLIDATION, "You're back! How did the calculus exam go?"])
+    list(core.reply("I have my calculus exam on Thursday and I'm nervous"))
+    said_at = clock.now()
+    run_ticks(core, clock, 300, step=60)          # 5 minutes, then the lid closes: no consolidation yet
+    assert core.memory.unconsolidated()
+    clock.advance(2 * 86400)
+    spoken = run_ticks(core, clock, 1)
+    (thread,) = core.memory.db.execute("select due_at, status from threads").fetchall()
+    assert thread["due_at"] == said_at + 20 * 3600 and thread["status"] == "followed_up"
+    assert spoken and "calculus exam" in local.calls[-1][0]["content"].split("[Situation]")[1]
+
+
+def test_startup_takes_the_last_turn_time_from_the_transcript(tmp_path):
+    clock = FakeClock()
+    core, *_ = make_core(clock, tmp_path=tmp_path)
+    list(core.reply("hi"))
+    said_at = clock.now()
+    clock.advance(300)
+    again, *_ = make_core(clock, tmp_path=tmp_path)
+    assert again.last_turn_at == said_at
+
+
+def test_no_consolidation_while_gaming():
+    clock = FakeClock()
+    core, _, src, local = make_core(clock, local_replies=["Okay.", CONSOLIDATION])
+    list(core.reply("hi"))
+    src.is_fullscreen = True
+    run_ticks(core, clock, 900, step=60)
+    assert len(local.calls) == 1 and core.memory.unconsolidated()
+    src.is_fullscreen = False
+    run_ticks(core, clock, 60, step=60)
+    assert len(local.calls) == 2 and not core.memory.unconsolidated()

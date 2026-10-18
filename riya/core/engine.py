@@ -81,7 +81,7 @@ class RiyaCore:
         self.on_spoke_first: Callable[[str], None] = lambda kind: None  # e.g. the voice loop opens the mic after a bid
         self._lock = threading.Lock()
         now = clock.now()
-        self.last_turn_at = now
+        self.last_turn_at = self.memory.last_transcript_at() or now
         self.pending_bid_at: float | None = None
         self._bid_thread: int | None = None  # the thread a pending bid brought up
         self._deferred_greeting: tuple[float, float] | None = None  # (away_s, came_back_at) while gaming
@@ -300,6 +300,8 @@ class RiyaCore:
             self.pending_bid_at = self._bid_thread = None
 
     def _maybe_consolidate(self, now: float) -> None:
+        if self.presence.state == "gaming":  # never load the local model during a game
+            return
         if self.consolidator.due(self.last_turn_at) and (
                 self._last_consolidation is None or now - self._last_consolidation >= CONSOLIDATE_RETRY_S):
             self._last_consolidation = now
@@ -323,6 +325,11 @@ class RiyaCore:
     def _came_back(self, away_s: float) -> Action | None:
         self.feelings.on_return(away_s)
         self._sync_expression()
+        try:  # what they said just before leaving may hold the thread to greet them with
+            self.consolidator.run_pending(self.last_turn_at, model=self.local)
+            self._last_consolidation = self.clock.now()
+        except Exception:
+            log.exception("consolidation before the greeting failed")
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said

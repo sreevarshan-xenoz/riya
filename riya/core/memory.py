@@ -314,6 +314,11 @@ class Memory:
         return cur.lastrowid
 
     @_locked
+    def last_transcript_at(self) -> float | None:
+        row = self.db.execute("select at from transcripts order by id desc limit 1").fetchone()
+        return row["at"] if row else None
+
+    @_locked
     def unconsolidated(self) -> list[dict]:
         rows = self.db.execute("select id, at, role, text from transcripts where consolidated=0 order by id")
         return [dict(r) for r in rows]
