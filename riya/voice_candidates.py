@@ -42,7 +42,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                  description="Write one sample WAV per candidate voice for Riya.")
     ap.add_argument("--out", default="scratch_runs/voice_candidates", help="output folder")
     ap.add_argument("--voices", help="comma-separated Pocket TTS voice names or reference WAVs "
-                                     "(default: the feminine built-in voices, or alba)")
+                                     "(default: the feminine built-in voices, or alba). A reference WAV must be an "
+                                     "original or licensed voice, never an imitation of a real person.")
     ap.add_argument("--text", default=TEXT, help="what she says in each sample")
     return ap.parse_args(argv)
 
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> None:
     model = TTSModel.load_model()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    written = 0
     for name in voices:
         try:
             audio = model.generate_audio(model.get_state_for_audio_prompt(name), args.text)
@@ -64,6 +66,9 @@ def main(argv: list[str] | None = None) -> None:
         path = out / f"{Path(name).stem}.wav"
         write_wav(path, np.asarray(audio, dtype=np.float32).reshape(-1), model.sample_rate)
         print(path)
+        written += 1
+    if not written:
+        raise SystemExit("no voice sample could be made")
     print('Pick one and save its name as settings.voice (e.g. set_settings {"voice": "alba"}), then restart Riya.')
 
 

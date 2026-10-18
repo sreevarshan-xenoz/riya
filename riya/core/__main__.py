@@ -57,8 +57,15 @@ def build_voice(core: RiyaCore, publish: Callable[[BaseModel], None]):
 
     from riya.stt_moonshine import MoonshineStreamSTT
     from riya.voice import PocketTTS, SileroVAD, VoiceLoop
-    return VoiceLoop(core, MoonshineStreamSTT("small"), PocketTTS(core.settings.voice), SileroVAD(),
-                     ListenGate(core.clock), on_mouth=lambda level: publish(Mouth(level=level)))
+    return connect_voice(core, VoiceLoop(core, MoonshineStreamSTT("small"), PocketTTS(core.settings.voice),
+                                         SileroVAD(), ListenGate(core.clock),
+                                         on_mouth=lambda level: publish(Mouth(level=level))))
+
+
+def connect_voice(core: RiyaCore, loop):
+    """After a silent bid the mic opens like after any turn, so a spoken answer needs no name."""
+    core.on_spoke_first = loop.gate.open
+    return loop
 
 
 class Speaker:
@@ -75,11 +82,15 @@ class Speaker:
 
 
 def deliver(sentences: Iterator[str], loop) -> None:
-    """The one place a tick's utterance (her speaking first) is consumed: spoken, then the mic listens for an answer."""
+    """The one place a tick's utterance (her speaking first) is consumed: spoken if it's meant aloud, then the mic
+    listens for an answer."""
     if loop is None:
         drain(sentences)
-    else:
+    elif getattr(sentences, "spoken", True):
         loop.answer(sentences, reason="spoke_first")
+    else:
+        drain(sentences)
+        loop.gate.open("spoke_first")
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -43,6 +43,22 @@ def _query(action: Action) -> str:
     return action.thread.text if action.thread else action.reason
 
 
+class Utterance:
+    """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud."""
+
+    def __init__(self, sentences: Iterator[str], spoken: bool):
+        self._sentences, self.spoken = sentences, spoken
+
+    def __iter__(self) -> "Utterance":
+        return self
+
+    def __next__(self) -> str:
+        return next(self._sentences)
+
+    def close(self) -> None:
+        self._sentences.close()
+
+
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None):
@@ -58,6 +74,7 @@ class RiyaCore:
         self.consolidator = Consolidator(self.memory, self._consolidation_model, clock)
         self.turns: list[dict] = []
         self.talk_requested = False
+        self.on_spoke_first: Callable[[str], None] = lambda kind: None  # e.g. the voice loop opens the mic after a bid
         self._lock = threading.Lock()
         now = clock.now()
         self.last_turn_at = now
@@ -193,9 +210,13 @@ class RiyaCore:
         self.memory.append_transcript("assistant", line)
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.pending_bid_at = self.clock.now()
+        try:
+            self.on_spoke_first("bid")
+        except Exception:
+            log.exception("on_spoke_first failed after a bid")
 
     # ---- time ---------------------------------------------------------------------------------------
-    def tick(self) -> Iterator[str] | None:
+    def tick(self) -> Utterance | None:
         if not self._lock.acquire(blocking=False):  # a reply or greeting is running: catch up on the next tick
             return None
         try:
@@ -206,7 +227,7 @@ class RiyaCore:
         finally:
             self._lock.release()
 
-    def _tick(self) -> Iterator[str] | None:
+    def _tick(self) -> Utterance | None:
         """Each step is guarded on its own, so one failing step can't starve the others."""
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
@@ -220,7 +241,7 @@ class RiyaCore:
         self._step("persistence", lambda: self._maybe_save(now))
         self._step("state", lambda: self._maybe_state(now))
         self._step("expression", self._sync_expression)
-        return self.speak_first(action) if action else None
+        return Utterance(self.speak_first(action), action.spoken) if action else None
 
     @staticmethod
     def _step(name: str, fn: Callable[[], object]):
