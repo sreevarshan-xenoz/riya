@@ -220,3 +220,15 @@ def test_main_returns_0_when_setup_raises(monkeypatch, capsys):
     monkeypatch.setattr(ec, "load_online_from_env", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad env")))
     assert ec.main([], env={}) == 0
     assert "FAIL: ValueError: bad env" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("reply", ["", "no json here"])
+def test_an_empty_or_unparseable_note_suggests_reasoning_effort_first(capsys, reply):
+    ec.ask(FakeModel(replies=[reply, "It says 4721"]), JPEG)
+    out = capsys.readouterr().out
+    assert "note: none (unparseable)" in out and "reasoning_effort" in out
+
+
+def test_a_good_note_gives_no_hint(capsys):
+    ec.ask(FakeModel(replies=[NOTE, "It says 4721"]), JPEG)
+    assert "reasoning_effort" not in capsys.readouterr().out

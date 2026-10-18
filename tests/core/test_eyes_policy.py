@@ -555,3 +555,35 @@ def test_restored_count_still_resets_at_midnight():
     assert p.allowed(**ok()) == "daily cap"
     clock.advance(86400)
     assert p.glances_today() == 0
+
+
+# ---- every sent request counts; unusable replies escalate -------------------------------------------------------
+
+def test_a_sent_request_counts_toward_the_cap_and_the_min_gap_without_a_note():
+    p, clock = make(cap=2, min_gap_s=45)
+    p.sent()
+    assert p.glances_today() == 1 and p.allowed(**ok()) == "min gap"
+    clock.advance(46)
+    p.sent()
+    assert p.glances_today() == 2 and p.allowed(**ok(), force=True) == "daily cap"
+
+
+def test_unusable_replies_escalate_the_backoff_and_a_note_resets_it():
+    p, clock = make(min_gap_s=0)
+    for expected in (300, 900, 1800, 3600, 3600):
+        assert p.unusable() == expected
+        clock.advance(expected - 1)
+        assert p.allowed(**ok()) == "backoff"
+        clock.advance(1)
+        assert p.allowed(**ok()) is None
+    p.usable()
+    assert p.unusable() == 300
+
+
+def test_an_outage_backoff_leaves_the_streak_alone():
+    p, clock = make(min_gap_s=0)
+    p.unusable()
+    clock.advance(300)
+    p.backoff(1800)
+    clock.advance(1800)
+    assert p.unusable() == 900
