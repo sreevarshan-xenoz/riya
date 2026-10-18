@@ -303,6 +303,7 @@
   function updateMotionTimer() {
     const run = manifest !== null && animating();
     if (run && motionTimer === null) {
+      motion.resume(); // the first step after a pause eases the lean instead of snapping it
       moveSprite();
       motionTimer = setInterval(moveSprite, MOTION_MS);
     } else if (!run && motionTimer !== null) {

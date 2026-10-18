@@ -9,6 +9,8 @@ const CURIOUS_BID = "curious";
 const MOUTH_SILENCE_MS = 250;
 const ERROR_MS = 5000;
 const LEAN_EASE_PER_60HZ_FRAME = 0.08;
+const BREATH_STEP_PX = 0.2;
+const RESUME_MAX_FRAMES = 2; // the first step after a pause eases by at most this many 60 Hz frames
 
 /** The core emits no expression for a silent bid, so a visible bid shows `curious` unless an `expression` arrives. */
 class ExpressionModel {
@@ -103,10 +105,10 @@ function idleAnimates({ presence, hidden }) {
   return !hidden && presence !== "gaming";
 }
 
-/** The sprite transform, rounded (0.1 px, 0.1 degree, 1e-4 scale) so an unchanged pose gives the same text. */
+/** The sprite transform, rounded (0.2 px, 0.2 degree, 1e-4 scale) so an unchanged pose gives the same text. */
 function transformCss({ dx, dy, rotateDeg, scale }) {
   const n = (value, step, digits) => Number((Math.round(value / step) * step).toFixed(digits)); // -0 prints as 0
-  const px = (value) => n(value, 0.1, 1);
+  const px = (value) => n(value, 0.2, 1);
   return `translate(${px(dx)}px, ${px(dy)}px) rotate(${px(rotateDeg)}deg) scale(${n(scale, 1e-4, 4)})`;
 }
 
@@ -116,17 +118,28 @@ class Motion {
     this.rotateDeg = 0;
     this.dx = 0;
     this.lastAt = null;
+    this.resumed = false;
+  }
+
+  /** Call when the motion timer restarts (unhidden, gaming over): the next step's gap is a pause, not elapsed motion. */
+  resume() {
+    this.resumed = true;
   }
 
   /** The transform text at `nowMs` with the lean eased toward `target` ({ rotateDeg, dx }). */
   step(nowMs, target) {
-    const frames = this.lastAt === null ? 0 : Math.max(0, nowMs - this.lastAt) / (1000 / 60);
+    let frames = this.lastAt === null ? 0 : Math.max(0, nowMs - this.lastAt) / (1000 / 60);
+    if (this.resumed) frames = Math.min(frames, RESUME_MAX_FRAMES);
+    this.resumed = false;
     this.lastAt = nowMs;
     const k = 1 - Math.pow(1 - LEAN_EASE_PER_60HZ_FRAME, frames);
     this.rotateDeg += (target.rotateDeg - this.rotateDeg) * k;
     this.dx += (target.dx - this.dx) * k;
     const b = spriteBreathing(nowMs);
-    return transformCss({ dx: this.dx, dy: b.dy, rotateDeg: this.rotateDeg, scale: b.scale });
+    // scale follows the rounded dy, so the two change on the same ticks and an unchanged pose skips the write
+    const dy = Math.round(b.dy / BREATH_STEP_PX) * BREATH_STEP_PX;
+    const scale = b.dy === 0 ? b.scale : 1 + (b.scale - 1) * (dy / b.dy);
+    return transformCss({ dx: this.dx, dy, rotateDeg: this.rotateDeg, scale });
   }
 }
 

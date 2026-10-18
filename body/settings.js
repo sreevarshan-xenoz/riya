@@ -5,6 +5,7 @@
 (() => {
   const {
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
+    DeferWhileFocused,
   } = RiyaSettings;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
@@ -61,8 +62,9 @@
   $("quiet-save").addEventListener("click", () => changeSetting("quiet_hours", $("quiet_hours").value));
   $("quiet_hours").addEventListener("keydown", (e) => { if (e.key === "Enter") changeSetting("quiet_hours", e.target.value); });
 
-  /** The voice presets, plus the current voice as "(custom)" when it isn't one (e.g. a reference WAV). */
-  function showVoice(current) {
+  const voiceDefer = new DeferWhileFocused();
+
+  function rebuildVoice(current) {
     const select = $("voice");
     select.replaceChildren(...voiceOptions(current).map(({ value, label }) => {
       const option = h("option", null, label);
@@ -71,6 +73,18 @@
     }));
     select.value = typeof current === "string" ? current : "";
   }
+
+  /** The voice presets, plus the current voice as "(custom)" when it isn't one (e.g. a reference WAV). Rebuilding the
+   *  options closes an open dropdown, so while the select has focus the rebuild waits for blur. */
+  function showVoice(current) {
+    const now = voiceDefer.offer(current, document.activeElement === $("voice"));
+    if (now) rebuildVoice(now.value);
+  }
+
+  $("voice").addEventListener("blur", () => {
+    const pending = voiceDefer.take();
+    if (pending) rebuildVoice(pending.value);
+  });
 
   /** Show the core's settings in the controls (a control being typed in keeps its text). */
   function applySettings(s) {

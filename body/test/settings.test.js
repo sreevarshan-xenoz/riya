@@ -96,3 +96,16 @@ test("voiceOptions lists the presets and keeps a non-preset current voice as a c
   assert.deepEqual(L.voiceOptions(""), presets);
   assert.deepEqual(L.voiceOptions("my_clip.wav"), [{ value: "my_clip.wav", label: "my_clip.wav (custom)" }, ...presets]);
 });
+
+test("DeferWhileFocused applies at once when unfocused, and holds only the latest value while focused", () => {
+  const d = new L.DeferWhileFocused();
+  assert.deepEqual(d.offer("alba", false), { value: "alba" });
+  assert.equal(d.take(), null);
+  assert.equal(d.offer("jean", true), null);
+  assert.equal(d.offer(null, true), null);
+  assert.deepEqual(d.take(), { value: null }, "the latest offer wins, even a null voice");
+  assert.equal(d.take(), null, "taken once");
+  d.offer("jean", true);
+  assert.deepEqual(d.offer("marius", false), { value: "marius" });
+  assert.equal(d.take(), null, "an applied offer clears the stale pending one");
+});
