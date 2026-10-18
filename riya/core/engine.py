@@ -34,6 +34,7 @@ BID_IGNORED_S = 300
 BID_MAX_TOKENS = 40
 GREET_DEFER_MAX_S = 1800
 SAVE_EVERY_S = 30
+STATE_EVERY_S = 30
 PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
 
@@ -62,7 +63,7 @@ class RiyaCore:
         self.last_turn_at = now
         self.pending_bid_at: float | None = None
         self._deferred_greeting: tuple[float, float] | None = None  # (away_s, came_back_at) while gaming
-        self._last_save = now
+        self._last_save = self._last_state_at = now
         self._last_purge: float | None = None
         self._last_consolidation: float | None = None
         self._away_s = 0.0  # absence behind the greeting that speak_first is about to make
@@ -97,11 +98,18 @@ class RiyaCore:
         with self._lock:
             situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
             yield from self._speak("greet", user_text=None, query=_query(action), situation=situation,
-                                   spoken=action.spoken)
+                                   spoken=action.spoken, after=lambda outcome: self._greeted(action, outcome))
 
-    def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None,
-               spoken: bool) -> Iterator[str]:
-        uid, parts, thinking, done = uuid4().hex, [], False, False
+    def _greeted(self, action: Action, outcome: str) -> None:
+        """The thread counts as followed up only once she actually asked; a barge-in still stops a re-raise today."""
+        if action.thread and outcome != "failed":
+            self.memory.mark_thread(action.thread.id, status="followed_up" if outcome == "done" else None,
+                                    raised_at=self.clock.now())
+
+    def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
+               after: Callable[[str], None] | None = None) -> Iterator[str]:
+        """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model)."""
+        uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
@@ -122,22 +130,30 @@ class RiyaCore:
                     if sentence:
                         thinking = self._end_thinking(thinking)
                         self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
+                        said.append(sentence)
                         yield sentence
             if buf.strip():
                 thinking = self._end_thinking(thinking)
                 self.emit(Say(utterance_id=uid, text=buf.strip(), spoken=spoken, kind=kind))
+                said.append(buf.strip())
                 yield buf.strip()
-            done = True
+            outcome = "done"
+        except GeneratorExit:
+            outcome = "closed"
+            raise
         except Exception:
             log.exception("model failed during a %s", kind)
             self.emit(ErrorMsg(message=MODEL_DOWN))
         finally:
-            self._end_thinking(thinking)
-            self.emit(SayEnd(utterance_id=uid))
-        try:
-            self._finish_turn(user_text, "".join(parts).strip() if done else None)
-        except Exception:
-            log.exception("couldn't record the %s", kind)
+            text = "".join(parts).strip() if outcome == "done" else " ".join(said) if outcome == "closed" else None
+            try:
+                self._end_thinking(thinking)
+                self.emit(SayEnd(utterance_id=uid))
+                self._finish_turn(user_text, text)
+                if after:
+                    after(outcome)
+            except Exception:
+                log.exception("couldn't record the %s", kind)
 
     def _finish_turn(self, user_text: str | None, said: str | None) -> None:
         """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded."""
@@ -158,11 +174,11 @@ class RiyaCore:
         return False
 
     def _bid(self, action: Action) -> None:
-        messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
-                                  retrieved=self.memory.retrieve(_query(action)),
-                                  turns=self.turns, user_text=None,
-                                  situation=bid_situation(action.reason, action.thread), now=self.clock.now())
         try:
+            messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
+                                      retrieved=self.memory.retrieve(_query(action)), turns=self.turns,
+                                      user_text=None, situation=bid_situation(action.reason, action.thread),
+                                      now=self.clock.now())
             line = "".join(self.local.stream(messages, max_tokens=BID_MAX_TOKENS)).strip()
         except Exception:
             log.exception("model failed during a bid")
@@ -191,9 +207,32 @@ class RiyaCore:
             self._lock.release()
 
     def _tick(self) -> Iterator[str] | None:
+        """Each step is guarded on its own, so one failing step can't starve the others."""
         now = self.clock.now()
+        events = self._step("presence", self.presence.update) or []
+        action = self._step("greeting", lambda: self._greeting(events, now))
+        if action is None:
+            self._step("bid", self._maybe_bid)
+        self._step("bid ignored", lambda: self._check_bid_ignored(now))
+        self._step("feelings", lambda: self.feelings.tick(present=self.presence.state != "away"))
+        self._step("consolidation", lambda: self._maybe_consolidate(now))
+        self._step("purge", lambda: self._maybe_purge(now))
+        self._step("persistence", lambda: self._maybe_save(now))
+        self._step("state", lambda: self._maybe_state(now))
+        self._step("expression", self._sync_expression)
+        return self.speak_first(action) if action else None
+
+    @staticmethod
+    def _step(name: str, fn: Callable[[], object]):
+        try:
+            return fn()
+        except Exception:
+            log.exception("tick step %r failed", name)
+            return None
+
+    def _greeting(self, events: list, now: float) -> Action | None:
         action = None
-        for ev in self.presence.update():
+        for ev in events:
             if ev.kind == "came_back":
                 if self.presence.state == "gaming":  # never greet into a game: wait until it ends
                     self._deferred_greeting = (ev.away_s, now)
@@ -207,36 +246,45 @@ class RiyaCore:
             elif self.presence.state not in ("gaming", "away"):
                 self._deferred_greeting = None
                 action = self._came_back(away_s)
-        if action is None and self.presence.state == "break":
+        return action
+
+    def _maybe_bid(self) -> None:
+        if self.presence.state == "break":
             bid = self.initiative.on_break("break", self.presence.work_stretch_s(), self.memory.due_threads())
             if bid:
                 self._bid(bid)
+
+    def _check_bid_ignored(self, now: float) -> None:
         if self.pending_bid_at is not None and now - self.pending_bid_at >= BID_IGNORED_S:
             self.feelings.on_event("bid_ignored")
             self.pending_bid_at = None
-        self.feelings.tick(present=self.presence.state != "away")
+
+    def _maybe_consolidate(self, now: float) -> None:
         if self.consolidator.due(self.last_turn_at) and (
                 self._last_consolidation is None or now - self._last_consolidation >= CONSOLIDATE_RETRY_S):
             self._last_consolidation = now
             self.consolidator.run()
+
+    def _maybe_purge(self, now: float) -> None:
         if self._last_purge is None or now - self._last_purge >= PURGE_EVERY_S:
             self._last_purge = now
             self.memory.purge_transcripts()
+
+    def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
             self._save_feelings()
+
+    def _maybe_state(self, now: float) -> None:
+        if now - self._last_state_at >= STATE_EVERY_S:
+            self._last_state_at = now
             self.emit(self._state_msg())
-        self._sync_expression()
-        return self.speak_first(action) if action else None
 
     def _came_back(self, away_s: float) -> Action | None:
         self.feelings.on_return(away_s)
         self._sync_expression()
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
-        if action is None:
-            return None
-        if action.thread:
-            self.memory.mark_thread(action.thread.id, status="followed_up", raised_at=self.clock.now())
-        self._away_s = away_s
+        if action is not None:
+            self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
         return action
 
     # ---- state out ----------------------------------------------------------------------------------
