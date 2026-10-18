@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from riya.core import __main__ as runner
 from riya.core.__main__ import DEFAULT_HOST
@@ -184,3 +186,20 @@ def test_speaker_drains_typed_replies_until_the_voice_loop_is_ready():
     speaker.loop = FakeVoiceLoop()
     speaker(iter(["c"]))
     assert speaker.loop.calls == [(["c"], "typed")]
+
+
+# --- final review: the socket only talks to Riya's own body ---------------------------------------------------------
+
+def test_websocket_from_a_web_page_origin_is_rejected_without_hello():
+    with client() as c:
+        with pytest.raises(WebSocketDisconnect) as e:
+            with c.websocket_connect("/ws", headers={"origin": "https://evil.example"}) as ws:
+                ws.receive_json()
+        assert e.value.code == 1008
+
+
+def test_websocket_without_origin_or_from_a_file_page_is_accepted():
+    with client() as c:
+        for headers in ({}, {"origin": "file://"}, {"origin": "null"}):
+            with c.websocket_connect("/ws", headers=headers) as ws:
+                assert ws.receive_json()["type"] == "hello"
