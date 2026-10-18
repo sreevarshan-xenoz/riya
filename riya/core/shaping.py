@@ -7,6 +7,7 @@ from typing import Literal
 
 BUDGETS = {"small": 110, "about_me": 160, "explain": 380, "greeting": 90, "bid": 40}  # max_tokens per kind
 CAPS = {"small": 3, "about_me": 6, "explain": 8, "greeting": 3}  # most sentences per kind
+ONLINE_BUDGETS = {"explain": 600}  # online models may count their thinking tokens
 
 _VS = "[\uFE0F\U0001F3FB-\U0001F3FF]*"  # variation selector and skin tones ride along with their emoji
 _PICTO = ("[\U0001F300-\U0001FAFF\U0001F000-\U0001F2FF\u2600-\u27BF\u2B50\u2B55\u2B1B\u2B1C\u231A\u231B"

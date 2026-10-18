@@ -30,8 +30,10 @@ class OpenAICompatModel:
                  first_token_timeout_s: float = 8.0, stop: list[str] | None = None):
         self.name, self.base_url, self.api_key, self.model = name, base_url.rstrip("/"), api_key, model
         self.first_token_timeout_s, self.stop = first_token_timeout_s, stop
+        self.finish_reason: str | None = None  # the last stream's ("length" means it ran out of tokens)
 
     def stream(self, messages, max_tokens=300, temperature=0.8) -> Iterator[str]:
+        self.finish_reason = None
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
         if self.model is not None:
             body["model"] = self.model
@@ -48,7 +50,8 @@ class OpenAICompatModel:
                     line = raw.decode("utf-8", "ignore").strip()
                     if not line.startswith("data:") or line.endswith("[DONE]"):
                         continue
-                    piece = _sse_piece(line[5:])
+                    piece, finish = _sse_event(line[5:])
+                    self.finish_reason = finish or self.finish_reason
                     if piece:
                         if not started:
                             started = True
@@ -67,19 +70,20 @@ def local_model(server_url: str, **kw) -> OpenAICompatModel:
     return OpenAICompatModel("local", f"{server_url.rstrip('/')}/v1", stop=list(LOCAL_STOP), **kw)
 
 
-def _sse_piece(data: str) -> str | None:
-    """The content of one streamed chunk; ValueError when the event isn't the OpenAI chunk shape."""
+def _sse_event(data: str) -> tuple[str | None, str | None]:
+    """(content, finish_reason) of one streamed chunk; ValueError when the event isn't the OpenAI chunk shape."""
     event = json.loads(data)
     if not isinstance(event, dict) or "error" in event:
         raise ValueError(f"not a chunk: {data[:80]!r}")
     choices = event.get("choices")
     if not choices:  # e.g. a usage-only chunk
-        return None
-    delta = choices[0].get("delta") if isinstance(choices, list) and isinstance(choices[0], dict) else None
+        return None, None
+    choice = choices[0] if isinstance(choices, list) and isinstance(choices[0], dict) else None
+    delta = choice.get("delta") if choice else None
     if not isinstance(delta, dict):
         raise ValueError(f"no delta in {data[:80]!r}")
-    piece = delta.get("content")
-    return piece if isinstance(piece, str) else None
+    piece, finish = delta.get("content"), choice.get("finish_reason")
+    return piece if isinstance(piece, str) else None, finish if isinstance(finish, str) else None
 
 
 def _set_read_timeout(resp, seconds: float) -> None:

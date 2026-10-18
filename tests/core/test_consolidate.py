@@ -259,3 +259,17 @@ def test_third_person_leaves_numerals_code_addresses_and_quotes_alone(said, want
     ("I amble and I wasabi", "they amble and they wasabi")])
 def test_third_person_conjugates_am_was_have_after_i(said, want):
     assert third_person(said) == want
+
+
+def test_online_consolidation_gets_1200_tokens_and_local_keeps_600():
+    seen = []
+
+    class Spy(FakeModel):
+        def stream(self, messages, max_tokens=300, temperature=0.8):
+            seen.append((self.name, max_tokens))
+            return super().stream(messages, max_tokens, temperature)
+    for name in ("online", "local"):
+        clock, mem = setup()
+        mem.append_transcript("user", "hi")
+        Consolidator(mem, lambda: Spy(name, [json.dumps(PROPOSAL)]), clock).run()
+    assert seen == [("online", 1200), ("local", 600)]

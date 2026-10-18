@@ -771,3 +771,43 @@ def test_a_saved_remember_turn_is_small_talk_on_the_local_model_even_if_it_sound
     assert seen["max_tokens"] == [110] and local.calls[-1][0]["content"].endswith(reply_rule("small"))
     list(core.reply("explain how to debug a parser"))
     assert len(online.calls) == 1  # a normal technical turn still goes online
+
+
+# ---- final fix wave: M5, a reply cut off by its token budget ----
+def _cut_core(reply, finish="length", **kw):
+    core, emitted, _, local = make_core(local_replies=[reply], **kw)
+    local.finish_after = finish
+    return core, emitted, local
+
+
+def test_a_reply_cut_by_the_token_budget_drops_its_unfinished_last_fragment():
+    core, emitted, _ = _cut_core("Hey you. I was thinking that we could")
+    assert list(core.reply("hey riya")) == ["Hey you."]
+    assert [m.text for m in emitted if isinstance(m, Say)] == ["Hey you."]
+    assert core.memory.unconsolidated()[-1]["text"] == "Hey you." and core.turns[-1]["content"] == "Hey you."
+
+
+@pytest.mark.parametrize("reply, finish, want", [
+    ("I was thinking that we could", "length", ["I was thinking that we could"]),  # nothing else was said
+    ("Hey you. I was thinking that we could", "stop", ["Hey you.", "I was thinking that we could"]),
+    ("Hey you. Sleep well! ~", "length", ["Hey you.", "Sleep well! ~"]),
+    ("Hey you. Night.", "length", ["Hey you.", "Night."])])
+def test_only_an_unterminated_fragment_after_a_said_sentence_is_dropped(reply, finish, want):
+    core, *_ = _cut_core(reply, finish)
+    assert list(core.reply("hey riya")) == want
+
+
+def test_after_a_remember_ack_a_cut_fragment_is_dropped():
+    core, *_ = _cut_core("Teal is such a")
+    assert list(core.reply("remember that my favourite colour is teal")) == [ACKS[0]]
+
+
+def test_an_online_explain_turn_gets_600_tokens():
+    from tests.fakes import FakeModel
+    online = FakeModel("online", ["Recursion calls itself."])
+    core, _, _, local = make_core(local_replies=["Okay."], online=online)
+    seen = []
+    stream = online.stream
+    online.stream = lambda m, max_tokens=300, temperature=0.8: (seen.append(max_tokens), stream(m, max_tokens))[1]
+    list(core.reply("explain recursion to me"))
+    assert seen == [600]
