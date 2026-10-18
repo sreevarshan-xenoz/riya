@@ -1,16 +1,24 @@
 "use strict";
-/** The stage: sprite crossfade, blink/breathing/lean loop, mouth, speech bubble, chat log, text input and (buddy mode)
- *  alpha-based click-through and dragging. Pure decisions live in src/ (sprite-logic, bubble, stage-logic, hit-test). */
+/** The stage: sprite crossfade, blink, breathing and lean, mouth, speech bubble, chat log, text input and (buddy mode)
+ *  alpha-based click-through and dragging. Pure decisions live in src/ (sprite-logic, bubble, stage-logic, hit-test).
+ *
+ *  Nothing runs per display frame: breathing and lean are a 15 Hz timer that only writes a changed transform, and
+ *  frames, bubble and status update on core messages plus one timer for the next deadline (blink start or end, mouth
+ *  silence, bubble or error expiry). Everything pauses while the page is hidden; gaming freezes the idle motion. */
 (() => {
-  const { frameFor, breathing, leanFor, BlinkScheduler } = RiyaSprite;
+  const { frameFor, leanFor, BlinkScheduler } = RiyaSprite;
   const { isOpaqueAt, toImageCoords } = RiyaHitTest;
   const { BubbleModel } = RiyaBubble;
-  const { ExpressionModel, MouthTracker, StatusLine, cropBox } = RiyaStage;
+  const {
+    ExpressionModel, MouthTracker, StatusLine, Motion, cropBox, buddySpriteBox, idleAnimates, nextDeadline, isSettingsError,
+  } = RiyaStage;
 
   const mode = ["buddy", "panel", "window"].includes(window.riya.mode) ? window.riya.mode : "buddy";
   const MAX_LOG_ENTRIES = 300;
   const MASK_MAX_WIDTH = 256;
   const FADE_MS = 150;
+  const MOTION_MS = 1000 / 15;
+  const FACE_GAP_PX = 12; // room for breathing and lean between the bubble region and her face
   const now = () => performance.now();
   const $ = (id) => document.getElementById(id);
 
@@ -25,8 +33,8 @@
   const mouth = new MouthTracker();
   const errorLine = new StatusLine();
   const blink = new BlinkScheduler();
+  const motion = new Motion();
   const feelings = { presence: null, curiosity: 0 };
-  const lean = { rotateDeg: 0, dx: 0 };
   let connected = false;
   expression.setConnected(false);
 
@@ -64,6 +72,15 @@
     if (!manifest) return;
     const { width, height } = manifest.canvas;
     els.box.style.setProperty("--ar", String(width / height));
+    if (mode === "buddy") {
+      // the bubble grows upward from its anchored bottom (styles.css), so her face stays below a 40vh bubble
+      const bubbleBottom = window.innerHeight - (parseFloat(getComputedStyle(els.bubble).bottom) || 0);
+      const box = buddySpriteBox({ winWidth: window.innerWidth, winHeight: window.innerHeight, canvas: manifest.canvas,
+        crops: manifest.crops, bubbleBottom, gap: FACE_GAP_PX });
+      els.box.style.width = `${box.width}px`;
+      els.box.style.height = `${box.height}px`;
+      return;
+    }
     if (mode !== "panel") return;
     const box = cropBox($("stage").clientWidth, manifest.canvas, manifest.crops.upper);
     els.box.style.width = `${box.width}px`;
@@ -183,6 +200,7 @@
     bubble.onUserInput();
     addEntry("user", text);
     els.input.value = "";
+    refresh();
   });
 
   // ---- core messages -------------------------------------------------------------------------------------------
@@ -194,7 +212,7 @@
       case "say": {
         const fresh = bubble.id !== msg.utterance_id;
         bubble.onSay(msg);
-        if (fresh && msg.kind === "bid" && bubble.id === msg.utterance_id) expression.onBid();
+        expression.onSay({ kind: msg.kind, fresh: fresh && bubble.id === msg.utterance_id });
         logUtterance();
         break;
       }
@@ -213,20 +231,22 @@
         feelings.curiosity = Number(msg.feelings && msg.feelings.curiosity) || 0;
         break;
       case "error":
-        errorLine.show(msg.message, t);
+        if (!isSettingsError(msg.message)) errorLine.show(msg.message, t); // the settings window shows those
         break;
       default:
-        break;
+        return;
     }
+    refresh();
   });
 
   window.riya.onConnection((value) => {
     connected = Boolean(value);
     expression.setConnected(connected);
     if (!connected) bubble.endCurrent(now());
+    refresh();
   });
 
-  // ---- the frame loop ------------------------------------------------------------------------------------------
+  // ---- rendering: on events and at the next deadline, never per display frame ---------------------------------
 
   let shownBubble = { visible: false, text: "", kind: "" };
   let shownStatus = null;
@@ -253,26 +273,70 @@
     els.status.hidden = !text;
   }
 
-  function tick(t) {
-    requestAnimationFrame(tick);
-    renderBubble(t);
-    renderStatus(t);
+  /** Breathing, blink and lean: only while visible and not gaming. Mouth frames don't depend on this. */
+  const animating = () => idleAnimates({ presence: feelings.presence, hidden: document.hidden });
+
+  function renderFrame(t) {
     if (!manifest) return;
-    const bubbleVisible = bubble.visible(t);
-    const name = expression.current(bubbleVisible);
-    const url = frameFor({ manifest, expression: name, mouthOpen: connected && mouth.isOpen(t), blinking: blink.isClosed(t) });
+    const name = expression.current(bubble.visible(t));
+    const blinking = animating() && blink.isClosed(t);
+    const url = frameFor({ manifest, expression: name, mouthOpen: connected && mouth.isOpen(t), blinking });
     if (url && url !== wantedUrl) {
       showFrame(url, lastExpression !== null && name !== lastExpression);
       wantedUrl = url;
     }
     lastExpression = name;
-
-    const target = leanFor({ presence: feelings.presence, curiosity: feelings.curiosity });
-    lean.rotateDeg += (target.rotateDeg - lean.rotateDeg) * 0.08;
-    lean.dx += (target.dx - lean.dx) * 0.08;
-    const b = breathing(t);
-    els.sprite.style.transform = `translate(${lean.dx}px, ${b.dy}px) rotate(${lean.rotateDeg}deg) scale(${b.scale})`;
   }
+
+  let shownTransform = "";
+  let motionTimer = null;
+  let wakeTimer = null;
+
+  /** One breathing/lean step; the DOM is written only when the rounded transform changed. */
+  function moveSprite() {
+    const css = motion.step(now(), leanFor({ presence: feelings.presence, curiosity: feelings.curiosity }));
+    if (css === shownTransform) return;
+    shownTransform = css;
+    els.sprite.style.transform = css;
+  }
+
+  function updateMotionTimer() {
+    const run = manifest !== null && animating();
+    if (run && motionTimer === null) {
+      moveSprite();
+      motionTimer = setInterval(moveSprite, MOTION_MS);
+    } else if (!run && motionTimer !== null) {
+      clearInterval(motionTimer);
+      motionTimer = null;
+    }
+  }
+
+  /** Bubble, status and frame for now; then a single timer for whichever of them changes next. */
+  function refresh() {
+    const t = now();
+    renderBubble(t);
+    renderStatus(t);
+    renderFrame(t);
+    updateMotionTimer();
+    clearTimeout(wakeTimer);
+    wakeTimer = null;
+    if (document.hidden) return;
+    const next = nextDeadline(t, [
+      manifest && animating() ? blink.nextChange(t) : null,
+      mouth.closesAt(),
+      bubble.hidesAt(t),
+      errorLine.clearsAt(t),
+    ]);
+    if (next !== null) wakeTimer = setTimeout(refresh, next - t + 1);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && mode === "buddy") {
+      endDrag();
+      setClickable(false);
+    }
+    refresh(); // hidden: stops every timer; visible: catches up and restarts them
+  });
 
   // ---- start ---------------------------------------------------------------------------------------------------
 
@@ -288,7 +352,7 @@
     } else {
       errorLine.show("no sprite pack found", now());
     }
-  }).catch(() => errorLine.show("couldn't load the sprite pack", now()));
+  }).catch(() => errorLine.show("couldn't load the sprite pack", now())).then(refresh);
   if (mode !== "buddy") els.input.focus();
-  requestAnimationFrame(tick);
+  refresh();
 })();

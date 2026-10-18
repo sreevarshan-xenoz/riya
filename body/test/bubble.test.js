@@ -81,3 +81,18 @@ test("endCurrent closes an unfinished utterance (core dropped)", () => {
   assert.equal(b.visible(500 + 5999), true);
   assert.equal(b.visible(500 + 6000), false);
 });
+
+test("hidesAt is when a finished bubble disappears, so it can be hidden by a timer", () => {
+  const b = new BubbleModel();
+  assert.equal(b.hidesAt(0), null);
+  b.onSay(say("u1", "Hi."));
+  assert.equal(b.hidesAt(500), null, "still talking: no deadline");
+  b.onSayEnd("u1", 1000);
+  assert.equal(b.hidesAt(1000), 1000 + HIDE_AFTER_MS);
+  assert.equal(b.hidesAt(1000 + HIDE_AFTER_MS), null, "already hidden");
+  b.onSay(say("u2", "psst", "bid"));
+  b.onSayEnd("u2", 2000);
+  assert.equal(b.hidesAt(2000), 2000 + BID_HIDE_MS);
+  b.onUserInput();
+  assert.equal(b.hidesAt(2001), null, "an answered bid is gone");
+});

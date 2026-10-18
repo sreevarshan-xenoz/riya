@@ -166,3 +166,26 @@ test('frameFor prefers blink then open', () => {
   assert.equal(f('happy', false, true), 'happy_blink.png');
   assert.equal(f('sad', true, true), 'neutral_closed.png');
 });
+
+test('BlinkScheduler.nextChange is the next blink start or end, so blinks can run on a timer', () => {
+  const s = new BlinkScheduler({ rng: () => 0, minMs: 3000, maxMs: 6000, closedMs: 120 });
+  assert.equal(s.nextChange(0), 3000);
+  assert.equal(s.isClosed(2999), false);
+  assert.equal(s.isClosed(3000), true);
+  assert.equal(s.nextChange(3000), 3120);
+  assert.equal(s.isClosed(3120), false);
+  assert.equal(s.nextChange(3120), 6000);
+});
+
+test('BlinkScheduler.nextChange always lands on a real flip of isClosed', () => {
+  const s = new BlinkScheduler({ rng: lcg(3) });
+  let t = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const before = s.isClosed(t);
+    const next = s.nextChange(t);
+    assert.ok(next > t, `next ${next} after ${t}`);
+    assert.equal(s.isClosed(next - 1), before);
+    assert.equal(s.isClosed(next), !before);
+    t = next;
+  }
+});

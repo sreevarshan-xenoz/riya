@@ -61,6 +61,11 @@ class BlinkScheduler {
     while (nowMs >= this.nextStart + this.closedMs) this.nextStart += this.gap();
     return nowMs >= this.nextStart;
   }
+
+  /** When isClosed next flips (the next blink start, or the end of the current one), for a timer instead of a loop. */
+  nextChange(nowMs) {
+    return this.isClosed(nowMs) ? this.nextStart + this.closedMs : this.nextStart;
+  }
 }
 
 function breathing(tMs) {
