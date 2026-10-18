@@ -284,3 +284,15 @@ def test_about_me_puts_similar_facts_first_then_fills_to_eight(mem, clock):
     got = mem.retrieve("what do you know about me and my guitar?").facts
     assert len(got) == 8 and got[0].id == guitar.id
     assert got[1].text == "The user fact number 9 is about topic9"  # then the best of the rest
+
+
+@pytest.mark.parametrize("q", ["tell me what you remember, Riya", "tell me what you remember riya?",
+                               "Tell me everything you know, riya.", "tell me what you know about me, Riya"])
+def test_tell_me_what_you_remember_may_end_with_her_name(q):
+    from riya.core.memory import about_me
+    assert about_me(q)
+
+
+def test_her_name_does_not_widen_tell_me_what_you_remember():
+    from riya.core.memory import about_me
+    assert not about_me("tell me what you remember riya about my sister's wedding")

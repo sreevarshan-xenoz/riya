@@ -1,5 +1,7 @@
 """Builds the chat messages for a turn: persona (plus the style examples), feelings, a delimited memory block, the
 honesty line, the situation and a reply-rules line (v0.2 spec section 4.2)."""
+import re
+
 from riya.core.memory import Fact, Retrieved, Thread
 from riya.core.shaping import CAPS
 
@@ -19,6 +21,43 @@ HARD_RULES = ("You're an AI and say so if asked. Only the memory block is true a
               "say you don't know.")
 
 _SOURCES = {"user_said": "user said", "inferred": "you inferred", "looked_up": "looked up"}
+ABOUT_ME_SITUATION_FACTS = 8
+_SAID = re.compile(r"^the user said:\s*", re.I)
+_SUBJECT = re.compile(r"^the user(?:'s\b|\s+([\w']+))", re.I)
+_VERBS = {"is": "'re", "was": "were", "has": "have", "does": "do", "goes": "go", "isn't": "aren't",
+          "wasn't": "weren't", "hasn't": "haven't", "doesn't": "don't"}
+
+
+def _plural(verb: str) -> str:
+    """The "they" form of a third-person verb: likes -> like, watches -> watch, studies -> study, is -> 're."""
+    v = verb.lower()
+    if v in _VERBS:
+        return _VERBS[v]
+    if v.endswith("ies") and len(v) > 4:
+        return verb[:-3] + "y"
+    if re.search(r"(?:ch|sh|ss|x|z|o)es$", v):
+        return verb[:-2]
+    return verb[:-1] if v.endswith("s") and not v.endswith("ss") else verb
+
+
+def natural(fact: str) -> str:
+    """A stored fact as she'd think it: "The user is a student" -> "they're a student", "The user's X" -> "their X",
+    "The user said: their X" -> "their X". No full stop at the end."""
+    t = _SAID.sub("", fact.strip()).rstrip(". ")
+    m = _SUBJECT.match(t)
+    if m is None:
+        return t[:1].lower() + t[1:] if t[1:2].islower() else t  # "Lives in Pune", but "AI ..." stays
+    if m.group(1) is None:
+        return "their" + t[m.end():]
+    verb = _plural(m.group(1))
+    return ("they" + verb if verb.startswith("'") else "they " + verb) + t[m.end():]
+
+
+def about_me_situation(facts: list[Fact]) -> str:
+    """An about-me turn with facts: she's told outright that she remembers them, so she can't deny it."""
+    listed = "; ".join(natural(f.text) for f in facts[:ABOUT_ME_SITUATION_FACTS])
+    return (f"You DO remember these things about them: {listed}. Mention them warmly in your own words; "
+            "don't say you don't remember.")
 
 
 def _fact_line(f: Fact) -> str:
@@ -52,9 +91,12 @@ def build_messages(*, persona: str, feelings_tag: str, retrieved: Retrieved, tur
                    user_text: str | None, situation: str | None, now: float, examples: str = "",
                    kind: str | None = None) -> list[dict]:
     """examples (the made-up style exchanges) sit right after the persona, never inside the memory block; kind is
-    the reply's turn kind (shaping.turn_kind), which picks the reply-rules line and the facts-only about-me block."""
+    the reply's turn kind (shaping.turn_kind), which picks the reply-rules line and the facts-only about-me block; an
+    about-me turn with facts also gets about_me_situation."""
     parts = [persona, *([examples] if examples else []), feelings_tag,
              _memory_block(retrieved, now, about_me=kind == "about_me"), HONESTY_LINE]
+    if kind == "about_me" and retrieved.facts:
+        situation = " ".join(filter(None, [situation, about_me_situation(retrieved.facts)]))
     if situation:
         parts.append("[Situation] " + situation)
     if rule := reply_rule(kind):

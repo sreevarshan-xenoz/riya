@@ -204,3 +204,61 @@ def test_remember_situation_quotes_the_saved_fact():
     assert remember_situation("The user said: I hate cilantro") == (
         'You just saved this to memory: "The user said: I hate cilantro". '
         "You've already told them you'll remember it, so just react to it in one short sentence.")
+
+
+# ---- final fix wave: I1, a deterministic about-me ----
+from riya.core.prompt import about_me_situation, natural  # noqa: E402
+
+
+@pytest.mark.parametrize("fact, want", [
+    ("The user is a college student", "they're a college student"),
+    ("The user listens to lo-fi music while working", "they listen to lo-fi music while working"),
+    ("The user's birthday is on 3 March", "their birthday is on 3 March"),
+    ("The user said: their favourite colour is teal", "their favourite colour is teal"),
+    ("The user said: they hate cilantro.", "they hate cilantro"),
+    ("The user has a calculus exam on Friday", "they have a calculus exam on Friday"),
+    ("The user watches anime late", "they watch anime late"), ("The user studies at night", "they study at night"),
+    ("The user can't swim", "they can't swim"),
+    ("Lives in Pune", "lives in Pune")])
+def test_natural_turns_a_stored_fact_into_a_they_phrase(fact, want):
+    assert natural(fact) == want
+
+
+def _fact(i, text):
+    return Fact(i, text, None, "user_said", 0.9, NOW, None, "active", None)
+
+
+def test_about_me_situation_lists_at_most_eight_facts_and_says_she_does_remember():
+    facts = [_fact(i, f"The user likes thing{i}") for i in range(10)]
+    s = about_me_situation(facts)
+    assert s.startswith("You DO remember these things about them: they like thing0; they like thing1;")
+    assert "thing7" in s and "thing8" not in s
+    assert s.endswith("Mention them warmly in your own words; don't say you don't remember.")
+
+
+def test_an_about_me_turn_with_facts_carries_the_about_me_situation():
+    system = _system(Retrieved([EXAM], [], []), kind="about_me", situation="S")
+    assert "[Situation] S You DO remember these things about them: they have an exam on Thursday." in system
+    assert NO_ABOUT_ME_LINE not in system
+
+
+def test_an_about_me_turn_with_no_facts_keeps_nothing_yet():
+    system = _system(Retrieved([], [EP], []), kind="about_me")
+    assert NO_ABOUT_ME_LINE in system and "You DO remember" not in system and "[Situation]" not in system
+
+
+def test_other_turns_never_get_the_about_me_situation():
+    assert "You DO remember" not in _system(Retrieved([EXAM], [], []), kind="small")
+
+
+def test_local_persona_scopes_not_knowing_to_their_life():
+    p = persona_prompt("local")
+    assert "If they ask about something in their life that isn't in your memory, say you don't know." in p
+    assert "don't remember" not in p.lower()
+
+
+def test_the_favourite_movie_example_is_cheerfully_honest_without_dont_remember():
+    lines = style_examples().splitlines()
+    i = next(i for i, ln in enumerate(lines) if "favourite movie" in ln)
+    answer = lines[i + 1]
+    assert answer.startswith("Riya: ") and "don't know" in answer and "remember" not in answer.lower()
