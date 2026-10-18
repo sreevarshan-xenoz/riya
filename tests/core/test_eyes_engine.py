@@ -32,8 +32,8 @@ def jpeg(shade: int = 128) -> bytes:
 
 
 def win(hwnd=1, title="main.py - riya - Visual Studio Code", process="Code.exe", rect=(0, 0, 800, 600), monitor=MON,
-        minimized=False, is_riya=False) -> WindowInfo:
-    return WindowInfo(hwnd, title, process, rect, monitor, minimized, is_riya)
+        minimized=False, is_riya=False, **kw) -> WindowInfo:
+    return WindowInfo(hwnd, title, process, rect, monitor, minimized, is_riya, **kw)
 
 
 RIYA = WindowInfo(9, "Riya", "electron.exe", (1500, 500, 1800, 1020), MON, False, True)
@@ -312,6 +312,30 @@ def test_she_does_not_watch_while_covering_her_eyes_or_a_denylisted_window():
     source.info = win(title="PayPal - Chrome")
     run(core, clock, 2)
     assert of(emitted, Look)[-1].watching is False
+
+
+DESKTOP = WindowInfo(5, "", "explorer.exe", MON, MON, False, False, "Progman")
+TASKBAR = WindowInfo(6, "", "explorer.exe", (0, 1032, 1920, 1080), MON, False, False, "Shell_TrayWnd")
+
+
+@pytest.mark.parametrize("shell", [DESKTOP, TASKBAR, WindowInfo(7, "", "explorer.exe", MON, MON, False, False, "WorkerW"),
+                                   WindowInfo(8, "Search", "SearchHost.exe", MON, MON, False, False, "x")])
+def test_the_desktop_and_taskbar_are_never_glanced_or_grabbed(shell):
+    core, emitted, _, local, clock, vision, _, grab = eyes_core(info=shell)
+    run(core, clock, 400)
+    assert grab.calls == [] and vision.calls == []
+    assert of(emitted, Look)[-1] == Look(side=None, watching=False)
+    assert list(core.reply("what's on my screen?"))
+    assert grab.calls == [] and vision.calls == []
+    assert "no window in front of you" in situation(local) and "explorer" not in situation(local)
+
+
+def test_a_click_through_overlay_is_never_grabbed():
+    core, emitted, _, local, clock, vision, _, grab = eyes_core(info=win(ex_style=0x80020))
+    run(core, clock, 10)
+    assert grab.calls == [] and vision.calls == [] and of(emitted, Look)[-1].watching is False
+    list(core.reply("what's on my screen?"))
+    assert grab.calls == [] and "see-through overlay" in situation(local)
 
 
 # ---- don't look ----------------------------------------------------------------------------------------------------

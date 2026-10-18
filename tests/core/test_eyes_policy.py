@@ -5,7 +5,8 @@ import pytest
 
 from riya.core.clock import FakeClock
 from riya.core.eyes.capture import WindowInfo
-from riya.core.eyes.policy import DENY_PROCESSES, DENY_TITLES, GlancePolicy, denied, validate_patterns
+from riya.core.eyes.policy import (DENY_PROCESSES, DENY_TITLES, GlancePolicy, denied, is_shell_surface,
+                                  validate_patterns, window_refusal)
 
 MON = (0, 0, 1920, 1080)
 FLAT = bytes([100]) * (64 * 36)
@@ -50,9 +51,66 @@ def test_default_processes_denied(process):
 
 
 @pytest.mark.parametrize("title,process", [("main.py - Riya", "code.exe"), ("Untitled - Notepad", "notepad.exe"),
-                                           ("", "explorer.exe"), ("Docs", "chrome.exe")])
+                                           ("Docs", "chrome.exe")])
 def test_ordinary_windows_not_denied(title, process):
     assert not denied(info(title=title, process=process), (), ())
+
+
+# ---- shell surfaces and overlays -----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("title,process,cls", [
+    ("", "explorer.exe", "Progman"),                       # the desktop
+    ("Program Manager", "explorer.exe", "Progman"),
+    ("", "explorer.exe", "WorkerW"),                       # the desktop behind the wallpaper layer
+    ("", "Explorer.EXE", "Shell_TrayWnd"),                 # the taskbar
+    ("", "explorer.exe", "Shell_SecondaryTrayWnd"),        # the taskbar on a second monitor
+    ("", "", "Progman"),                                   # unreadable process: still the desktop
+    ("Start", "explorer.exe", "Windows.UI.Core.CoreWindow"),
+    ("Search", "SearchHost.exe", "Windows.UI.Core.CoreWindow"),
+    ("Search", "searchhost.exe", "anything"),
+    ("Start", "StartMenuExperienceHost.exe", ""),
+    ("Notification Centre", "ShellExperienceHost.exe", ""),
+    ("Windows Default Lock Screen", "LockApp.exe", ""),
+    ("Search", "SearchApp.exe", ""),
+])
+def test_the_desktop_taskbar_and_shell_count_as_no_window(title, process, cls):
+    p, _ = make()
+    w = info(title=title, process=process, cls=cls, rect=MON)  # the desktop's rect is the whole monitor
+    assert is_shell_surface(w)
+    assert p.allowed(**ok(info=w)) == "no window"
+    assert p.allowed(**ok(info=w), force=True) == "no window"
+
+
+@pytest.mark.parametrize("title,process,cls", [
+    ("Documents", "explorer.exe", "CabinetWClass"),        # a File Explorer window is an ordinary window
+    ("Calculator", "ApplicationFrameHost.exe", "ApplicationFrameWindow"),
+    ("Photos", "Photos.exe", "Windows.UI.Core.CoreWindow"),  # an app's CoreWindow, not the shell's
+])
+def test_ordinary_windows_are_not_shell_surfaces(title, process, cls):
+    p, _ = make()
+    w = info(title=title, process=process, cls=cls)
+    assert not is_shell_surface(w) and p.allowed(**ok(info=w)) is None
+
+
+@pytest.mark.parametrize("ex_style,reason", [(0x80000 | 0x20, "overlay"), (0x80000 | 0x20 | 0x8, "overlay"),
+                                             (0x80000, None), (0x20, None), (0, None)])
+def test_click_through_overlays_are_refused(ex_style, reason):
+    p, _ = make()
+    assert p.allowed(**ok(info=info(ex_style=ex_style))) == reason
+    assert p.allowed(**ok(info=info(ex_style=ex_style)), force=True) == reason
+
+
+def test_window_refusal_is_the_windows_own_reasons():
+    assert window_refusal(info()) is None
+    assert window_refusal(None) == "no window"
+    assert window_refusal(info(cls="Progman")) == "no window"
+    assert window_refusal(info(minimized=True)) == "minimized"
+    assert window_refusal(info(is_riya=True, ex_style=0x80020)) == "riya window"  # her own click-through window
+    assert window_refusal(info(process="")) == "unknown process"
+    assert window_refusal(info(ex_style=0x80020)) == "overlay"
+    assert window_refusal(info(title="Bitwarden")) == "denylisted"
+    assert window_refusal(info(), ["main"]) == "denylisted"
+    assert window_refusal(info(), (), ["code"]) == "denylisted"
 
 
 def test_defaults_are_the_spec_patterns():

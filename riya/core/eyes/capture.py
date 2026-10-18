@@ -20,6 +20,9 @@ class WindowInfo:
     monitor: Rect
     minimized: bool
     is_riya: bool
+    cls: str = ""  # window class (GetClassNameW): tells the desktop and the taskbar from real windows
+    ex_style: int = 0  # extended style (GWL_EXSTYLE): click-through overlays
+    cloaked: bool = False  # DWM-cloaked (another virtual desktop, a suspended app): not on screen
 
 
 class WindowSource(Protocol):
@@ -110,6 +113,11 @@ class WindowsWindowSource:
         u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         u.IsIconic.argtypes = [wintypes.HWND]
+        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        # 32-bit Python has only GetWindowLongW (the same thing there)
+        self._ex_style = getattr(u, "GetWindowLongPtrW", None) or u.GetWindowLongW
+        self._ex_style.restype = ctypes.c_ssize_t
+        self._ex_style.argtypes = [wintypes.HWND, ctypes.c_int]
         u.IsWindow.argtypes = [wintypes.HWND]
         u.MonitorFromWindow.restype = wintypes.HANDLE
         u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -141,6 +149,10 @@ class WindowsWindowSource:
                 return (0, 0, 0, 0)
         return (r.left, r.top, r.right, r.bottom)
 
+    def _cloaked(self, hwnd) -> bool:
+        v = self._w.DWORD()
+        return self._dwm.DwmGetWindowAttribute(hwnd, 14, self._c.byref(v), 4) == 0 and v.value != 0  # DWMWA_CLOAKED
+
     def foreground(self) -> WindowInfo | None:
         try:
             return self._info(self._user32.GetForegroundWindow())
@@ -168,9 +180,12 @@ class WindowsWindowSource:
             if not u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), c.byref(mon)):  # MONITOR_DEFAULTTONEAREST
                 return None
             m = mon.rcMonitor
+            cls = c.create_unicode_buffer(257)
+            u.GetClassNameW(hwnd, cls, 257)
             return WindowInfo(int(hwnd), title, path.replace("\\", "/").rsplit("/", 1)[-1], self._frame(hwnd),
                               (m.left, m.top, m.right, m.bottom), bool(u.IsIconic(hwnd)),
-                              is_riya_window(path, title))
+                              is_riya_window(path, title), cls.value, self._ex_style(hwnd, -20) & 0xFFFFFFFF,
+                              self._cloaked(hwnd))
         except Exception:
             return None
 

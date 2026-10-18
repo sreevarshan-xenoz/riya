@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
-from riya.core.eyes.policy import GlancePolicy, denied
+from riya.core.eyes.policy import GlancePolicy, window_refusal
 from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
@@ -667,8 +667,7 @@ class RiyaCore:
         if why is None and not self._may_look(gen):
             why = "don't look"
         guess = None
-        if info is not None and not (info.is_riya or info.minimized or denied(info, s.eyes_deny_titles,
-                                                                              s.eyes_deny_processes)):
+        if window_refusal(info, s.eyes_deny_titles, s.eyes_deny_processes) is None:
             guess = f'"{info.title}" ({info.process})'
         if why is not None:
             return SimpleNamespace(jpeg=None, situation=cant_see_situation(
@@ -726,10 +725,10 @@ class RiyaCore:
 
     def _emit_look(self, info: WindowInfo | None, s: Settings) -> None:
         """look, only when it changed: the side of her the window is on, and whether she's watching it."""
-        side = None if info is None or info.minimized or info.is_riya else self._side(info, s)
-        watching = (side is not None and s.eyes_enabled and not s.dont_look
-                    and self.presence.state in ("focused", "talking")
-                    and not denied(info, s.eyes_deny_titles, s.eyes_deny_processes))
+        why = window_refusal(info, s.eyes_deny_titles, s.eyes_deny_processes)
+        side = None if why in ("no window", "minimized", "riya window") else self._side(info, s)
+        watching = (why is None and s.eyes_enabled and not s.dont_look
+                    and self.presence.state in ("focused", "talking"))
         look = Look(side=side, watching=watching)
         if look != self._look:
             self._look = look

@@ -11,6 +11,15 @@ DENY_TITLES = ("password|1password|bitwarden|keepass|lastpass|bank|banking|paypa
                "inprivate|incognito|private browsing|windows security|credential|sign in to|login")
 DENY_PROCESSES = "keepass.*|1password.*|bitwarden.*|credentialuibroker"
 _LOOKING = ("focused", "talking")
+# The desktop, the taskbar and the shell's own surfaces: "no window" (the desktop's rect is the whole monitor, so a
+# grab would send every window on it). These classes always; the shell's CoreWindow (Start, search) only in a shell
+# process; these processes whatever the class.
+SHELL_CLASSES = frozenset(c.casefold() for c in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"))
+SHELL_APPS = frozenset(("searchhost.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe", "lockapp.exe",
+                        "searchapp.exe"))
+SHELL_PROCESSES = SHELL_APPS | {"explorer.exe"}
+CORE_WINDOW = "windows.ui.core.corewindow"
+OVERLAY = 0x80000 | 0x20  # WS_EX_LAYERED | WS_EX_TRANSPARENT: a click-through overlay
 
 
 @lru_cache(maxsize=256)
@@ -41,6 +50,30 @@ def denied(info: WindowInfo, extra_titles: Iterable[str] = (), extra_processes: 
     if not info.process:
         return True
     return _hit(info.title, _TITLES, extra_titles) or _hit(info.process, _PROCESSES, extra_processes)
+
+
+def is_shell_surface(info: WindowInfo) -> bool:
+    cls, proc = info.cls.casefold(), info.process.casefold()
+    return cls in SHELL_CLASSES or proc in SHELL_APPS or (cls == CORE_WINDOW and proc in SHELL_PROCESSES)
+
+
+def window_refusal(info: WindowInfo | None, extra_titles: Iterable[str] = (),
+                   extra_processes: Iterable[str] = ()) -> str | None:
+    """Why the window itself is never looked at (None: it may be): no window (none, or a shell surface), minimized,
+    her own, an unreadable process, a click-through overlay, or denylisted."""
+    if info is None or is_shell_surface(info):
+        return "no window"
+    if info.minimized:
+        return "minimized"
+    if info.is_riya:
+        return "riya window"
+    if not info.process:
+        return "unknown process"
+    if info.ex_style & OVERLAY == OVERLAY:
+        return "overlay"
+    if denied(info, extra_titles, extra_processes):
+        return "denylisted"
+    return None
 
 
 class GlancePolicy:
@@ -103,16 +136,8 @@ class GlancePolicy:
             return "don't look"
         if presence not in _LOOKING:
             return f"presence {presence}"
-        if info is None:
-            return "no window"
-        if info.minimized:
-            return "minimized"
-        if info.is_riya:
-            return "riya window"
-        if not info.process:
-            return "unknown process"
-        if denied(info, extra_titles, extra_processes):
-            return "denylisted"
+        if why := window_refusal(info, extra_titles, extra_processes):
+            return why
         if not online_ok:
             return "online model unavailable"
         if self._count >= self.cap:

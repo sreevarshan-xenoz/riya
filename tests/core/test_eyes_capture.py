@@ -196,3 +196,41 @@ def test_window_and_idle_sources_do_not_clobber_each_other(window_first):
         idle, w = WindowsIdleSource(), WindowsWindowSource()
     assert w.foreground() is not None
     assert isinstance(idle.fullscreen(), bool)
+
+
+def test_window_info_defaults_keep_old_constructions():
+    w = WindowInfo(1, "t", "p.exe", (0, 0, 1, 1), MON, False, False)
+    assert (w.cls, w.ex_style, w.cloaked) == ("", 0, False)
+
+
+def _find(cls):
+    import ctypes
+    from ctypes import wintypes
+
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    u.FindWindowW.restype = wintypes.HWND
+    u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    return u.FindWindowW(cls, None)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+@pytest.mark.parametrize("cls", ["Progman", "Shell_TrayWnd"])
+def test_windows_desktop_and_taskbar_are_refused_as_no_window(cls):
+    """Read-only: the real desktop and taskbar windows, by class (nothing is created, moved or focused)."""
+    from riya.core.clock import FakeClock
+    from riya.core.eyes.policy import GlancePolicy
+
+    hwnd = _find(cls)
+    if not hwnd:
+        pytest.skip(f"no {cls} window (no explorer shell)")
+    w = WindowsWindowSource().window(hwnd)
+    assert w is not None and w.cls == cls and w.process.lower() == "explorer.exe"
+    assert GlancePolicy(FakeClock()).allowed(info=w, presence="focused", eyes_enabled=True, dont_look=False,
+                                             online_ok=True, force=True) == "no window"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_windows_info_reads_class_and_ex_style():
+    w = WindowsWindowSource().foreground()
+    if w is not None:
+        assert isinstance(w.cls, str) and w.cls and isinstance(w.ex_style, int) and w.ex_style >= 0
