@@ -18,5 +18,7 @@ contextBridge.exposeInMainWorld("riya", {
   dragStart: () => ipcRenderer.send("drag-start"),
   dragEnd: () => ipcRenderer.send("drag-end"),
   /** Resolves to { dir, manifest } with manifest frame paths as file URLs, or null if no pack is usable. */
+  /** Resolves to the active talk-hotkey accelerator string, or null if none could be registered. */
+  hotkey: () => ipcRenderer.invoke("hotkey:get"),
   getPack: () => ipcRenderer.invoke("pack:get"),
 });
