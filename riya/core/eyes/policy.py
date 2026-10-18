@@ -83,7 +83,7 @@ class GlancePolicy:
 
     def allowed(self, *, info: WindowInfo | None, presence: str, eyes_enabled: bool, dont_look: bool, online_ok: bool,
                 extra_titles: Iterable[str] = (), extra_processes: Iterable[str] = (), force: bool = False) -> str | None:
-        """None when she may look, else why not. `force` (a screen question) skips only the min gap."""
+        """None when she may look, else why not. `force` (a screen question) skips only min gap and backoff."""
         now = self._now()
         self._roll(now)
         if not eyes_enabled:
@@ -106,7 +106,7 @@ class GlancePolicy:
             return "online model unavailable"
         if self._count >= self.cap:
             return "daily cap"
-        if self._until is not None and now < self._until:
+        if not force and self._until is not None and now < self._until:
             return "backoff"
         if not force and self._last_at is not None and now - self._last_at < self.min_gap_s:
             return "min gap"
@@ -135,7 +135,7 @@ class GlancePolicy:
         self._last_at, self._last_key, self._last_thumb = now, (info.hwnd, info.title), thumb
 
     def backoff(self, seconds: float) -> None:
-        """No glances (forced or not) for `seconds`; never shortens a longer backoff."""
+        """No unforced glances for `seconds` (a forced one may try; failing re-arms this); never shortens a longer backoff."""
         now = self._now()
         if seconds > 0:
             self._until = max(self._until or 0.0, now + seconds)
