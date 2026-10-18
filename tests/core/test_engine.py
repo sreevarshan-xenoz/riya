@@ -630,10 +630,82 @@ def test_a_bid_drops_a_leading_riya_label():
 
 
 def test_a_remember_that_turn_tells_her_what_she_just_saved():
-    core, _, _, local = make_core(local_replies=["Got it~"])
+    core, _, _, local = make_core(local_replies=["Teal is nice~"])
     list(core.reply("remember that my favourite colour is teal"))
     system = local.calls[-1][0]["content"]
     assert ('[Situation] You just saved this to memory: "The user said: their favourite colour is teal". '
-            "Confirm in one short sentence that you'll remember it.") in system
+            "You've already told them you'll remember it, so just react to it in one short sentence.") in system
     list(core.reply("what's up?"))
     assert "[Situation]" not in local.calls[-1][0]["content"]
+
+
+ACKS = ["Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.", "Mm, I'll remember that one."]
+
+
+def test_a_remember_that_turn_opens_with_a_templated_ack_then_the_model():
+    core, emitted, _, _ = make_core(local_replies=["Teal is a good one."])
+    said = list(core.reply("remember that my favourite colour is teal"))
+    assert said == [ACKS[0], "Teal is a good one."]
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert [m.kind for m in emitted if isinstance(m, Say)] == ["reply", "reply"]
+    assert core.memory.unconsolidated()[-1]["text"] == f"{ACKS[0]} Teal is a good one."
+    assert core.turns[-1]["content"] == f"{ACKS[0]} Teal is a good one."
+
+
+def test_the_remember_acks_rotate_in_order():
+    core, *_ = make_core(local_replies=["Okay."])
+    firsts = [next(iter(core.reply(f"remember that fact number {i}"))) for i in range(5)]
+    assert firsts == ACKS + [ACKS[0]]
+
+
+def test_the_ack_counts_as_one_of_the_three_sentences_and_a_normal_turn_has_none():
+    core, *_ = make_core(local_replies=["One. Two. Three. Four."])
+    assert list(core.reply("remember that I like tea")) == [ACKS[0], "One.", "Two."]
+    assert list(core.reply("what's up")) == ["One.", "Two.", "Three."]
+
+
+def test_a_remember_ack_is_not_emitted_when_nothing_was_saved():
+    core, *_ = make_core(local_replies=["Okay."])
+    assert list(core.reply("do you remember me?")) == ["Okay."]
+
+
+def test_an_identity_question_adds_the_ai_line_to_the_situation():
+    core, _, _, local = make_core(local_replies=["I'm an AI, silly."])
+    list(core.reply("are you human?"))
+    assert ("[Situation] They're asking what you are. Say clearly that you're an AI, using the word AI, in your style."
+            in local.calls[-1][0]["content"])
+    list(core.reply("what are you doing?"))
+    assert "asking what you are" not in local.calls[-1][0]["content"]
+
+
+def test_remember_and_identity_situations_combine():
+    core, _, _, local = make_core(local_replies=["Okay."])
+    list(core.reply("remember that I like tea, are you a bot"))
+    system = local.calls[-1][0]["content"]
+    assert "You just saved this to memory" in system and "asking what you are" in system
+
+
+def test_a_short_generic_sentence_is_neither_said_nor_recorded():
+    core, emitted, _, _ = make_core(local_replies=["Nice work today. You've got this! Go rest."])
+    said = list(core.reply("I finished my essay"))
+    assert said == ["Nice work today.", "Go rest."]
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert core.memory.unconsolidated()[-1]["text"] == "Nice work today. Go rest."
+    assert core.turns[-1]["content"] == "Nice work today. Go rest."
+
+
+def test_a_leading_generic_sentence_is_dropped_when_another_follows():
+    core, *_ = make_core(local_replies=["No pressure. Tell me more."])
+    assert list(core.reply("I'm stuck")) == ["Tell me more."]
+
+
+def test_a_sole_generic_sentence_is_kept_but_a_long_one_always_is():
+    core, *_ = make_core(local_replies=["You've got this!"])
+    assert list(core.reply("exam tomorrow")) == ["You've got this!"]
+    core, *_ = make_core(local_replies=["Okay. Just let me know if you need anything at all."])
+    assert list(core.reply("hm")) == ["Okay.", "Just let me know if you need anything at all."]
+
+
+def test_a_dropped_generic_sentence_after_a_remember_ack_leaves_the_ack():
+    core, *_ = make_core(local_replies=["No pressure."])
+    assert list(core.reply("remember that I like tea")) == [ACKS[0]]

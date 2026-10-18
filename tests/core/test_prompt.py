@@ -203,4 +203,4 @@ def test_remember_situation_quotes_the_saved_fact():
     from riya.core.prompt import remember_situation
     assert remember_situation("The user said: I hate cilantro") == (
         'You just saved this to memory: "The user said: I hate cilantro". '
-        "Confirm in one short sentence that you'll remember it.")
+        "You've already told them you'll remember it, so just react to it in one short sentence.")

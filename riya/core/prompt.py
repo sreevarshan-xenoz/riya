@@ -81,8 +81,12 @@ def greeting_situation(away_s: float, missing: float, thread: Thread | None) -> 
 
 
 def remember_situation(fact: str) -> str:
-    """A remember-that turn: the fact is already saved, so she only has to confirm it."""
-    return f'You just saved this to memory: "{fact}". Confirm in one short sentence that you\'ll remember it.'
+    """A remember-that turn: the fact is saved and the engine has already said its templated ack, so she only reacts."""
+    return (f'You just saved this to memory: "{fact}". '
+            "You've already told them you'll remember it, so just react to it in one short sentence.")
+
+
+IDENTITY_SITUATION = "They're asking what you are. Say clearly that you're an AI, using the word AI, in your style."
 
 
 def bid_situation(reason: str, thread: Thread | None) -> str:

@@ -25,7 +25,7 @@ CHUNK_CHARS = 8000
 CHUNK_GAP_S = 1800  # a longer silence starts a new conversation
 MAX_FAILURES = 3
 log = logging.getLogger("riya.consolidate")
-REMEMBER_RE = re.compile(r"^\s*(?:riya[,!\s]+)?(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*[.!]*$", re.IGNORECASE)
+REMEMBER_RE = re.compile(r"^\s*(?:riya[,!\s]+)?(?:(?:please|also)\s+)*remember(?:\s+that)?\s+(.+?)\s*[.!]*$", re.IGNORECASE)
 
 
 @dataclass
@@ -137,9 +137,9 @@ class Consolidator:
                     {"role": "user", "content": "\n".join(f"{r['role']}: {r['text']}" for r in rows)}]
         try:
             proposals = _parse(complete(model or self.model_getter(), messages, max_tokens=600))
-        except ModelUnavailable:
-            proposals = None
-        if proposals is None:  # down, or an unusable reply: leave the transcripts so a later run retries
+        except ModelUnavailable:  # an outage isn't the chunk's fault: leave it, retry on the normal cadence, uncounted
+            return Proposals.empty()
+        if proposals is None:  # an unusable reply: leave the transcripts so a later run retries; 3 in a row give up
             self._failed(rows)
             return Proposals.empty()
         self._failures = None

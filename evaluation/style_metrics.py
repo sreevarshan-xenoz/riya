@@ -5,12 +5,9 @@ import re
 import statistics
 
 from riya.core.appraise import SENTENCE_END
-from riya.core.shaping import CODE_BLOCK, EMOJI, count_emoji  # noqa: F401  (the emoji policy and its regex live in core)
+# the emoji policy and the generic phrases live in core, where she enforces them
+from riya.core.shaping import CODE_BLOCK, EMOJI, GENERIC_PHRASES, count_emoji  # noqa: F401
 
-GENERIC_PHRASES: tuple[str, ...] = (
-    "you've got this", "no pressure", "let me know", "i'm here to", "i'm here for you", "feel free",
-    "how can i help", "happy to help", "don't hesitate", "just say the word", "we'll figure it out together",
-    "take a deep breath")
 PERSONA_MARKERS: tuple[str, ...] = (
     "~", "hmph", "silly", "dummy", "missed you", "pay attention to me", "you're back", "teas", "pout", "hehe", "cute",
     "c'mon", "obviously", "told you")

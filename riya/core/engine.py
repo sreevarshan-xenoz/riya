@@ -18,14 +18,15 @@ from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
-from riya.core.prompt import bid_situation, build_messages, greeting_situation, remember_situation
+from riya.core.prompt import (IDENTITY_SITUATION, bid_situation, build_messages, greeting_situation,
+                              remember_situation)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
                                 Hello, MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings,
                                 SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
-from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, limit_emoji, strip_label,
-                               turn_kind)
+from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, drop_generic,
+                               is_identity_question, limit_emoji, strip_label, turn_kind)
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -38,6 +39,8 @@ SAVE_EVERY_S = 30
 STATE_EVERY_S = 30
 PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
+REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
+                 "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 
 
 def _query(action: Action) -> str:
@@ -93,6 +96,7 @@ class RiyaCore:
         self._last_consolidation: float | None = None
         self._away_s = 0.0  # absence behind the greeting that speak_first is about to make
         self._expression = self.feelings.expression()
+        self._acks = 0  # remember-that acks said so far, which picks the next one
 
     @property
     def settings(self) -> Settings:
@@ -109,8 +113,12 @@ class RiyaCore:
                 saved = self._take_user_turn(text)
             except Exception:
                 log.exception("couldn't record the user's turn")
-            yield from self._speak("reply", user_text=text, query=text, spoken=True,
-                                   situation=remember_situation(saved) if saved else None)
+            situation = " ".join(filter(None, [remember_situation(saved) if saved else None,
+                                               IDENTITY_SITUATION if is_identity_question(text) else None])) or None
+            lead = None
+            if saved:
+                lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
+            yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead)
 
     def _take_user_turn(self, text: str) -> str | None:
         """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away)."""
@@ -143,14 +151,21 @@ class RiyaCore:
                                     raised_at=self.clock.now())
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
-               threads: list | None = None, after: Callable[[str], None] | None = None) -> Iterator[str]:
+               threads: list | None = None, after: Callable[[str], None] | None = None,
+               lead: str | None = None) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
-        threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread)."""
+        threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
+        lead is a fixed sentence said first, before the model is even asked; it counts as one of the capped sentences.
+        A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not recorded."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
-        sentences, done = None, {"stream": False}
+        sentences, done, dropped = None, {"stream": False}, []
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
+            if lead:
+                self.emit(Say(utterance_id=uid, text=lead, spoken=spoken, kind=kind))
+                said.append(lead)
+                yield lead
             route_text = user_text or ""
             turn, budget, cap = self._shape(kind, route_text)
             route = self.router.route(route_text)  # decided first, so the prompt carries the matching persona
@@ -163,7 +178,8 @@ class RiyaCore:
                 self.feelings.on_event("thinking")
                 self._sync_expression()
             stream = self.router.stream(messages, route_text, budget)
-            sentences = cap_sentences(self._sentences(stream, parts, done), cap)
+            kept = drop_generic(self._sentences(stream, parts, done), others=bool(lead), dropped=dropped)
+            sentences = cap_sentences(kept, cap - bool(lead))
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
                 self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
@@ -179,9 +195,11 @@ class RiyaCore:
         finally:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
-            whole = outcome == "done" and done["stream"]  # the model finished on its own: keep its own spacing
+            # the model finished on its own and nothing of it was dropped: keep its own spacing
+            whole = outcome == "done" and done["stream"] and not dropped
             text = None if outcome == "failed" else (
-                limit_emoji(strip_label("".join(parts)).strip()) if whole else " ".join(said))
+                " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip())])) if whole
+                else " ".join(said))
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))

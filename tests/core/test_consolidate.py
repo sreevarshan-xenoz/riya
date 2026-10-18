@@ -104,6 +104,8 @@ def test_run_with_nothing_to_consolidate_does_not_call_the_model():
 def test_remember_intent():
     assert remember_intent("Riya, remember that my exam is on Friday.") == "my exam is on Friday"
     assert remember_intent("remember I hate mornings") == "I hate mornings"
+    assert remember_intent("also remember that i hate cilantro") == "i hate cilantro"
+    assert remember_intent("Riya, please also remember I like tea") == "I like tea"
     assert remember_intent("do you remember me?") is None
     assert remember_intent("remember that I like tea?") is None
 
@@ -163,13 +165,37 @@ def test_a_chunk_that_fails_three_times_becomes_a_minimal_episode():
     mem.append_transcript("user", "something the model chokes on")
     c = Consolidator(mem, lambda: FakeModel(replies=["not json"]), clock)
     c.run()
-    c.model_getter = lambda: FakeModel(fail=ModelUnavailable("down"))
     c.run()
     assert mem.recent_episodes(5) == [] and len(mem.unconsolidated()) == 1
     c.run()
     (ep,) = mem.recent_episodes(5)
     day = datetime.fromtimestamp(clock.now()).strftime("%Y-%m-%d")
     assert ep.summary == f"Conversation on {day}: summary unavailable" and mem.unconsolidated() == []
+
+
+def test_an_outage_never_counts_toward_the_failure_cap():
+    clock, mem = setup()
+    mem.append_transcript("user", "something to remember")
+    c = Consolidator(mem, lambda: FakeModel(fail=ModelUnavailable("down")), clock)
+    for _ in range(6):
+        c.run()
+    assert mem.recent_episodes(5) == [] and len(mem.unconsolidated()) == 1
+    c.model_getter = lambda: FakeModel(replies=[json.dumps(PROPOSAL)])
+    c.run()
+    assert mem.unconsolidated() == [] and mem.recent_episodes(5)[0].summary == PROPOSAL["episode_summary"]
+
+
+def test_an_outage_between_unusable_replies_neither_counts_nor_resets():
+    clock, mem = setup()
+    mem.append_transcript("user", "something the model chokes on")
+    c = Consolidator(mem, lambda: FakeModel(replies=["not json"]), clock)
+    c.run(); c.run()
+    c.model_getter = lambda: FakeModel(fail=ModelUnavailable("down"))
+    c.run(); c.run()
+    assert mem.recent_episodes(5) == [] and len(mem.unconsolidated()) == 1
+    c.model_getter = lambda: FakeModel(replies=["not json"])
+    c.run()  # the third unusable reply
+    assert mem.unconsolidated() == [] and mem.recent_episodes(5)[0].outcome == "unconsolidated"
 
 
 def test_a_success_resets_the_failure_count():

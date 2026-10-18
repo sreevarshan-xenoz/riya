@@ -138,7 +138,7 @@ def test_connection_refused_is_unavailable():
 def test_load_online_from_env():
     assert load_online_from_env({}) is None
     m = load_online_from_env({"RIYA_ONLINE_API_KEY": "k"})
-    assert m.base_url == "https://generativelanguage.googleapis.com/v1beta/openai" and m.model == "gemini-2.5-flash"
+    assert m.base_url == "https://generativelanguage.googleapis.com/v1beta/openai" and m.model == "gemini-flash-latest"
 
 
 def test_load_dotenv_parses_and_does_not_override(tmp_path, monkeypatch):
