@@ -10,7 +10,7 @@ const { boundsFor, clampToArea } = require("./src/geometry");
 const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
-  pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay, toPhysical, toDip, DONT_LOOK_HOTKEYS,
+  pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay, toPhysical, toDip, displayConverter, DONT_LOOK_HOTKEYS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -181,12 +181,14 @@ ipcMain.handle("pack:get", (event) => (isStageSender(event.sender) ? loadPack() 
 // ---- windows --------------------------------------------------------------------------------------------------------
 
 /** The saved buddy_position is in physical pixels (what the core compares with window rects); Electron places in DIPs. */
-function displayList() {
-  return screen.getAllDisplays().map((d) => ({ bounds: d.bounds, scaleFactor: d.scaleFactor }));
+/** Electron's own DIP <-> physical conversion on Windows (exact with mixed-DPI monitors); a scale-factor fallback elsewhere. */
+function converter() {
+  if (process.platform === "win32") return screen;
+  return displayConverter(screen.getAllDisplays().map((d) => ({ bounds: d.bounds, scaleFactor: d.scaleFactor })));
 }
 
 function savedPosDip() {
-  return toDip(state.settings.buddy_position, displayList());
+  return toDip(state.settings.buddy_position, converter());
 }
 
 function workAreaFor(mode, pos) {
@@ -371,7 +373,7 @@ function stopDrag(save) {
   state.drag = null;
   if (!save || drag.win.isDestroyed()) return;
   const [x, y] = drag.win.getPosition();
-  const position = toPhysical([x, y], displayList());
+  const position = toPhysical([x, y], converter());
   state.settings.buddy_position = position;
   state.userDragged = true;
   sendToCore({ type: "set_settings", patch: { buddy_position: position } });

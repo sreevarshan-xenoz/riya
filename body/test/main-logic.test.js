@@ -84,7 +84,7 @@ test("rememberForReplay keeps the latest of each replay type in recency order", 
 });
 
 const {
-  DONT_LOOK_HOTKEYS, REPLAY_TYPES, toPhysical, toDip,
+  DONT_LOOK_HOTKEYS, REPLAY_TYPES, toPhysical, toDip, displayConverter,
 } = require("../src/main-logic");
 
 test("the don't-look hotkey falls back from Control+Alt+H to Control+Alt+F10", () => {
@@ -117,30 +117,66 @@ const DISPLAYS = [
 const MIXED = [DISPLAYS[0], { bounds: { x: 1536, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 }];
 
 test("toPhysical multiplies a DIP position by its display's scale factor", () => {
-  assert.deepEqual(toPhysical([1000, 400], DISPLAYS), [1250, 500]);
-  assert.deepEqual(toPhysical([1600, 100], DISPLAYS), [2000, 125]);
-  assert.deepEqual(toPhysical([1600, 100], MIXED), [1600, 100]); // the display it is on decides the factor
-  assert.deepEqual(toPhysical([1001, 401], DISPLAYS), [1251, 501]); // rounded to whole pixels
+  assert.deepEqual(toPhysical([1000, 400], displayConverter(DISPLAYS)), [1250, 500]);
+  assert.deepEqual(toPhysical([1600, 100], displayConverter(DISPLAYS)), [2000, 125]);
+  assert.deepEqual(toPhysical([1600, 100], displayConverter(MIXED)), [1600, 100]); // the display it is on decides the factor
+  assert.deepEqual(toPhysical([1001, 401], displayConverter(DISPLAYS)), [1251, 501]); // rounded to whole pixels
 });
 
 test("toDip divides a physical position by the scale factor of the display it falls on", () => {
-  assert.deepEqual(toDip([1250, 500], DISPLAYS), [1000, 400]);
-  assert.deepEqual(toDip([2000, 125], DISPLAYS), [1600, 100]);
+  assert.deepEqual(toDip([1250, 500], displayConverter(DISPLAYS)), [1000, 400]);
+  assert.deepEqual(toDip([2000, 125], displayConverter(DISPLAYS)), [1600, 100]);
 });
 
 test("toPhysical and toDip round-trip on a scaled display", () => {
-  for (const pos of [[0, 0], [10, 20], [1180, 464], [1600, 100]]) assert.deepEqual(toDip(toPhysical(pos, DISPLAYS), DISPLAYS), pos);
+  for (const pos of [[0, 0], [10, 20], [1180, 464], [1600, 100]]) assert.deepEqual(toDip(toPhysical(pos, displayConverter(DISPLAYS)), displayConverter(DISPLAYS)), pos);
   const one = [{ bounds: { x: 0, y: 0, width: 2560, height: 1440 }, scaleFactor: 1 }];
-  assert.deepEqual(toPhysical([123, 456], one), [123, 456]);
+  assert.deepEqual(toPhysical([123, 456], displayConverter(one)), [123, 456]);
 });
 
 test("a position off every display uses the nearest display's scale; junk passes through", () => {
-  assert.deepEqual(toPhysical([-100, 50], DISPLAYS), [-125, 63]);
-  assert.deepEqual(toPhysical([5000, 50], DISPLAYS), [6250, 63]);
-  assert.deepEqual(toDip([-125, 63], DISPLAYS), [-100, 50]);
-  assert.equal(toPhysical(null, DISPLAYS), null);
-  assert.equal(toDip(undefined, DISPLAYS), undefined);
-  assert.deepEqual(toPhysical([1, "x"], DISPLAYS), [1, "x"]);
-  assert.deepEqual(toPhysical([10, 20], []), [10, 20]);
-  assert.deepEqual(toDip([10, 20], [{ bounds: DISPLAYS[0].bounds, scaleFactor: 0 }]), [10, 20]);
+  assert.deepEqual(toPhysical([-100, 50], displayConverter(DISPLAYS)), [-125, 63]);
+  assert.deepEqual(toPhysical([5000, 50], displayConverter(DISPLAYS)), [6250, 63]);
+  assert.deepEqual(toDip([-125, 63], displayConverter(DISPLAYS)), [-100, 50]);
+  assert.equal(toPhysical(null, displayConverter(DISPLAYS)), null);
+  assert.equal(toDip(undefined, displayConverter(DISPLAYS)), undefined);
+  assert.deepEqual(toPhysical([1, "x"], displayConverter(DISPLAYS)), [1, "x"]);
+  assert.deepEqual(toPhysical([10, 20], displayConverter([])), [10, 20]);
+  assert.deepEqual(toDip([10, 20], displayConverter([{ bounds: DISPLAYS[0].bounds, scaleFactor: 0 }])), [10, 20]);
+});
+
+/** A fake Electron `screen` for a 1.25x primary (1536x864 DIP, 1920x1080 physical) with a 1.0x secondary to its right
+ *  (DIP x 1536.., physical x 1920..), converting the way Windows does: per display, from its own origin. */
+function fakeMixedScreen() {
+  const shown = [
+    { dip: { x: 0, y: 0, width: 1536, height: 864 }, phys: { x: 0, y: 0 }, k: 1.25 },
+    { dip: { x: 1536, y: 0, width: 1920, height: 1080 }, phys: { x: 1920, y: 0 }, k: 1 },
+  ];
+  const within = (v, lo, size) => v >= lo && v < lo + size;
+  return {
+    dipToScreenPoint({ x, y }) {
+      const d = shown.find((m) => within(x, m.dip.x, m.dip.width) && within(y, m.dip.y, m.dip.height));
+      return { x: d.phys.x + (x - d.dip.x) * d.k, y: d.phys.y + (y - d.dip.y) * d.k };
+    },
+    screenToDipPoint({ x, y }) {
+      const d = shown.find((m) => within(x, m.phys.x, m.dip.width * m.k) && within(y, m.phys.y, m.dip.height * m.k));
+      return { x: d.dip.x + (x - d.phys.x) / d.k, y: d.dip.y + (y - d.phys.y) / d.k };
+    },
+  };
+}
+
+test("mixed DPI: a position saved from the 1.0x monitor comes back on that monitor", () => {
+  const conv = fakeMixedScreen();
+  assert.deepEqual(toPhysical([1600, 100], conv), [1984, 100]);
+  assert.deepEqual(toDip([1984, 100], conv), [1600, 100]);
+  for (const pos of [[0, 0], [1180, 464], [1535, 863], [1536, 0], [1600, 100], [3000, 900]]) {
+    assert.deepEqual(toDip(toPhysical(pos, conv), conv), pos, String(pos));
+  }
+});
+
+test("a conversion that throws or answers junk leaves the position as it was", () => {
+  const broken = { dipToScreenPoint() { throw new Error("not implemented on this platform"); }, screenToDipPoint: () => ({ x: NaN, y: 1 }) };
+  assert.deepEqual(toPhysical([5, 6], broken), [5, 6]);
+  assert.deepEqual(toDip([5, 6], broken), [5, 6]);
+  assert.deepEqual(toPhysical([5, 6], null), [5, 6]);
 });

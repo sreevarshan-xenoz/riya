@@ -52,23 +52,45 @@ function displayAt(point, displays, rectOf) {
   return best;
 }
 
-/** A buddy position in DIPs -> physical pixels (what the core compares with window rects); `displays` are Electron's
- *  { bounds, scaleFactor }. Anything that is not a finite [x, y] passes through. */
-function toPhysical(pos, displays) {
-  if (!isPos(pos)) return pos;
-  const k = scaleOf(displayAt(pos, displays, (d) => d.bounds));
-  return [Math.round(pos[0] * k), Math.round(pos[1] * k)];
-}
-
-/** The inverse of toPhysical, using the display whose physical rect holds (or is nearest to) the position. */
-function toDip(pos, displays) {
-  if (!isPos(pos)) return pos;
+/** A converter over Electron's `{ bounds, scaleFactor }` displays with the shape of `screen.dipToScreenPoint` and
+ *  `screen.screenToDipPoint`: DIP x scale of the display the point is on. Exact only where all displays share a scale
+ *  (the main process uses the real `screen` on Windows, which is exact with mixed DPI). */
+function displayConverter(displays) {
   const physical = (d) => {
     const k = scaleOf(d);
     return { x: d.bounds.x * k, y: d.bounds.y * k, width: d.bounds.width * k, height: d.bounds.height * k };
   };
-  const k = scaleOf(displayAt(pos, displays, physical));
-  return [Math.round(pos[0] / k), Math.round(pos[1] / k)];
+  return {
+    dipToScreenPoint({ x, y }) {
+      const k = scaleOf(displayAt([x, y], displays, (d) => d.bounds));
+      return { x: Math.round(x * k), y: Math.round(y * k) };
+    },
+    screenToDipPoint({ x, y }) {
+      const k = scaleOf(displayAt([x, y], displays, physical));
+      return { x: Math.round(x / k), y: Math.round(y / k) };
+    },
+  };
+}
+
+const convert = (pos, fn) => {
+  if (!isPos(pos) || !fn) return pos;
+  try {
+    const out = fn({ x: pos[0], y: pos[1] });
+    return out && Number.isFinite(out.x) && Number.isFinite(out.y) ? [Math.round(out.x), Math.round(out.y)] : pos;
+  } catch (e) {
+    return pos; // e.g. Electron on a platform without the conversion
+  }
+};
+
+/** A buddy position in DIPs -> physical pixels (what the core compares with window rects). `conv` has Electron's
+ *  `dipToScreenPoint`; anything that is not a finite [x, y] passes through. */
+function toPhysical(pos, conv) {
+  return convert(pos, conv && conv.dipToScreenPoint && conv.dipToScreenPoint.bind(conv));
+}
+
+/** The inverse of toPhysical, through `conv.screenToDipPoint`. */
+function toDip(pos, conv) {
+  return convert(pos, conv && conv.screenToDipPoint && conv.screenToDipPoint.bind(conv));
 }
 
 /** Keep the latest message of each replay type, in recency order, so a replay ends with the newest (state or
@@ -81,5 +103,5 @@ function rememberForReplay(cache, msg) {
 
 module.exports = {
   MODES, REPLAY_TYPES, DONT_LOOK_HOTKEYS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay,
-  toPhysical, toDip,
+  toPhysical, toDip, displayConverter,
 };
