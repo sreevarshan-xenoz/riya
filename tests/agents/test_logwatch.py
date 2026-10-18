@@ -308,13 +308,14 @@ def test_preexisting_half_line_is_read_whole_later(env):
 
 
 def test_progress_bar_reports_the_last_redraw(env):
-    d, *_ = env
+    d, clock, *_ = env
     f = d / "a.out"
     add(f, "x\n")
     w = watch(env)
     w.poll()
     add(f, "10% ok\r50% ok\r60% FAILED oom\n")
     assert w.poll()[-1] == ("colab:run1/a", "fail", "60% FAILED oom")
+    clock.advance(6 * 60)
     add(f, "FAILED early\r90% fine\n")          # overdrawn by the last redraw: not news
     assert w.poll() == [("colab:run1/a", "running", "")]
 
@@ -356,3 +357,48 @@ def test_a_failing_seen_save_keeps_the_events(env):
     w.poll()
     add(d / "a.out", "FAILED\n")
     assert [e[1] for e in w.poll()] == ["running", "fail"]
+
+
+def test_traceback_trailing_lines_do_not_revive_the_run(env):
+    d, clock, *_ = env
+    f = d / "a.out"
+    add(f, "x\n")
+    w = watch(env)
+    w.poll()
+    add(f, "step\nTraceback (most recent call last):\n")
+    assert [e[1] for e in w.poll()] == ["running", "fail"]
+    clock.advance(60)
+    add(f, '  File "train.py", line 3, in <module>\nRuntimeError: oom\n')
+    assert w.poll() == []                       # fail once, no running
+    clock.advance(60)
+    add(f, "more\n")
+    assert w.poll() == []
+
+
+def test_growth_six_minutes_after_fail_is_running_again(env):
+    d, clock, *_ = env
+    f = d / "a.out"
+    add(f, "x\n")
+    w = watch(env)
+    w.poll()
+    add(f, "step\nFAILED oom\n")
+    assert [e[1] for e in w.poll()] == ["running", "fail"]
+    clock.advance(6 * 60)
+    add(f, "resumed\n")
+    assert w.poll() == [("colab:run1/a", "running", "")]
+
+
+def test_lost_is_quiet_too_and_done_revives_at_once(env):
+    d, clock, *_ = env
+    f = d / "a.out"
+    add(f, "x\n")
+    w = watch(env)
+    w.poll()
+    add(f, "LOST session\n")
+    assert [e[1] for e in w.poll()] == ["running", "lost"]
+    clock.advance(60)
+    add(f, "tail\nROLE_DONE\n")                 # a done line inside the window still matches
+    assert w.poll() == [("colab:run1/a", "done", "ROLE_DONE")]
+    clock.advance(60)
+    add(f, "next stage\n")
+    assert w.poll() == [("colab:run1/a", "running", "")]

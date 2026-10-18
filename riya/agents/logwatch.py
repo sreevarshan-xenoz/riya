@@ -14,6 +14,7 @@ POLL_KEY = "agents.logwatch.#poll"
 STALL_S = 30 * 60        # a running log with no growth this long is stalled
 MAX_READ = 1 << 20       # bytes read per file per poll
 LINE_MAX = 120
+FAIL_QUIET_S = 5 * 60    # after fail/lost, growth this soon is the rest of the trace, not a new run
 SLEEP_GAP_S = 5 * 60     # a longer gap between polls means the machine slept: no stall verdict on that poll
 TAIL_PROBE = 64 * 1024   # how far back from EOF to look for the last newline of a pre-existing file
 DEFAULT_ENTRIES = [{
@@ -118,7 +119,9 @@ class LogWatch:
                                 break
             grew = grew or size > st["size"]
             st["size"] = size
-            if grew:
+            quiet = (st["ended"] and st.get("end_kind") in ("fail", "lost")
+                     and now - st.get("end_at", float("-inf")) < FAIL_QUIET_S)
+            if grew and not quiet:
                 back = st["stalled"] or st["ended"]    # growth after stalled/done/fail/lost: running again
                 st["last"], st["stalled"] = now, False
                 if not st["running"] or back:
@@ -127,6 +130,8 @@ class LogWatch:
             for kind in ("lost", "fail", "done"):
                 if kind in hits:
                     out.append((run, kind, hits[kind]))
+                    if kind != "done" or not st["ended"] or st.get("end_at") != now:   # fail/lost outrank done
+                        st["end_kind"], st["end_at"] = kind, now
                     st["ended"] = True
             if st["ended"]:
                 st["running"] = st["stalled"] = False
