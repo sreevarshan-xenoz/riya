@@ -26,4 +26,5 @@ sprites/
 *.db-shm
 .env
 scratch_runs/voice_candidates/
+# the benchmark datasets live in tests/data; the blanket data/ rule above would hide them
 !tests/data/

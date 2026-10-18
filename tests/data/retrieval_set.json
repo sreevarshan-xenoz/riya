@@ -353,6 +353,71 @@
    "q": "What is the user's salary at the bakery?",
    "expect": [],
    "kind": "never_said"
+  },
+  {
+   "q": "Which programming language is better for server-side work?",
+   "expect": [
+    "f6"
+   ],
+   "kind": "paraphrase"
+  },
+  {
+   "q": "Is coffee something the user has at night?",
+   "expect": [
+    "f3"
+   ],
+   "kind": "paraphrase"
+  },
+  {
+   "q": "When was the calculus test moved?",
+   "expect": [
+    "f12"
+   ],
+   "kind": "paraphrase"
+  },
+  {
+   "q": "Which GPU service is used for training now?",
+   "expect": [
+    "f18"
+   ],
+   "kind": "paraphrase"
+  },
+  {
+   "q": "Who reviews the user's code?",
+   "expect": [
+    "f20"
+   ],
+   "kind": "paraphrase"
+  },
+  {
+   "q": "What is the user's sister called?",
+   "expect": [],
+   "kind": "hard_negative"
+  },
+  {
+   "q": "Which brand of notebook computer does the user own?",
+   "expect": [],
+   "kind": "hard_negative"
+  },
+  {
+   "q": "Who was the user's teacher at school?",
+   "expect": [],
+   "kind": "hard_negative"
+  },
+  {
+   "q": "What does the user's father do for a living?",
+   "expect": [],
+   "kind": "hard_negative"
+  },
+  {
+   "q": "Which dessert does the user like most?",
+   "expect": [],
+   "kind": "hard_negative"
+  },
+  {
+   "q": "Which city did the user grow up in?",
+   "expect": [],
+   "kind": "hard_negative"
   }
  ]
 }

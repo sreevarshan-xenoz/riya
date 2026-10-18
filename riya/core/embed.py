@@ -27,13 +27,22 @@ def tokenize(text: str) -> list[str]:
     return out
 
 
+def content_tokens(text: str) -> set[str]:
+    return {t for t in tokenize(text) if t not in STOPWORDS}
+
+
 class Embedder(Protocol):
+    """strong_sim: similarity that alone makes a memory relevant; weak_sim: needs a shared content word as well."""
     dim: int
+    strong_sim: float
+    weak_sim: float
 
     def embed(self, texts: list[str]) -> np.ndarray: ...
 
 
 class HashEmbedder:
+    strong_sim = weak_sim = 0.2
+
     def __init__(self, dim: int = 2048):
         self.dim = dim
 
@@ -48,6 +57,9 @@ class HashEmbedder:
 
 
 class FastEmbedder:
+    # bge-small cosines are high for anything on the same topic: unrelated text scores 0.5-0.7, real hits 0.7+
+    strong_sim, weak_sim = 0.80, 0.60
+
     def __init__(self, model: str = "BAAI/bge-small-en-v1.5"):
         from fastembed import TextEmbedding
 
