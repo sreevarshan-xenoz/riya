@@ -70,8 +70,9 @@ def test_parse_note_rejects_bad_input(text):
 @pytest.mark.parametrize("text", [
     "what's wrong with this", "can you see this error", "what am I looking at", "read this", "look at my screen",
     "What’s wrong with this?", "can you see my screen", "why is this error happening", "what's this error",
-    "look at this", "check this out", "what's going on here", "what does this say", "help me with this code",
-    "is there anything on screen", "tell me what's on my screen", "do you see this?", "explain this"])
+    "what's going on here", "what does this say", "help me with this code", "what's the error here",
+    "is this code right?", "explain this error", "summarize this page", "what does this error mean", "check my screen",
+    "is there anything on screen", "tell me what's on my screen", "do you see this?"])
 def test_screen_questions(text):
     assert is_screen_question(text), text
 
@@ -79,7 +80,10 @@ def test_screen_questions(text):
 @pytest.mark.parametrize("text", [
     "what's wrong with you", "this weekend was fun", "", "hi riya", "how was your day", "I missed you",
     "I think that's right", "that was fun", "what are you doing", "can you see me smiling", "look at you go",
-    "I see that you're tired"])
+    "I see that you're tired",
+    "what does that mean", "what does it say", "explain this concept", "look at that sunset", "check this out tomorrow",
+    "read this book to me later", "fix this problem for me", "what's wrong with this world", "help with this?",
+    "look at this", "check this out", "explain this", "can you see that sunset"])
 def test_not_screen_questions(text):
     assert not is_screen_question(text), text
 
@@ -97,3 +101,32 @@ def test_describe_never_raises():
     assert describe(FakeModel("o", fail=ModelUnavailable("x")), b"") is None
     assert describe(FakeModel("o", ["I can't describe that."]), JPEG) is None
     assert describe(FakeModel("o", ["{\"app\": \"x\", \"activity\": \"y\"", ], fail_after=1), JPEG) is None
+
+
+def test_parse_note_takes_the_first_parsing_object():
+    assert parse_note('{"app":"a","activity":"b"} and {"q":1}') == GlanceNote("a", "b", "", None)
+    assert parse_note('{oops} then {"app":"a","activity":"b"}') == GlanceNote("a", "b", "", None)
+    assert parse_note('{"q": 1} {"app":"a","activity":"b"}') is None  # the first object that parses is the one used
+
+
+@pytest.mark.parametrize("raw", ["null", "NULL", "None", " none ", ""])
+def test_notable_null_strings_become_none(raw):
+    assert parse_note(note_json(notable=raw)).notable is None
+
+
+def test_notable_is_clipped_to_30_words():
+    n = parse_note(note_json(notable=" ".join(f"n{i}" for i in range(50))))
+    assert len(n.notable.split()) == 30 and n.notable.endswith("n29")
+
+
+@pytest.mark.parametrize("activity", ["something private", "Something Private", " SOMETHING PRIVATE. "])
+def test_private_activity_drops_details_and_notable(activity):
+    n = parse_note(note_json(activity=activity, details="their bank balance is 5000", notable="password hunter2"))
+    assert n.details == "" and n.notable is None and n.activity.strip(" .").lower() == "something private"
+
+
+def test_note_prompt_lists_the_sensitive_things_and_covers_notable():
+    p = NOTE_PROMPT.lower()
+    for needle in ("bank or card", "private messages", "dms", "email", "medical", "legal", "password-manager",
+                   "incognito", "private browsing", "including notable"):
+        assert needle in p, needle
