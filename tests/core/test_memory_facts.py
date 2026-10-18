@@ -1,3 +1,5 @@
+import unicodedata
+
 import numpy as np
 import pytest
 
@@ -111,9 +113,22 @@ def test_tamil_and_hindi_facts_are_distinct_and_embedded(mem):
 
 
 def test_accented_text_round_trips_and_matches_decomposed_form(mem):
-    mem.add_fact("The user's favourite place is Café Noir", source="user_said")
-    assert mem.list_facts()[0].text == "The user's favourite place is Café Noir"
-    assert mem.add_fact("the user's favourite place is Café noir", source="inferred") is None
+    composed = unicodedata.normalize("NFC", "The user's favourite place is Café Noir")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    mem.add_fact(composed, source="user_said")
+    assert mem.list_facts()[0].text == composed
+    assert mem.add_fact(decomposed, source="inferred") is None
+
+
+def test_delete_after_bulk_supersession_leaves_nothing_behind(mem):
+    mem.add_fact("The user lives in Chennai", source="inferred", key="user.city")
+    mem.add_fact("The user lives in Bangalore", source="inferred", key="user.city")
+    said = mem.add_fact("The user lives in Madurai", source="user_said", key="user.city")
+    mem.delete_fact(said.id)
+    assert mem.db.execute("select count(*) from facts").fetchone()[0] == 0
+    assert mem.db.execute("select count(*) from forgotten").fetchone()[0] == 3
+    assert mem.add_fact("The user lives in Chennai", source="inferred") is None
 
 
 def test_user_said_overrides_forgotten_marker_but_inference_stays_blocked(mem):

@@ -111,7 +111,7 @@ class Memory:
         return self.get_fact(cur.lastrowid)
 
     def _chain(self, fact_id: int) -> list[int]:
-        """Every version linked to fact_id through supersedes_id, in both directions."""
+        """The supersedes_id chain of fact_id (both directions) plus superseded rows sharing a key with it."""
         seen, todo = set(), [fact_id]
         while todo:
             i = todo.pop()
@@ -122,6 +122,10 @@ class Memory:
             if row and row["supersedes_id"] is not None:
                 todo.append(row["supersedes_id"])
             todo += [r[0] for r in self.db.execute("select id from facts where supersedes_id=?", (i,))]
+        keys = {r[0] for r in self.db.execute(
+            f"select key from facts where id in ({','.join('?' * len(seen))}) and key is not null", list(seen))}
+        for k in keys:  # versions superseded in bulk are linked to the new fact only through the shared key
+            seen.update(r[0] for r in self.db.execute("select id from facts where key=? and status='superseded'", (k,)))
         return sorted(seen)
 
     def delete_fact(self, fact_id: int, delete_episodes: bool = False) -> None:
