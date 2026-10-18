@@ -11,5 +11,11 @@ function isOpaqueAt(rgba, width, x, y, threshold = 16) {
   return rgba[(py * width + px) * 4 + 3] >= threshold;
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { isOpaqueAt };
-else globalThis.RiyaHitTest = { isOpaqueAt };
+/** Client (mouse) coordinates -> pixel coordinates of an image of imgW x imgH drawn to fill `rect`; null for an empty rect. */
+function toImageCoords(rect, imgW, imgH, clientX, clientY) {
+  if (!(rect.width > 0) || !(rect.height > 0)) return null;
+  return { x: ((clientX - rect.left) / rect.width) * imgW, y: ((clientY - rect.top) / rect.height) * imgH };
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { isOpaqueAt, toImageCoords };
+else globalThis.RiyaHitTest = { isOpaqueAt, toImageCoords };

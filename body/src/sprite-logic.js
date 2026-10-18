@@ -76,4 +76,6 @@ function frameFor({ manifest, expression, mouthOpen, blinking }) {
   return resolveFrame(manifest, expression, blinking ? 'blink' : mouthOpen ? 'open' : 'closed');
 }
 
-module.exports = { VARIANTS, validateManifest, resolveFrame, MouthGate, BlinkScheduler, breathing, leanFor, frameFor };
+const spriteExports = { VARIANTS, validateManifest, resolveFrame, MouthGate, BlinkScheduler, breathing, leanFor, frameFor };
+if (typeof module !== 'undefined' && module.exports) module.exports = spriteExports;
+else globalThis.RiyaSprite = spriteExports;
