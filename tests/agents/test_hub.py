@@ -392,3 +392,37 @@ def test_waiting_detail_and_colab_lines_are_redacted(hub):
     assert "hf_abcdefghijklmnop" not in e.text and "***" in e.text
     [e] = hub.on_claude_event(ev("Stop", last_assistant_message="Set password: hunter2 in .env"))
     assert "hunter2" not in e.text
+
+
+# --- re-review N2, N3 ------------------------------------------------------------------------------------------------
+
+def test_a_successful_tool_clears_the_tool_errors_detail(hub):
+    hub.on_claude_event(ev("UserPromptSubmit", prompt="fix it"))
+    for _ in range(3):
+        hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="exit 1"))
+    assert state(hub)["detail"] == "3 tool errors in a row"
+    hub.on_claude_event(ev("PostToolUse", tool_name="Bash"))
+    s = state(hub)
+    assert s["status"] == "busy" and s["detail"] == ""
+    hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="exit 1"))
+    hub.on_claude_event(ev("PostToolUse", tool_name="Bash"))
+    assert state(hub)["detail"] == "Bash failed: exit 1"      # one error isn't "in a row": left as it was
+
+
+@pytest.mark.parametrize("pad", [70, 75, 79, 200, 4085, 4090, 4093, 5000])
+def test_a_key_straddling_any_cut_never_leaks_a_fragment(pad):
+    key = "sk-ant-api03-Zq7Xw9Vb2Nm4Lk8Jh6Gf"
+    for text in ("a" + " " * pad + key + " tail", "b" * pad + " " + key, "\u200b" * pad + key):
+        out = summarize(text)
+        assert "sk-" not in out and "Zq7" not in out and "api03" not in out, (pad, out)
+
+
+def test_snapshot_order_doesnt_move_on_every_tool_call(hub, clock):
+    hub.on_claude_event(ev("UserPromptSubmit", sid="one-aaaa"))
+    clock.advance(1)
+    hub.on_claude_event(ev("UserPromptSubmit", sid="two-aaaa"))
+    first = hub.snapshot()
+    for sid in ("one-aaaa", "two-aaaa", "one-aaaa"):
+        clock.advance(1)
+        hub.on_claude_event(ev("PostToolUse", sid=sid, tool_name="Read"))
+        assert hub.snapshot() == first

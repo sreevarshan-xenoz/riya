@@ -72,6 +72,7 @@ REPORT_FACES = {"failed": "worried", "lost": "worried", "stalled": "worried", "w
 GAME_IDLE_S = 600  # a game with no turn this long ends, silently
 BUSY = frozenset({"busy", "running"})  # an agent at work: her bids may offer a game meanwhile
 HOOKS_SEEN_KEY = "agents.hooks_seen_at"
+HOOKS_SEEN_EVERY_S = 60  # hooks_seen_at (KV and AgentsMsg) moves at most this often: a tool-call flood isn't news
 REPORTS_KEY = "agents.reports"  # pending reports survive a restart
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 _TILDES = re.compile(r"[~\s]*")
@@ -701,9 +702,10 @@ class RiyaCore:
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
-            self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
-            if self._greet_reports:
-                self._last_report_at = self.clock.now()
+            if not self._restricted(self.clock.now()):  # else they stay pending: _report_step's bubble
+                self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
+                if self._greet_reports:
+                    self._last_report_at = self.clock.now()
         return action
 
     # ---- agents -------------------------------------------------------------------------------------
@@ -728,7 +730,7 @@ class RiyaCore:
                 except Exception:
                     log.exception("couldn't take an agent event")
         events += self.agents.tick()
-        if hooks:
+        if hooks and (self._hooks_seen_at is None or not 0 <= now - self._hooks_seen_at < HOOKS_SEEN_EVERY_S):
             self._hooks_seen_at = now
             self.kv.set(HOOKS_SEEN_KEY, now)
         for ev in events:
@@ -751,8 +753,7 @@ class RiyaCore:
             return None
         events = [ev for ev, _ in self._reports.values()]
         kinds = {ev.kind for ev in events}
-        s = self.settings
-        restricted = not s.may_start_conversations or in_quiet_hours(s.quiet_hours, local_time(now))
+        restricted = self._restricted(now)
         if not (kinds & URGENT or state in (("talking",) if restricted else ("break", "talking"))):
             return None
         self._reports, self._last_report_at = {}, now
@@ -762,6 +763,11 @@ class RiyaCore:
             self._report_bubble(events)
             return True
         return Utterance(self._report(events), True)
+
+    def _restricted(self, now: float) -> bool:
+        """Quiet hours, or she may not start conversations: reports are never spoken, only the bubble."""
+        s = self.settings
+        return not s.may_start_conversations or in_quiet_hours(s.quiet_hours, local_time(now))
 
     def _report(self, events: list[AgentEvent]) -> Iterator[str]:
         """One spoken line from the local model (40 tokens, 1 sentence). When nothing of it was said (the model

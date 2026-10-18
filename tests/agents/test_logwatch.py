@@ -482,3 +482,14 @@ def test_a_failing_entry_keeps_its_files(env, monkeypatch):
     clock.advance(2 * 24 * 3600)
     w.poll()
     assert any(k.endswith("a.out") for k in kv)
+
+
+def test_a_colab_line_is_redacted_before_its_cut(env):
+    d, *_ = env
+    f = d / "a.out"
+    add(f, "x\n")
+    w = watch(env)
+    w.poll()
+    add(f, "FAILED" + " " * 107 + "sk-abcd" + "efghijklmnopqrstuvwxyz\n")   # the old cut fell inside the key
+    line = w.poll()[-1][2]
+    assert "sk-" not in line and "abcd" not in line and line.startswith("FAILED")
