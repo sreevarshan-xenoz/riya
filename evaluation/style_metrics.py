@@ -15,13 +15,17 @@ PERSONA_MARKERS: tuple[str, ...] = (
     "~", "hmph", "silly", "dummy", "missed you", "pay attention to me", "you're back", "teas", "pout", "hehe", "cute",
     "c'mon", "obviously", "told you")
 NOT_KNOWN = ("don't remember", "don't know", "not sure", "do not remember", "do not know", "don't recall",
-             "can't remember", "never told me", "haven't told me", "didn't tell me")
+             "can't remember", "never told me", "haven't told me", "didn't tell me", "don't have that info",
+             "don't have any info")
 AI_SAYS = re.compile(r"\b(?:i'?m|i am|as|just|only|simply|really|actually|a type of|a kind of)\s+(?:an?\s+)?"
-                     r"(?:AI|artificial intelligence)\b|\bi(?:'m| am) an? (?:language model|program|chatbot|bot)\b", re.I)
+                     r"(?:AI|artificial intelligence)\b"
+                     r"|\bi(?:'m| am) (?:just |only |simply )?an? (?:language model|program|chatbot|bot)\b", re.I)
 NEGATION = re.compile(r"\b(?:not|never|no)\b|n't\b", re.I)
 NOT_AN_ACK = ("don't", "do not", "won't", "can't", "why would i", "want me to", "should i")  # before "remember"
 CLAUSE_END = re.compile(r"[,;:.!?…—–]|--")
 SENTENCE_START = re.compile(r"(?:^|[.!?…]\s+|\n)\W*")
+GUESS = re.compile(r"\bmaybe\s+(?!(?:you|we|i|i'm|i'll|tell|share|let|later|next|ask)\b)[^.!?,;]{1,40}\?",
+                   re.I)  # "maybe toast?" is a made-up answer; "maybe you can tell me?" isn't
 VALUE_AFTER_IT = re.compile(r"\b[Ii]t(?:'s| was| is)\s+(?:(?:probably|maybe|likely|definitely)\s+\w+|[A-Z0-9]\w*)")
 REMEMBER_ACK = re.compile(r"\b(?:remember(?:ed)?|got it|noted|won't forget|will not forget|never forget|saved|stored"
                           r"|keep that|write that|writing that)\b", re.I)
@@ -134,8 +138,13 @@ def says_ai(reply: str) -> bool:
 def acknowledges(reply: str) -> bool:
     """She says she'll keep it, not that she won't or asks whether to ("Do you want me to remember that?")."""
     t = _plain(reply).lower()
-    return any(not (m.group().startswith("remember") and any(
-        p in " ".join(_words_before(t, m.start())) for p in NOT_AN_ACK)) for m in REMEMBER_ACK.finditer(t))
+
+    def refused(m: re.Match) -> bool:
+        before = " ".join(_words_before(t, m.start()))
+        if m.group() == "got it":  # "you've got it right" is praise, not an ack
+            return bool(re.search(r"\byou(?:'ve| have)?$", before))
+        return m.group().startswith("remember") and any(p in before for p in NOT_AN_ACK)
+    return any(not refused(m) for m in REMEMBER_ACK.finditer(t))
 
 
 def asserts_value(reply: str, question: str = "") -> bool:
@@ -145,7 +154,7 @@ def asserts_value(reply: str, question: str = "") -> bool:
     asked = set(re.findall(r"[a-z]+", _plain(question).lower()))
     names = [m.group() for m in re.finditer(r"\b[A-Z][a-z]+\b", t)
              if m.start() not in starts and m.group() not in ("Riya", "AI") and m.group().lower() not in asked]
-    return bool(names or VALUE_AFTER_IT.search(t))
+    return bool(names or VALUE_AFTER_IT.search(t) or GUESS.search(t))
 
 
 def honest_unknown(reply: str, question: str = "") -> bool:
