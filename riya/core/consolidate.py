@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
+from riya.core.eyes.see import is_private
 from riya.core.memory import Memory
 from riya.core.models import ChatModel, ModelUnavailable, complete
 
@@ -19,7 +20,12 @@ CONSOLIDATE_PROMPT = (
     '"user_mood": one or two words for how the user seemed, or null.\n'
     '"threads": a list of {"text", "due_in_hours"} for things Riya should follow up on later, such as asking how '
     "an event went.\n"
-    "Use empty lists and an empty summary when there is nothing worth keeping.")
+    "Use empty lists and an empty summary when there is nothing worth keeping.\n"
+    "The transcript may be followed by notes on what Riya saw on the user's screen. The user didn't say those: a fact "
+    'drawn from them (for example repeated activity, "The user is building an app in Python") has source "inferred".')
+SCREEN_NOTES = "Notes from Riya's glances at the user's screen during this conversation (not things the user said):"
+NOTES_BEFORE_S = 600  # notes this long before the chunk's first line still count as its context
+MAX_NOTES = 10
 CONSOLIDATE_TOKENS = 600
 CONSOLIDATE_TOKENS_ONLINE = 1200  # online models may count their thinking tokens
 CHUNK_ROWS = 60
@@ -138,7 +144,8 @@ class Consolidator:
         if not rows:
             return Proposals.empty()
         messages = [{"role": "system", "content": CONSOLIDATE_PROMPT},
-                    {"role": "user", "content": "\n".join(f"{r['role']}: {r['text']}" for r in rows)}]
+                    {"role": "user", "content": "\n".join(f"{r['role']}: {r['text']}" for r in rows)
+                     + self._notes(rows[0]["at"], rows[-1]["at"])}]
         model = model or self.model_getter()
         tokens = CONSOLIDATE_TOKENS_ONLINE if getattr(model, "name", "") == "online" else CONSOLIDATE_TOKENS
         try:
@@ -171,6 +178,14 @@ class Consolidator:
                                episode_id)
         mem.mark_consolidated([r["id"] for r in rows])
         return proposals
+
+    def _notes(self, start: float, end: float) -> str:
+        """The chunk's glance notes, oldest first, as context after the transcript ("" when there are none). A
+        "something private" note never leaves her notes."""
+        notes = [g for g in self.memory.glances_between(start - NOTES_BEFORE_S, end) if not is_private(g.activity)]
+        lines = [f"- {datetime.fromtimestamp(g.at).strftime('%H:%M')} {g.app}: {g.activity}"
+                 + (f". {g.details}" if g.details else "") for g in reversed(notes[:MAX_NOTES])]
+        return "\n\n" + "\n".join([SCREEN_NOTES, *lines]) if lines else ""
 
     def _failed(self, rows: list[dict]) -> None:
         first = rows[0]["id"]

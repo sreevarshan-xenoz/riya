@@ -59,3 +59,21 @@ def test_episode_and_thread_messages():
         parse_body_message('{"type":"episode_delete"}')
     old_style = MemoriesMsg(facts=[], transcript_days=[])      # the body's existing fixture has neither list
     assert old_style.episodes == [] and old_style.threads == []
+
+
+def test_eyes_messages():
+    from riya.core.protocol import DontLook, EyesMsg, GlanceDelete, GlanceInfo, Look, MemoriesMsg
+    assert parse_body_message('{"type":"dont_look","on":true}') == DontLook(on=True)
+    assert parse_body_message('{"type":"glance_delete","id":7}') == GlanceDelete(id=7)
+    for raw in ('{"type":"dont_look"}', '{"type":"glance_delete"}', '{"type":"dont_look","on":"yes"}'):
+        with pytest.raises(ProtocolError):
+            parse_body_message(raw)
+    assert json.loads(dump(Look(side="left", watching=True))) == {"type": "look", "side": "left", "watching": True}
+    assert Look(side=None, watching=False).side is None
+    with pytest.raises(ValueError):
+        Look(side="up", watching=True)
+    assert json.loads(dump(EyesMsg(enabled=True, dont_look=False, glances_today=3, cap=150)))["type"] == "eyes"
+    m = MemoriesMsg(facts=[], transcript_days=[], glances=[GlanceInfo(id=1, at=2.0, app="a", title="t",
+                                                                       activity="x", details="", notable=None)])
+    assert json.loads(dump(m))["glances"][0]["activity"] == "x"
+    assert MemoriesMsg(facts=[], transcript_days=[]).glances == []

@@ -294,3 +294,34 @@ def test_the_favourite_movie_example_is_cheerfully_honest_without_dont_remember(
 def test_no_style_example_duplicates_the_templated_remember_ack():
     text = style_examples().lower()
     assert "remember that, okay" not in text and "saved" not in text
+
+
+def _glance(id, at, activity="fixing a failing test", app="VS Code", details="pytest shows one red test",
+            notable=None):
+    from riya.core.memory import Glance
+    return Glance(id, at, app, "main.py", activity, details, notable)
+
+
+def test_eyes_block_has_a_now_line_and_recent_notes():
+    from riya.core.prompt import eyes_block
+    block = eyes_block([_glance(3, NOW - 120, notable="TypeError in test_x"), _glance(2, NOW - 1800, "reading docs",
+                                                                                     "Chrome")], NOW)
+    lines = block.splitlines()
+    assert lines[0] == ("### What they're doing now: fixing a failing test (VS Code). pytest shows one red test. "
+                        "Notable: TypeError in test_x")
+    assert "not things they told you" in lines[1]
+    assert lines[2:] == ["- 2 min ago, VS Code: fixing a failing test", "- 30 min ago, Chrome: reading docs"]
+
+
+def test_eyes_block_without_a_fresh_note_has_no_now_line():
+    from riya.core.prompt import eyes_block
+    block = eyes_block([_glance(1, NOW - 11 * 60)], NOW)
+    assert "What they're doing now" not in block and "- 11 min ago, VS Code: fixing a failing test" in block
+    assert eyes_block([], NOW) is None
+    assert eyes_block([_glance(1, NOW - 4 * 3600)], NOW) is None       # nothing recent
+
+
+def test_eyes_block_sits_after_the_memory_block_and_before_the_situation():
+    system = _system(Retrieved([EXAM], [], []), situation="S", kind="small", eyes="### What they're doing now: x")
+    order = [system.index(s) for s in [MEMORY_END, HONESTY_LINE, "### What they're doing now: x", "[Situation] S"]]
+    assert order == sorted(order)

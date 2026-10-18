@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from riya.core.models import ChatModel, complete
 
-ACTIVITY_WORDS, DETAILS_WORDS, NOTE_MAX_TOKENS = 12, 30, 200
+ACTIVITY_WORDS, DETAILS_WORDS = 12, 30
+NOTE_MAX_TOKENS = 400  # flash models may spend tokens thinking
 log = logging.getLogger("riya.eyes")
 
 NOTE_PROMPT = (
@@ -59,6 +60,11 @@ def _first_object(text: str) -> dict | None:
     return None
 
 
+def is_private(activity: str) -> bool:
+    """The model's "something private" label, however it went on ("something private (a bank page)")."""
+    return activity.strip().casefold().startswith(PRIVATE)
+
+
 def parse_note(text: str) -> GlanceNote | None:
     """The first JSON object in the reply as a note (fields clipped); None if there isn't a usable one. Whatever the
     model sent, a "something private" activity keeps no details and no notable."""
@@ -68,7 +74,7 @@ def parse_note(text: str) -> GlanceNote | None:
     app, activity = data.get("app"), _clip(data.get("activity"), ACTIVITY_WORDS)
     if not isinstance(app, str) or not app.strip() or not activity:
         return None
-    if activity.casefold().rstrip(".") == PRIVATE:
+    if is_private(activity):
         return GlanceNote(app.strip(), activity, "", None)
     notable = _clip(data.get("notable"), NOTABLE_WORDS)
     return GlanceNote(app.strip(), activity, _clip(data.get("details"), DETAILS_WORDS),
