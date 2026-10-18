@@ -397,9 +397,10 @@ class RiyaCore:
         return False
 
     def _bid_reason(self, action: Action) -> str:
-        """Without a thread, the latest fresh note may be the reason ("still on that bug?"); never a private one."""
-        g = next(iter(self.memory.recent_glances(1)), None)
-        if action.thread or g is None or self.clock.now() - g.at > BID_NOTE_S or is_private(g.activity):
+        """Without a thread, the latest fresh note may be the reason ("still on that bug?"); never a private one, and
+        not while her eyes are off or covered."""
+        s, g = self.settings, next(iter(self.memory.recent_glances(1)), None)
+        if action.thread or g is None or not s.eyes_enabled or s.dont_look or self.clock.now() - g.at > BID_NOTE_S or is_private(g.activity):
             return action.reason
         return f"{action.reason}; last you saw, they were {g.activity} in {g.app}" + (
             f" ({g.notable})" if g.notable else "")
@@ -540,7 +541,9 @@ class RiyaCore:
 
     # ---- eyes ---------------------------------------------------------------------------------------
     def _eyes_context(self) -> str | None:
-        return eyes_block(self.memory.recent_glances(3), self.clock.now())
+        """The eyes block: none with her eyes off, and no "what they're doing now" line while she isn't looking."""
+        s = self.settings
+        return eyes_block(self.memory.recent_glances(3), self.clock.now(), now_line=not s.dont_look)             if s.eyes_enabled else None
 
     def _why_not(self, info: WindowInfo | None, s: Settings, force: bool = False,
                  presence: str | None = None) -> str | None:

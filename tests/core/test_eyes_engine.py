@@ -790,6 +790,21 @@ def test_the_prompt_says_what_they_are_doing_outside_the_memory_block():
     assert "### What they're doing now" not in system and "fixing a failing test" in system
 
 
+@pytest.mark.parametrize("patch,now_line,block", [({"dont_look": True}, False, True), ({"eyes_enabled": False}, False, False),
+                                                   ({}, True, True)])
+def test_dont_look_drops_the_now_line_and_eyes_off_drops_the_eyes_block(patch, now_line, block):
+    core, _, _, local, clock, *_ = eyes_core(local_replies=["Hey~"])
+    core.vision = None
+    core.memory.add_glance("VS Code", "main.py", "fixing a failing test", "pytest shows one red test", "TypeError")
+    core.handle(SetSettings(patch=patch))
+    list(core.reply("hey"))
+    system = last_system(local)
+    assert ("### What they're doing now" in system) is now_line
+    assert ("What you glimpsed on their screen" in system) is block and ("fixing a failing test" in system) is block
+    core._bid(Action("bid", False, None, "worked 2.1 h straight"))
+    assert ("fixing a failing test" in situation(local)) is now_line     # nor is it a bid's reason
+
+
 def test_a_bid_can_use_the_latest_note():
     core, emitted, _, local, clock, *_ = eyes_core(local_replies=["Still on that bug?"])
     core.vision = None

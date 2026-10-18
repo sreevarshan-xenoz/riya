@@ -103,15 +103,15 @@ def _ago(at: float, now: float) -> str:
     return "just now" if m < 1 else f"{m} min ago" if m < 60 else f"{m // 60} h ago"
 
 
-def eyes_block(glances: list[Glance], now: float) -> str | None:
+def eyes_block(glances: list[Glance], now: float, now_line: bool = True) -> str | None:
     """What she saw on their screen: a `### What they're doing now:` line from the newest note while it's under
-    10 minutes old, then the notes from the last 3 hours (newest first). None when there's nothing recent. It sits
-    outside the memory block: these are her own glances, not things they said."""
+    10 minutes old (unless now_line is off: don't-look), then the notes from the last 3 hours (newest first). None
+    when there's nothing recent. It sits outside the memory block: these are her own glances, not things they said."""
     recent = [g for g in glances if now - g.at <= RECENT_GLANCE_S]
     if not recent:
         return None
     lines, g = [], recent[0]
-    if now - g.at <= NOW_GLANCE_S:
+    if now_line and now - g.at <= NOW_GLANCE_S:
         details = g.details.rstrip(".") + "." if g.details else None
         lines.append(" ".join(filter(None, [f"{EYES_NOW} {g.activity} ({g.app}).", details,
                                             g.notable and f"Notable: {g.notable}"])))
