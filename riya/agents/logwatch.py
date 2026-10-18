@@ -1,7 +1,9 @@
 """Colab log watcher (spec §4.3): tails the user's synced run logs and reports running/done/fail/lost/stalled.
 
 Each log file is one run named "<entry name>:<parent folder>/<file stem>". Only appended bytes are read; offsets and run
-state live in KV under `agents.logwatch.<path>` so a restart carries on without re-reporting. `poll()` never raises.
+state live in KV under `agents.logwatch.<path>` so a restart carries on without re-reporting. At most the 200 most
+recently modified files per entry are read each poll, and keys of files no longer matched are pruned once a day.
+`poll()` never raises.
 """
 import glob
 import logging
@@ -10,7 +12,11 @@ import re
 
 log = logging.getLogger("riya.logwatch")
 
-POLL_KEY = "agents.logwatch.#poll"
+PREFIX = "agents.logwatch."
+POLL_KEY = PREFIX + "#poll"
+PRUNE_KEY = PREFIX + "#pruned"
+PRUNE_EVERY_S = 24 * 3600  # keys of files no glob matches anymore are dropped this often
+MAX_FILES = 200          # per entry per poll: only the most recently modified matching files are read
 STALL_S = 30 * 60        # a running log with no growth this long is stalled
 MAX_READ = 1 << 20       # bytes read per file per poll
 LINE_MAX = 120
@@ -37,6 +43,8 @@ class LogWatch:
     def __init__(self, entries, kv, clock):
         self.entries, self.kv, self.clock = list(entries), kv, clock
         self._rebase = False
+        self._matched: set[str] = set()  # every path matched this poll
+        self._unsure: list[str] | None = []  # roots that were missing or failed this poll; None: can't tell, keep all
 
     def poll(self) -> list[tuple[str, str, str]]:
         out, now = [], self.clock.now()
@@ -45,16 +53,49 @@ class LogWatch:
             self._rebase = isinstance(prev, (int, float)) and now - prev > SLEEP_GAP_S
         except Exception:
             self._rebase = False
+        self._matched, self._unsure = set(), []
         for entry in self.entries:
             try:
                 self._poll_entry(entry, out)
             except Exception:
+                self._doubt(entry.get("glob") if isinstance(entry, dict) else None)
                 log.exception("logwatch entry %r failed", entry.get("name") if isinstance(entry, dict) else entry)
         try:
             self.kv.set(POLL_KEY, now)
         except Exception:
             log.exception("logwatch could not save its poll time")
+        try:
+            self._prune(now)
+        except Exception:
+            log.exception("logwatch could not prune its keys")
         return out
+
+    def _doubt(self, pattern) -> None:
+        """This poll can't tell which files under pattern's root still exist (root missing, or the entry failed)."""
+        root = _root(pattern).replace("\\", "/").rstrip("/") if isinstance(pattern, str) else ""
+        if not root:
+            self._unsure = None
+        elif self._unsure is not None:
+            self._unsure.append(root + "/")
+
+    def _prune(self, now: float) -> None:
+        """Once a day, drop the state of files no entry matches anymore. Files under a root that was missing (Drive
+        not mounted) or whose entry failed are kept: there "not matched" doesn't mean gone."""
+        last = self.kv.get(PRUNE_KEY)
+        if self._unsure is None or (isinstance(last, (int, float)) and 0 <= now - last < PRUNE_EVERY_S):
+            return
+        for key in self.kv.keys_with(PREFIX):
+            path = key[len(PREFIX):]
+            if not path.startswith("#") and path not in self._matched and not path.startswith(tuple(self._unsure)):
+                self.kv.delete(key)
+        self.kv.set(PRUNE_KEY, now)
+
+    @staticmethod
+    def _mtime(path: str) -> float:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return float("-inf")
 
     def _poll_entry(self, entry, out) -> None:
         """Appends to `out` as it goes, so an error part-way never discards events already found."""
@@ -62,7 +103,11 @@ class LogWatch:
         res = {k: re.compile(entry[k]) if entry.get(k) else None for k in ("lost_re", "fail_re", "done_re")}
         seen_key = f"agents.logwatch.#seen.{name}"
         seen_at = self.kv.get(seen_key)     # when this entry was first polled: older files are history
-        for path in sorted(glob.glob(pattern, recursive=True)):
+        paths = glob.glob(pattern, recursive=True)
+        self._matched.update(p.replace("\\", "/") for p in paths)
+        if not os.path.isdir(_root(pattern)):
+            self._doubt(pattern)
+        for path in sorted(sorted(paths, key=self._mtime, reverse=True)[:MAX_FILES]):
             try:
                 path = path.replace("\\", "/")
                 parent = os.path.basename(os.path.dirname(path))
