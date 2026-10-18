@@ -348,7 +348,7 @@ def test_agent_count_is_bounded(hub, clock):
 @pytest.mark.parametrize("text,secret", [
     ("curl -u sk-live-4f9aB2cD3eF4gH5iJ6kL https://x", "sk-live-4f9aB2cD3eF4gH5iJ6kL"),
     ("key sk-ant-api03-AbCdEf123456_-xyz used", "sk-ant-api03-AbCdEf123456_-xyz"),
-    ("git push https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("git push https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com", "ghp_abcdefghijklmnopqrstuvwxyz0123"),
     ("GH gho_16C7e42F292c6912E7710c838347Ae178B4a here", "gho_16C7e42F292c6912E7710c838347Ae178B4a"),
     ("export T=github_pat_11ABCDEFG0123456789_abcdefXYZ", "github_pat_11ABCDEFG0123456789_abcdefXYZ"),
     ("slack xoxb-123456789012-1234567890123-AbCdEfGhIjKl", "xoxb-123456789012-1234567890123-AbCdEfGhIjKl"),
