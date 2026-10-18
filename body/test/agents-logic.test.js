@@ -148,3 +148,23 @@ test("relativeAge never shows 0h: minutes stay minutes until a full hour", () =>
   assert.equal(A.relativeAge(24 * 3600_000), "1d");
   for (let ms = 0; ms < 3 * 3600_000; ms += 7_000) assert.doesNotMatch(A.relativeAge(ms), /^0/, String(ms));
 });
+
+test("receiverProblems: a busy port and wrong-token rejections, only while connected (final review M4, M5)", () => {
+  assert.deepEqual(A.receiverProblems({ receiver_ok: true, rejected_recent: 0 }, true), []);
+  assert.deepEqual(A.receiverProblems({ receiver_ok: false, rejected_recent: 0 }, true),
+    ["receiver not running (port 8766 busy)"]);
+  assert.deepEqual(A.receiverProblems({ receiver_ok: true, rejected_recent: 3 }, true),
+    ["events rejected (wrong token): 3, re-run the installer"]);
+  assert.deepEqual(A.receiverProblems({ receiver_ok: false, rejected_recent: 1 }, true).length, 2);
+  assert.deepEqual(A.receiverProblems({ receiver_ok: false, rejected_recent: 3 }, false), []);
+  assert.deepEqual(A.receiverProblems({}, true), [], "an older core without the fields: nothing to say");
+  assert.deepEqual(A.receiverProblems({ receiver_ok: "no", rejected_recent: "<b>9</b>" }, true), []);
+  assert.deepEqual(A.receiverProblems(null, true), []);
+});
+
+test("the settings page shows the receiver problems in their own row", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "settings.html"), "utf8");
+  const js = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
+  assert.match(html, /id="agents-receiver"/);
+  assert.match(js, /receiverProblems\(/);
+});

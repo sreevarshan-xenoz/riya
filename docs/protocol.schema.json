@@ -350,7 +350,7 @@
         "type": "object"
       },
       "AgentsMsg": {
-        "description": "The agents list (attention first, at most 20), sent on change and on hello. hooks_seen_at: when a Claude Code\nhook last reached her (None: never), for the settings page's install status.",
+        "description": "The agents list (attention first, at most 20), sent on change and on hello. hooks_seen_at: when a Claude Code\nhook last reached her (None: never), for the settings page's install status. receiver_ok: the hook receiver is\nserving (False while port 8766 is busy; she retries every 60 s). rejected_recent: hook requests turned away for a\nwrong token in the last 24 h.",
         "properties": {
           "hooks_seen_at": {
             "anyOf": [
@@ -370,6 +370,16 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "receiver_ok": {
+            "default": true,
+            "title": "Receiver Ok",
+            "type": "boolean"
+          },
+          "rejected_recent": {
+            "default": 0,
+            "title": "Rejected Recent",
+            "type": "integer"
           },
           "type": {
             "const": "agents",

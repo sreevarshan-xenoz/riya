@@ -56,6 +56,18 @@ function hookStatus(hooksSeenAt, nowMs, connected = true) {
   return `Events received in the last 24 h: ${answer}`;
 }
 
+/** The receiver's problems from an `agents` message, as settings lines (none while disconnected, or when an older core
+ *  sends neither field): the port was busy at start (she retries every 60 s), and hooks turned away for a wrong token
+ *  in the last 24 h. */
+function receiverProblems(msg, connected) {
+  if (!connected || !msg || typeof msg !== "object") return [];
+  const out = [];
+  if (msg.receiver_ok === false) out.push("receiver not running (port 8766 busy)");
+  const n = msg.rejected_recent;
+  if (Number.isInteger(n) && n > 0) out.push(`events rejected (wrong token): ${n}, re-run the installer`);
+  return out;
+}
+
 /** The list to show for a connection state: a dropped core means a stale list would pass for live, so it is emptied
  *  (the core sends the agents again on hello). */
 function agentsWhileConnected(items, connected) {
@@ -111,7 +123,7 @@ function validateAgentLogs(list) {
 const api = {
   AGE_REFRESH_MS, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS, MAX_AGENT_LOGS, MAX_LOG_NAME, MAX_PATTERN_LEN,
   agentChip, relativeAge, badgeCount, sortAgents, hookStatus, agentTitle, ageRefreshDue, validateAgentLogs,
-  agentsWhileConnected,
+  agentsWhileConnected, receiverProblems,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaAgents = api;

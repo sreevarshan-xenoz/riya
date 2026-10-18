@@ -190,6 +190,7 @@ class RiyaCore:
         self._last_report_at: float | None = None
         seen = self.kv.get(HOOKS_SEEN_KEY)
         self._hooks_seen_at = float(seen) if isinstance(seen, (int, float)) else None
+        self.receiver = None  # the HookReceiver (ok, rejected.recent()), set by the runner; read-only here
         self._agents_sent = self._agents_msg()
         # games: the state (the 20 questions secret included) lives here, never in the transcript or her prompt history
         self.game: games.GameState | None = None
@@ -813,7 +814,9 @@ class RiyaCore:
         return agents_block(self.agents.snapshot(), self.clock.now())
 
     def _agents_msg(self) -> AgentsMsg:
-        return AgentsMsg(items=[AgentInfo(**a) for a in self.agents.snapshot()], hooks_seen_at=self._hooks_seen_at)
+        r = self.receiver
+        return AgentsMsg(items=[AgentInfo(**a) for a in self.agents.snapshot()], hooks_seen_at=self._hooks_seen_at,
+                         receiver_ok=bool(r is not None and r.ok), rejected_recent=r.rejected.recent() if r else 0)
 
     def _emit_agents(self) -> None:
         """agents, only when it changed. hello_messages reads the last one sent (never the hub, from another thread)."""
