@@ -227,5 +227,5 @@ def test_local_model_sends_the_user_turn_stop_sequences():
     m = local_model(url + "/", first_token_timeout_s=5.0)
     assert m.name == "local" and "".join(m.stream(MSGS)) == "Hi."
     srv.shutdown()
-    assert LOCAL_STOP == ("\nUser:", "User:") and seen["body"]["stop"] == list(LOCAL_STOP)
+    assert LOCAL_STOP == ("\nUser:",) and seen["body"]["stop"] == list(LOCAL_STOP)
     assert seen["path"] == "/v1/chat/completions" and OpenAICompatModel("online", url).stop is None

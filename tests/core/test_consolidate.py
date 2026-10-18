@@ -196,3 +196,26 @@ def test_a_success_resets_the_failure_count():
     ("mymy and Mike and time stay", "mymy and Mike and time stay")])
 def test_third_person_rewrites_first_person_words_only(said, want):
     assert third_person(said) == want
+
+
+@pytest.mark.parametrize("said, want", [
+    ("World War I and II", "World War I and II"),
+    ("Chapter I is my favourite", "Chapter I is their favourite"),
+    ("for i in range(3)", "for i in range(3)"),
+    ("i.e. my laptop", "i.e. their laptop"),
+    ("I/O is my job", "I/O is their job"),
+    ("me@x.com or my-app.me", "me@x.com or my-app.me"),
+    ("ME/CFS", "ME/CFS"),
+    ("my_var and me2", "my_var and me2"),
+    ("I work in a mine", "they work in a mine"),
+    ("the gold mine is mine.", "the gold mine is theirs."),
+    ('my friend said "I love you"', 'their friend said "I love you"'),
+    ("my mum said \u201cI miss you\u201d and \u2018my bad\u2019",
+     "their mum said \u201cI miss you\u201d and \u2018my bad\u2019"),
+    ("my motto is 'I never quit'", "their motto is 'I never quit'"),
+    ("my favourite colour is teal", "their favourite colour is teal"),
+    ("I'm allergic to nuts", "they're allergic to nuts"),
+    ("i hate mornings", "they hate mornings"),
+    ("remind me that I have a test", "remind them that they have a test")])
+def test_third_person_leaves_numerals_code_addresses_and_quotes_alone(said, want):
+    assert third_person(said) == want
