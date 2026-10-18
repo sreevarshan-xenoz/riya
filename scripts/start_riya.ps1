@@ -1,4 +1,5 @@
-# Starts Riya: the local model server (minimised), the core, and the desktop body once the core accepts connections.
+# Starts Riya: the local model server (minimised), the core, and the desktop body (once the core accepts connections,
+# or after 60 s regardless).
 # PowerShell 5.1 compatible.
 param(
     [string]$Model = "C:/Users/sreev/models/riya/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
@@ -47,23 +48,23 @@ if (-not (Test-ModelServer)) {
     }
 }
 
-# The core runs in this console (its log stays visible); the body starts once its port accepts connections.
+# The core runs in this console (its log stays visible). The body always starts: waiting up to 60 s for the core's
+# port only spares a flash of "connecting...", and the body reconnects on its own whenever the core comes up.
 $core = Start-Process -FilePath $Python -ArgumentList @("-m", "riya.core") -WorkingDirectory $Root `
     -NoNewWindow -PassThru
 $deadline = (Get-Date).AddSeconds(60)
 while (-not $core.HasExited -and -not (Test-CorePort)) {
-    if ((Get-Date) -gt $deadline) { break }
+    if ((Get-Date) -gt $deadline) {
+        Write-Host "The core's port $CorePort did not open within 60 s; starting the body anyway (it will connect when the core is up)."
+        break
+    }
     Start-Sleep -Milliseconds 500
 }
-if (-not $core.HasExited -and (Test-CorePort)) {
-    try {
-        Start-Process -FilePath "npm.cmd" -ArgumentList @("--prefix", "`"$BodyDir`"", "start") `
-            -WorkingDirectory $Root -WindowStyle Hidden
-    } catch {
-        Write-Warning "Could not start the body: $_"
-    }
-} elseif (-not $core.HasExited) {
-    Write-Warning "The core's port $CorePort did not open within 60 s; not starting the body."
+try {
+    Start-Process -FilePath "npm.cmd" -ArgumentList @("--prefix", "`"$BodyDir`"", "start") `
+        -WorkingDirectory $Root -WindowStyle Hidden
+} catch {
+    Write-Warning "Could not start the body: $_"
 }
 $core.WaitForExit()
 exit $core.ExitCode
