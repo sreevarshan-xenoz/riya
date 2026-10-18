@@ -28,7 +28,7 @@ _ONE = {"finished": "finished", "failed": "failed", "waiting": "is waiting for a
 _MANY = {"finished": "finished", "failed": "failed", "waiting": "are waiting for approval",
          "lost": "lost their runtimes", "stalled": "look stalled"}
 _COUNTS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
-_ERROR_TYPE = re.compile(r"[a-z][a-z_]{0,39}")
+_UNSAFE = re.compile(r"[^A-Za-z0-9 ._:/-]")  # agent names and error types reach the prompt unquoted: only these
 _ERROR_WORDS = {"rate_limit": "hit a rate limit", "overloaded": "the API is overloaded",
                 "authentication_failed": "lost its login"}
 REPLY_RULES = {"small": f"Reply in at most {CAPS['small']} sentences.",
@@ -145,18 +145,26 @@ def agents_block(items: list[dict], now: float) -> str | None:
     live = [a for a in items if a["status"] != "ended"][:AGENTS_MAX]
     if not live:
         return None
-    return f"{AGENTS_LINE} " + "; ".join(f"{a['name']} — {a['status']} ({_age(a['since'], now)})" for a in live)
+    return f"{AGENTS_LINE} " + "; ".join(f"{_safe(a['name'])} — {_safe(a['status'])} ({_age(a['since'], now)})"
+                                         for a in live)
+
+
+def _safe(text: str) -> str:
+    """Payload-derived text that goes into a prompt unquoted (agent names, error types): any character outside
+    [A-Za-z0-9 ._:/-] becomes "_"."""
+    return _UNSAFE.sub("_", text)
 
 
 def _error_words(ev) -> str | None:
-    """A Claude Code StopFailure's error type ("rate_limit") in plain words; None for any other event."""
-    if ev.kind != "failed" or ev.agent_id.startswith("colab:") or not _ERROR_TYPE.fullmatch(ev.text):
+    """A Claude Code StopFailure's error type (AgentEvent.error, "rate_limit") in plain words; None otherwise."""
+    error = getattr(ev, "error", None)
+    if ev.kind != "failed" or not error:
         return None
-    return _ERROR_WORDS.get(ev.text, ev.text.replace("_", " "))
+    return _safe(_ERROR_WORDS.get(error, error.replace("_", " ")))
 
 
 def _one(ev, detail: bool) -> str:
-    s = f"{ev.name} {_ONE[ev.kind]}"
+    s = f"{_safe(ev.name)} {_ONE[ev.kind]}"
     if (words := _error_words(ev)) is not None:
         return f"{s} ({words})"
     quote = summarize(ev.text).replace('"', "'") if detail else ""
@@ -177,7 +185,7 @@ def report_line(events: list, detail: bool = True) -> str:
         elif group:
             more = f", and {len(group) - REPORT_NAMES} more" if len(group) > REPORT_NAMES else ""
             parts.append(f"{_COUNTS.get(len(group), str(len(group)))} agents {_MANY[kind]}: "
-                         f"{', '.join(e.name for e in group[:REPORT_NAMES])}{more}")
+                         f"{', '.join(_safe(e.name) for e in group[:REPORT_NAMES])}{more}")
     return "; ".join(parts)
 
 

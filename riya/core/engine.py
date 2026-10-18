@@ -67,6 +67,7 @@ DRAIN_MAX = 200  # inbox items taken per tick: a flood waits for later ticks, th
 URGENT = frozenset({"failed", "waiting", "lost", "stalled"})
 REPORT_FACES = {"failed": "worried", "lost": "worried", "stalled": "worried", "waiting": "curious", "finished": "happy"}
 HOOKS_SEEN_KEY = "agents.hooks_seen_at"
+REPORTS_KEY = "agents.reports"  # pending reports survive a restart
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
@@ -166,7 +167,8 @@ class RiyaCore:
         self.agents = AgentHub(clock)
         self.agent_inbox: queue.SimpleQueue = queue.SimpleQueue()  # Claude Code hook payloads (dicts)
         self.colab_inbox: queue.SimpleQueue = queue.SimpleQueue()  # (run name, kind, line) from LogWatch.poll
-        self._reports: dict[str, tuple[AgentEvent, float]] = {}  # pending, per agent only the newest: (event, at)
+        self._reports = self._load_reports()  # pending, per agent only the newest: {agent_id: (event, at)}
+        self._reports_saved = self._report_rows()
         self._greet_reports: list[tuple[AgentEvent, float]] = []  # folded into the greeting about to be said
         self._last_report_at: float | None = None
         seen = self.kv.get(HOOKS_SEEN_KEY)
@@ -228,14 +230,27 @@ class RiyaCore:
             situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
             if reports:  # what her agents did while they were away
                 situation += " " + greeting_reports([ev for ev, _ in reports])
-            yield from self._speak("greet", user_text=None, query=_query(action), situation=situation,
-                                   spoken=action.spoken, threads=_threads(action),
-                                   after=lambda outcome: self._greeted(action, outcome, reports))
+            said: list[str] = []
+            yield from self._counted(self._speak(
+                "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
+                threads=_threads(action), after=lambda outcome: self._greeted(action, outcome, reports, bool(said))),
+                said)
 
-    def _greeted(self, action: Action, outcome: str, reports: list | None = None) -> None:
+    @staticmethod
+    def _counted(sentences: Iterator[str], said: list[str]) -> Iterator[str]:
+        """sentences, each one also appended to said (so an after-callback knows whether anything was said)."""
+        try:
+            for sentence in sentences:
+                said.append(sentence)
+                yield sentence
+        finally:
+            sentences.close()
+
+    def _greeted(self, action: Action, outcome: str, reports: list | None = None, said: bool = True) -> None:
         """The thread counts as followed up only once she actually asked; a barge-in still stops a re-raise today.
-        Reports folded into a greeting the model couldn't make go back to pending (unless newer news replaced them)."""
-        if outcome == "failed":
+        Reports folded into a greeting that failed or said nothing go back to pending (unless newer news replaced
+        them)."""
+        if outcome == "failed" or not said:
             for ev, at in reports or []:
                 self._reports.setdefault(ev.agent_id, (ev, at))
         if action.thread and outcome != "failed":
@@ -486,6 +501,7 @@ class RiyaCore:
         report = None if action else self._step("report", lambda: self._report_step(now))
         if action is None and report is None:
             self._step("bid", self._maybe_bid)
+        self._step("reports", self._save_reports)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
         self._step("eyes", lambda: self._eyes_step(now))
         self._step("feelings", lambda: self.feelings.tick(present=self.presence.state != "away"))
@@ -630,14 +646,41 @@ class RiyaCore:
         return Utterance(self._report(events), True)
 
     def _report(self, events: list[AgentEvent]) -> Iterator[str]:
-        """One spoken line from the local model (40 tokens, 1 sentence); if the model can't, the templated bubble."""
+        """One spoken line from the local model (40 tokens, 1 sentence). When nothing of it was said (the model
+        failed, or said nothing usable), the templated bubble goes out instead, so the news is never lost."""
+        said: list[str] = []
+
         def after(outcome: str) -> None:
-            if outcome == "failed":
+            if not said:
                 self._report_bubble(events)
 
         with self._lock:
-            yield from self._speak("report", user_text=None, query=report_line(events, detail=False),
-                                   situation=report_situation(events), spoken=True, threads=[], after=after)
+            yield from self._counted(self._speak("report", user_text=None, query=report_line(events, detail=False),
+                                                 situation=report_situation(events), spoken=True, threads=[],
+                                                 after=after), said)
+
+    def _load_reports(self) -> dict[str, tuple[AgentEvent, float]]:
+        """The pending reports saved before a restart (the 6 h drop applies on the next tick); bad rows are skipped."""
+        saved, out = self.kv.get(REPORTS_KEY), {}
+        for r in saved if isinstance(saved, list) else []:
+            try:
+                strings = all(isinstance(r[k], str) for k in ("agent_id", "name", "text"))
+                if r["kind"] in REPORT_FACES and strings and isinstance(r.get("error"), (str, type(None))):
+                    out[r["agent_id"]] = (AgentEvent(r["kind"], r["agent_id"], r["name"], r["text"], r.get("error")),
+                                          float(r["at"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def _report_rows(self) -> list[dict]:
+        return [{**asdict(ev), "at": at} for ev, at in self._reports.values()]
+
+    def _save_reports(self) -> None:
+        """Pending reports to KV, only when they changed."""
+        rows = self._report_rows()
+        if rows != self._reports_saved:
+            self.kv.set(REPORTS_KEY, rows)
+            self._reports_saved = rows
 
     def _report_bubble(self, events: list[AgentEvent]) -> None:
         """The templated report: a silent bubble, kept in the transcript like a bid."""

@@ -127,6 +127,70 @@ def test_urgent_while_away_arrives_in_the_came_back_greeting():
     assert run_ticks(core, clock, 120) == [] and reports(emitted) == []   # folded in: never said twice
 
 
+def away_with_news(replies):
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=replies)
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    core.agent_inbox.put(ask())
+    run_ticks(core, clock, 60, step=10)
+    clock.advance(3 * 3600)
+    src.idle = 0
+    return core, emitted, src, local, clock
+
+
+def test_a_greeting_that_says_nothing_leaves_the_reports_pending():
+    core, emitted, src, local, clock = away_with_news(["", "riya needs you."])
+    assert run_ticks(core, clock, 1) == [[]]                 # the greeting came out empty
+    assert "riya abc123 is waiting for approval" in situation(local)
+    assert run_ticks(core, clock, 19) == []
+    assert run_ticks(core, clock, 1) == [["riya needs you."]]
+    assert "riya abc123 is waiting for approval" in situation(local)
+
+
+def test_a_failed_greeting_restores_the_reports():
+    core, emitted, src, local, clock = away_with_news(["riya needs you."])
+    local.fail = RuntimeError("down")
+    assert run_ticks(core, clock, 1) == [[]]
+    assert any(isinstance(m, ErrorMsg) for m in emitted)
+    local.fail = None
+    assert run_ticks(core, clock, 19) == []
+    assert run_ticks(core, clock, 1) == [["riya needs you."]]
+    assert "riya abc123 is waiting for approval" in situation(local)
+
+
+def test_pending_reports_survive_a_restart(tmp_path):
+    clock = FakeClock()
+    core, *_ = make_core(clock, tmp_path=tmp_path)
+    run_ticks(core, clock, 1)
+    core.agent_inbox.put(stop())
+    run_ticks(core, clock, 5)
+    again, emitted, src, local = make_core(clock, local_replies=["riya finished!"], tmp_path=tmp_path)
+    src.idle = 150
+    assert run_ticks(again, clock, 1) == [["riya finished!"]]
+    assert 'riya abc123 finished ("All done, the tests pass.")' in situation(local)
+    third, emitted, src, local = make_core(clock, tmp_path=tmp_path)    # delivered: gone from KV too
+    src.idle = 150
+    run_ticks(third, clock, 60)
+    assert reports(emitted) == []
+
+
+def test_pending_reports_older_than_6_hours_are_dropped_after_a_restart(tmp_path):
+    clock = FakeClock()
+    core, *_ = make_core(clock, tmp_path=tmp_path)
+    run_ticks(core, clock, 1)
+    core.agent_inbox.put(stop())
+    run_ticks(core, clock, 5)
+    clock.advance(6 * 3600 + 60)
+    again, emitted, src, local = make_core(clock, tmp_path=tmp_path)
+    src.idle = 0                                             # back after 6 h: the greeting would carry it
+    run_ticks(again, clock, 1)
+    assert local.calls and "came back" in situation(local)
+    src.idle = 150
+    run_ticks(again, clock, 60)
+    assert reports(emitted) == [] and not any("abc123" in json.dumps(c) for c in local.calls)
+
+
 def test_urgent_after_a_short_absence_is_spoken_on_return():
     clock = FakeClock()
     core, emitted, src, local = make_core(clock, local_replies=["riya needs you!"])
@@ -190,10 +254,15 @@ def test_many_agents_merge_into_a_short_line():
 
 
 def test_only_the_newest_pending_event_per_agent_is_kept():
-    core, emitted, src, local, clock = focused()
+    core, emitted, src, local, clock = focused(local_replies=("riya is done.",))
     core.agent_inbox.put(ask())
     core.agent_inbox.put(stop())                             # approved and done: no longer urgent
     assert run_ticks(core, clock, 30) == [] and local.calls == []
+    src.idle = 150
+    assert run_ticks(core, clock, 60) == [["riya is done."]]
+    assert len(reports(emitted)) == 1 and len(local.calls) == 1
+    s = situation(local)
+    assert "riya abc123 finished" in s and "waiting" not in s
 
 
 def test_pending_reports_older_than_6_hours_are_dropped():
@@ -203,6 +272,26 @@ def test_pending_reports_older_than_6_hours_are_dropped():
     src.idle = 150
     run_ticks(core, clock, 60)
     assert reports(emitted) == []
+
+
+@pytest.mark.parametrize("reply", ["", "Riya:", "   "])
+def test_a_report_the_model_says_nothing_for_falls_back_to_the_template(reply):
+    core, emitted, src, local, clock = focused(local_replies=(reply,))
+    core.agent_inbox.put(ask())
+    assert run_ticks(core, clock, 1) == [[]]
+    [say] = reports(emitted)
+    assert say.spoken is False and say.text == "Psst~ riya abc123 is waiting for approval."
+
+
+def test_a_report_cut_off_after_a_sentence_is_not_repeated_as_a_bubble(monkeypatch):
+    from riya.core.shaping import CAPS
+    monkeypatch.setitem(CAPS, "report", 3)                  # else the 1-sentence cap stops the model before it fails
+    core, emitted, src, local, clock = focused(local_replies=("One two three. Four five six.",))
+    local.fail_after = 4
+    core.agent_inbox.put(ask())
+    assert run_ticks(core, clock, 1) == [["One two three."]]
+    assert [(m.text, m.spoken) for m in reports(emitted)] == [("One two three.", True)]
+    assert run_ticks(core, clock, 60) == []
 
 
 def test_a_report_the_model_cannot_make_falls_back_to_the_template():
@@ -231,6 +320,30 @@ def test_injection_text_reaches_the_prompt_only_as_an_80_char_quoted_summary():
     assert UNTRUSTED in s
     agents_line = next(p for p in system(local).split("\n\n") if p.startswith("### Your agents:"))
     assert "Ignore" not in agents_line
+
+
+def test_agent_names_reach_the_prompt_only_in_a_safe_character_set():
+    core, emitted, src, local, clock = focused(local_replies=("Hm.",))
+    core.agent_inbox.put({**ask(), "cwd": 'E:/work/my"proj{ok}<now>'})
+    assert run_ticks(core, clock, 1) == [["Hm."]]
+    text = system(local)
+    assert 'my_proj_ok__now_ abc123 is waiting for approval ("Bash: npm test")' in situation(local)
+    assert "### Your agents: my_proj_ok__now_ abc123 — waiting" in text and 'my"proj' not in text
+
+
+def test_an_odd_stop_failure_type_is_restricted_to_safe_characters():
+    core, emitted, src, local, clock = focused(local_replies=("Oh no.",))
+    core.agent_inbox.put(failure(error='weird"type{x}'))
+    run_ticks(core, clock, 1)
+    assert "riya abc123 failed (weird_type_x_)" in situation(local)
+
+
+def test_a_failure_whose_text_looks_like_an_error_type_is_still_quoted():
+    core, emitted, src, local, clock = focused(local_replies=("Oh no.",))
+    for i in range(3):
+        core.agent_inbox.put(hook("PostToolUseFailure", tool_name="Bash", error="boom"))
+    run_ticks(core, clock, 1)
+    assert 'riya abc123 failed ("3 tool failures, last Bash: boom")' in situation(local)
 
 
 # --- the prompt line -------------------------------------------------------------------------------------------------

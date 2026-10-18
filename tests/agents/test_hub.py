@@ -106,10 +106,23 @@ def test_stop_finishes_and_clears_attention(hub):
 
 def test_stop_failure_fails_once(hub):
     out = hub.on_claude_event(ev("StopFailure", error="rate_limit"))
-    assert [(e.kind, e.text) for e in out] == [("failed", "rate_limit")]
+    assert [(e.kind, e.text, e.error) for e in out] == [("failed", "rate_limit", "rate_limit")]
     s = state(hub)
     assert s["status"] == "failed" and s["needs_attention"]
     assert hub.on_claude_event(ev("StopFailure", error="rate_limit")) == []
+
+
+def test_only_a_stop_failure_carries_an_error_type(hub):
+    """The engine maps StopFailure's error type to plain words; nothing else is an error type."""
+    out = hub.on_claude_event(ev("StopFailure", sid="s-dict-aaaa", error={"type": "rate_limit"}))
+    assert [e.error for e in out] == [None]
+    out = hub.on_claude_event(ev("StopFailure", sid="s-long-aaaa", error="x" * 500))
+    assert len(out[0].error) <= 40
+    for i in range(3):
+        out = hub.on_claude_event(ev("PostToolUseFailure", sid="s-tool-aaaa", tool_name="Bash", error="rate_limit"))
+    assert [(e.kind, e.error) for e in out] == [("failed", None)]
+    assert [e.error for e in hub.on_claude_event(ev("Stop", sid="s-stop-aaaa"))] == [None]
+    assert [e.error for e in hub.on_colab("w3", "fail", "rate_limit")] == [None]
 
 
 def test_busy_again_clears_attention(hub):
