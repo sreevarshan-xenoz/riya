@@ -28,9 +28,9 @@ FIND_TIMEOUT_S = 10.0
 PAINT_S = 1.0  # let the window paint before the grab
 SKIP = "skipped (no online key)"
 WINDOWS = sys.platform == "win32"
-EMPTY_NOTE_HINT = ("hint: if notes keep coming back empty or unparseable, first try a low reasoning_effort on the vision "
-                   "request (a flash model may spend its whole token budget thinking); it isn't set yet because it's "
-                   "unverified live")
+EMPTY_NOTE_HINT = ("hint: if notes keep coming back empty or unparseable, first try a low reasoning_effort on the "
+                   "vision request (a flash model may spend its whole token budget thinking); it isn't set yet "
+                   "because it's unverified live")
 
 
 def passed(answer: str) -> bool:
