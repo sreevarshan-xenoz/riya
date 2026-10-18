@@ -62,13 +62,56 @@ test("idle animation (breathing, blink, lean) runs only while visible and not ga
   assert.equal(idleAnimates({ presence: "idle", hidden: true }), false);
 });
 
-test("transformCss rounds to 0.1 px and 0.1 degree", () => {
+test("transformCss rounds to 0.2 px and 0.2 degree", () => {
   assert.equal(transformCss({ dx: -11.96, dy: -0.04, rotateDeg: -5.97, scale: 1.000004 }),
     "translate(-12px, 0px) rotate(-6deg) scale(1)");
-  assert.equal(transformCss({ dx: 0.04, dy: -1.26, rotateDeg: 0.01, scale: 1.0051 }),
-    "translate(0px, -1.3px) rotate(0deg) scale(1.0051)");
-  assert.equal(transformCss({ dx: 0.01, dy: -1.25001, rotateDeg: 0.04, scale: 1.00512 }),
+  assert.equal(transformCss({ dx: 0.04, dy: -1.26, rotateDeg: 0.09, scale: 1.0051 }),
+    "translate(0px, -1.2px) rotate(0deg) scale(1.0051)");
+  assert.equal(transformCss({ dx: 0.09, dy: -1.31, rotateDeg: 0.11, scale: 1.00512 }),
+    "translate(0px, -1.4px) rotate(0.2deg) scale(1.0051)");
+  assert.equal(transformCss({ dx: 0.01, dy: -1.21, rotateDeg: 0.04, scale: 1.00512 }),
     transformCss({ dx: 0.04, dy: -1.26, rotateDeg: 0.01, scale: 1.0051 }), "sub-threshold changes give the same text");
+});
+
+test("breathing changes the transform text on only about half the 15 Hz ticks (the rest skip the DOM write)", () => {
+  const m = new Motion();
+  let writes = 0;
+  let prev = "";
+  for (let t = 0; t < 8000; t += 1000 / 15) {
+    const css = m.step(t, { rotateDeg: 0, dx: 0 });
+    if (css !== prev) writes += 1;
+    prev = css;
+  }
+  assert.ok(writes < 120 * 0.6, `writes: ${writes}`);
+});
+
+test("Motion.resume clamps the first step after a pause to 2 frames, so the lean eases instead of snapping", () => {
+  const target = { rotateDeg: -6, dx: -12 };
+  const m = new Motion();
+  m.step(0, target);
+  m.step(66, target);
+  const before = m.dx;
+  m.resume();
+  m.step(60000, target); // a minute later
+  assert.ok(Math.abs(m.dx - (before + (-12 - before) * (1 - Math.pow(0.92, 2)))) < 1e-9, `eased by 2 frames: ${m.dx}`);
+  const after = m.dx;
+  m.step(60000 + 4 * (1000 / 60), target); // next normal tick eases by its real 4 frames
+  const k4 = 1 - Math.pow(0.92, 4);
+  assert.ok(Math.abs(m.dx - (after + (-12 - after) * k4)) < 1e-6, "clamp applies to one step only");
+});
+
+test("Motion without resume() still eases by the real elapsed time", () => {
+  const m = new Motion();
+  m.step(0, { rotateDeg: 0, dx: 0 });
+  m.step(60000, { rotateDeg: -6, dx: -12 });
+  assert.ok(Math.abs(m.dx - -12) < 1e-6);
+});
+
+test("Motion.resume before the very first step does not move the lean", () => {
+  const m = new Motion();
+  m.resume();
+  m.step(5000, { rotateDeg: -6, dx: -12 });
+  assert.equal(m.dx, 0);
 });
 
 test("Motion eases the lean by elapsed time, so a 15 Hz timer matches 60 fps", () => {

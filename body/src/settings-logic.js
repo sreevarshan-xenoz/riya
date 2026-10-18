@@ -70,6 +70,29 @@ function voiceOptions(current) {
   return [{ value: current, label: `${current} (custom)` }, ...presets];
 }
 
+/** Holds the latest value offered while a control has focus (rebuilding it would close an open dropdown); `take()`
+ *  hands it back on blur. `offer` returns `{ value }` to apply now, or null when it was deferred. */
+class DeferWhileFocused {
+  constructor() {
+    this.pending = null;
+  }
+
+  offer(value, focused) {
+    if (focused) {
+      this.pending = { value };
+      return null;
+    }
+    this.pending = null;
+    return { value };
+  }
+
+  take() {
+    const pending = this.pending;
+    this.pending = null;
+    return pending;
+  }
+}
+
 function hotkeyText(accelerator) {
   return typeof accelerator === "string" && accelerator ? accelerator : NO_HOTKEY;
 }
@@ -119,7 +142,7 @@ class ErrorRouter {
 
 const api = {
   MODES, VOICES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
-  episodeText, dueText, memoryLists, ErrorRouter,
+  episodeText, dueText, memoryLists, ErrorRouter, DeferWhileFocused,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaSettings = api;
