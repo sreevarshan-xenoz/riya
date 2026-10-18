@@ -145,3 +145,55 @@ def test_load_dotenv_parses_and_does_not_override(tmp_path, monkeypatch):
     assert got == {"RIYA_T_A": "1", "RIYA_T_B": "two words", "RIYA_T_C": "from_file"}
     assert os.environ["RIYA_T_A"] == "1" and os.environ["RIYA_T_C"] == "already"
     assert load_dotenv(str(tmp_path / "missing.env")) == {}
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+def _sse(lines):
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for line in lines:
+                self.wfile.write(line.encode() + b"\n\n")
+
+        def log_message(self, *a):
+            pass
+    return _serve(H)
+
+
+@pytest.mark.parametrize("bad", ['data: {"choices": [{"delta": {"content": "Hi', 'data: {"choices":[{"delta":null}]}',
+                                 'data: {"choices":"nope"}', 'data: [1, 2]'])
+def test_malformed_sse_is_unavailable(bad):
+    srv, url = _sse(['data: {"choices":[{"delta":{"content":"Hel"}}]}', bad, "data: [DONE]"])
+    got = []
+    with pytest.raises(ModelUnavailable):
+        for piece in OpenAICompatModel("t", url).stream(MSGS):
+            got.append(piece)
+    srv.shutdown()
+    assert got == ["Hel"]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16", "utf-16-be"])
+def test_load_dotenv_handles_a_bom(tmp_path, monkeypatch, encoding):
+    from riya.core.models import load_dotenv
+    p = tmp_path / ".env"
+    bom = chr(0xFEFF) if encoding == "utf-16-be" else ""  # the other two codecs write their own BOM
+    p.write_bytes((bom + "RIYA_T_KEY=secret\nRIYA_T_OTHER=2\n").encode(encoding))
+    monkeypatch.setenv("RIYA_T_KEY", "x")
+    monkeypatch.delenv("RIYA_T_KEY")
+    monkeypatch.setenv("RIYA_T_OTHER", "x")
+    monkeypatch.delenv("RIYA_T_OTHER")
+    assert load_dotenv(str(p)) == {"RIYA_T_KEY": "secret", "RIYA_T_OTHER": "2"}
+    assert os.environ["RIYA_T_KEY"] == "secret"
+
+
+def test_load_dotenv_with_garbage_bytes_warns_and_returns_nothing(tmp_path, caplog):
+    from riya.core.models import load_dotenv
+    p = tmp_path / ".env"
+    p.write_bytes(b"RIYA_T_BAD=\x80\x81\xc3\x28\n")
+    with caplog.at_level("WARNING"):
+        assert load_dotenv(str(p)) == {}
+    assert "RIYA_T_BAD" not in os.environ and any(".env" in r.getMessage() for r in caplog.records)
