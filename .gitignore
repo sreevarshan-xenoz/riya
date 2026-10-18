@@ -20,3 +20,9 @@ riya_slots/
 # brainstorm/sdd scratch and private character art
 .superpowers/
 riya images/
+sprites/
+*.db
+*.db-wal
+*.db-shm
+.env
+scratch_runs/voice_candidates/

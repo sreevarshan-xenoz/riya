@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic>=2
+httpx
+fastembed
+numpy
+sounddevice
+pocket-tts
+moonshine-voice
