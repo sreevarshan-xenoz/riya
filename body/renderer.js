@@ -9,7 +9,7 @@
   const { frameFor, leanFor, BlinkScheduler } = RiyaSprite;
   const { isOpaqueAt, toImageCoords } = RiyaHitTest;
   const { BubbleModel } = RiyaBubble;
-  const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS } = RiyaAgents;
+  const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
   const {
     ExpressionModel, MouthTracker, StatusLine, Motion, cropBox, buddySpriteBox, idleAnimates, nextDeadline, isSettingsError,
   } = RiyaStage;
@@ -315,6 +315,11 @@
     if (!connected) {
       look = null; // the core sends a fresh look when it comes back
       bubble.endCurrent(now());
+    }
+    const shown = agentsWhileConnected(agents, connected); // a stale list or badge would pass for live; hello re-sends
+    if (shown !== agents) {
+      agents = shown;
+      renderAgents();
     }
     refresh();
   });

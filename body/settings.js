@@ -46,6 +46,7 @@
   const LOG_LABELS = { name: "Name", glob: "Glob", done_re: "Done", fail_re: "Failed", lost_re: "Lost" };
   let logsDirty = false; // edited and not yet saved: a settings message must not overwrite it
   let hooksSeenAt = null;
+  let coreConnected = false;
 
   function logEntry(entry) {
     const box = h("div", "log-entry");
@@ -85,7 +86,7 @@
   }
 
   function renderHooks() {
-    $("agents-hooks").textContent = hookStatus(hooksSeenAt, Date.now());
+    $("agents-hooks").textContent = hookStatus(hooksSeenAt, Date.now(), coreConnected);
   }
 
   $("agents-token").textContent = TOKEN_PATH;
@@ -333,6 +334,8 @@
   window.riya.onConnection((connected) => {
     $("conn").textContent = connected ? "connected" : "connecting…";
     $("conn").classList.toggle("off", !connected);
+    coreConnected = Boolean(connected);
+    renderHooks();
     if (connected) send({ type: "get_memories" });
   });
 

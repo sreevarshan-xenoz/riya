@@ -124,3 +124,27 @@ test("agent text only reaches the DOM through textContent: no HTML sinks in the 
   assert.ok(before(read("index.html"), "src/agents-logic.js", "renderer.js"));
   assert.ok(before(read("settings.html"), "src/agents-logic.js", "src/settings-logic.js"));
 });
+
+test("the token path and setup command are shown exactly, backslashes intact", () => {
+  assert.equal(A.TOKEN_PATH, String.raw`%LOCALAPPDATA%\Riya\hook_token`);
+  assert.equal(A.SETUP_COMMAND, "python -m riya.agents.install_hooks");
+});
+
+test("a dropped core empties the list (so no stale badge) and hook status turns unknown", () => {
+  const items = [agent({ needs_attention: true })];
+  assert.deepEqual(A.agentsWhileConnected(items, false), []);
+  assert.equal(A.agentsWhileConnected(items, true), items);
+  assert.equal(A.badgeCount(A.agentsWhileConnected(items, false)), 0);
+  assert.match(A.hookStatus(1000, 2000, false), /unknown/);
+  assert.match(A.hookStatus(1000, 2000, true), /yes$/);
+});
+
+test("relativeAge never shows 0h: minutes stay minutes until a full hour", () => {
+  assert.equal(A.relativeAge(59.6 * 60_000), "59m");
+  assert.equal(A.relativeAge(3600_000 - 1), "59m");
+  assert.equal(A.relativeAge(3600_000), "1h");
+  assert.equal(A.relativeAge(45_000), "1m");
+  assert.equal(A.relativeAge(23.9 * 3600_000), "23h");
+  assert.equal(A.relativeAge(24 * 3600_000), "1d");
+  for (let ms = 0; ms < 3 * 3600_000; ms += 7_000) assert.doesNotMatch(A.relativeAge(ms), /^0/, String(ms));
+});

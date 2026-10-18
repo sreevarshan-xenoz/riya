@@ -10,7 +10,7 @@ const MAX_LOG_NAME = 40;
 const MAX_PATTERN_LEN = 300;
 const LOG_KEYS = ["name", "glob", "done_re", "fail_re", "lost_re"];
 const PATTERN_KEYS = ["done_re", "fail_re", "lost_re"];
-const TOKEN_PATH = "%LOCALAPPDATA%\Riya\hook_token"; // shown as text, never opened
+const TOKEN_PATH = "%LOCALAPPDATA%\\Riya\\hook_token"; // shown as text, never opened
 const SETUP_COMMAND = "python -m riya.agents.install_hooks"; // shown as text to copy, never run by the body
 const TONES = { // tone is a CSS class: calm by default, waiting and failed/lost/stalled stand out
   busy: "busy", running: "busy", idle: "dim", unknown: "dim", ended: "dim", waiting: "alert", finished: "good",
@@ -28,8 +28,8 @@ function agentChip(status) {
 function relativeAge(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms)) return "";
   if (ms < 45_000) return "just now";
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
+  const minutes = Math.floor(ms / 60_000); // whole minutes until a full hour, so "0h" can't happen
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
   const hours = Math.floor(ms / 3600_000);
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
@@ -49,10 +49,17 @@ function sortAgents(items) {
 }
 
 /** The settings line about the Claude Code hooks, from the core's `hooks_seen_at` (epoch seconds or null). */
-function hookStatus(hooksSeenAt, nowMs) {
+function hookStatus(hooksSeenAt, nowMs, connected = true) {
+  if (!connected) return "Events received in the last 24 h: unknown (not connected to her core)";
   const answer = typeof hooksSeenAt !== "number" || !Number.isFinite(hooksSeenAt) ? "never"
     : nowMs - hooksSeenAt * 1000 <= DAY_MS ? "yes" : "no";
   return `Events received in the last 24 h: ${answer}`;
+}
+
+/** The list to show for a connection state: a dropped core means a stale list would pass for live, so it is emptied
+ *  (the core sends the agents again on hello). */
+function agentsWhileConnected(items, connected) {
+  return connected ? items : [];
 }
 
 /** Hover text: the detail, else "name: status". Used as a title property, never as HTML. */
@@ -104,6 +111,7 @@ function validateAgentLogs(list) {
 const api = {
   AGE_REFRESH_MS, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS, MAX_AGENT_LOGS, MAX_LOG_NAME, MAX_PATTERN_LEN,
   agentChip, relativeAge, badgeCount, sortAgents, hookStatus, agentTitle, ageRefreshDue, validateAgentLogs,
+  agentsWhileConnected,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaAgents = api;
