@@ -4,7 +4,7 @@ import pytest
 
 from riya.core.memory import Episode, Fact, Retrieved, Thread
 from riya.core.persona import STYLE_HEADER, load_traits_file, persona_prompt, style_examples
-from riya.core.prompt import (HARD_RULES as HARD, HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE,
+from riya.core.prompt import (AI_RULE, GREETING_RULE, MEMORY_RULE as HARD, HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE,
                               NO_MEMORY_LINE, SPEAK_FIRST_TURN, build_messages, greeting_situation, reply_rule)
 
 NOW = 1_800_000_000.0
@@ -161,10 +161,37 @@ def test_style_examples_never_sit_inside_the_memory_block():
     ("explain", "### Reply rules: Explain clearly in at most 8 sentences. No ~ in explanations. " + HARD),
     ("about_me", "### Reply rules: List what's in the memory block, nothing else. " + HARD)])
 def test_reply_rules_line_per_turn_kind(kind, rule):
-    assert HARD == ("You're an AI and say so if asked. Only the memory block is true about them; if something "
-                    "isn't there, say you don't know.")
+    assert HARD == "Only the memory block is true about them; if something isn't there, say you don't know."
     assert reply_rule(kind) == rule
+    assert reply_rule(kind, identity=True) == rule.replace(HARD, f"{AI_RULE} {HARD}")
+    assert AI_RULE == "You're an AI and say so if asked."
     assert _system(Retrieved([], [], []), kind=kind).endswith(rule)
+
+
+def test_the_ai_clause_rides_on_the_rules_line_only_for_an_identity_question():
+    for text in ("are you human?", "what are you?"):
+        system = build_messages(persona="P", feelings_tag="[F]", retrieved=Retrieved([], [], []), turns=[],
+                                user_text=text, situation=None, now=NOW, kind="small")[0]["content"]
+        assert system.endswith(reply_rule("small", identity=True)) and AI_RULE in system
+    for text in ("do you have feelings?", "hey riya", "what are you doing?"):
+        system = build_messages(persona="P", feelings_tag="[F]", retrieved=Retrieved([], [], []), turns=[],
+                                user_text=text, situation=None, now=NOW, kind="small")[0]["content"]
+        assert system.endswith(reply_rule("small")) and AI_RULE not in system and HARD in system
+
+
+def test_a_greeting_gets_a_rules_line_with_the_no_shared_history_clause():
+    assert GREETING_RULE == "Only the memory block is true about them; don't make up shared history."
+    assert reply_rule("greeting") == f"### Reply rules: {GREETING_RULE}"
+    system = build_messages(persona="P", feelings_tag="[F]", retrieved=Retrieved([], [], []), turns=[],
+                            user_text=None, situation="S", now=NOW, kind="greeting")[0]["content"]
+    assert system.endswith(reply_rule("greeting")) and NO_ABOUT_ME_LINE not in system
+
+
+def test_the_local_persona_says_she_has_feelings_and_stays_short():
+    p = persona_prompt("local")
+    assert ("You're an AI with your own feelings — your state line shows them. Never say you have no feelings or "
+            "that you're 'just a chatbot'.") in " ".join(p.split())
+    assert len(p.split()) <= 180
 
 
 def test_no_reply_rules_line_without_a_turn_kind():

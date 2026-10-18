@@ -217,10 +217,10 @@ class RiyaCore:
 
     @staticmethod
     def _shape(kind: str, text: str) -> tuple[str | None, int, int]:
-        """(turn kind, token budget, sentence cap) for an utterance: a greeting has its own budget and cap and no turn
-        kind (so no reply-rules line); a reply's depend on the turn."""
+        """(turn kind, token budget, sentence cap) for an utterance: a greeting has its own budget, cap and rules line;
+        a reply's depend on the turn."""
         if kind == "greet":
-            return None, BUDGETS["greeting"], CAPS["greeting"]
+            return "greeting", BUDGETS["greeting"], CAPS["greeting"]
         k = turn_kind(text, about_me=about_me(text), needs_thinking=needs_thinking(text))
         return k, BUDGETS[k], CAPS[k]
 

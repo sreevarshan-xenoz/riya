@@ -3,7 +3,7 @@ honesty line, the situation and a reply-rules line (v0.2 spec section 4.2)."""
 import re
 
 from riya.core.memory import Fact, Retrieved, Thread
-from riya.core.shaping import CAPS
+from riya.core.shaping import CAPS, is_identity_question
 
 NO_MEMORY_LINE = "(nothing stored about this yet)"
 NO_ABOUT_ME_LINE = "Nothing yet. You don't know much about them so far: say so, and don't guess."
@@ -16,9 +16,11 @@ AFTER_ABOUT_ME = "Recent conversations (context only, not facts to list):"
 REPLY_RULES = {"small": f"Reply in at most {CAPS['small']} sentences.",
                "explain": f"Explain clearly in at most {CAPS['explain']} sentences. No ~ in explanations.",
                "about_me": "List what's in the memory block, nothing else."}
-# the last line of the system message is the one the small model reliably obeys, so the hard rules ride on it
-HARD_RULES = ("You're an AI and say so if asked. Only the memory block is true about them; if something isn't there, "
-              "say you don't know.")
+# the last line of the system message is the one the small model reliably obeys, so the hard rules ride on it; the AI
+# clause only on an identity question (anywhere else it turned into "I'm just a chatbot, no feelings" small talk)
+AI_RULE = "You're an AI and say so if asked."
+MEMORY_RULE = "Only the memory block is true about them; if something isn't there, say you don't know."
+GREETING_RULE = "Only the memory block is true about them; don't make up shared history."
 
 _SOURCES = {"user_said": "user said", "inferred": "you inferred", "looked_up": "looked up"}
 ABOUT_ME_SITUATION_FACTS = 8
@@ -70,10 +72,15 @@ def _when(ended_at: float, now: float) -> str:
     return "today" if days == 0 else "1 day ago" if days == 1 else f"{days} days ago"
 
 
-def reply_rule(kind: str | None) -> str | None:
-    """The `### Reply rules:` line for a reply's turn kind (small, explain, about_me): its length rule plus the hard
-    rules. None for anything else."""
-    return f"### Reply rules: {REPLY_RULES[kind]} {HARD_RULES}" if kind in REPLY_RULES else None
+def reply_rule(kind: str | None, identity: bool = False) -> str | None:
+    """The `### Reply rules:` line for a reply's turn kind (small, explain, about_me): its length rule, the AI clause
+    when they asked what she is (identity), and the memory clause. A greeting gets only its memory clause. None for
+    anything else."""
+    if kind == "greeting":
+        return f"### Reply rules: {GREETING_RULE}"
+    if kind not in REPLY_RULES:
+        return None
+    return " ".join(["### Reply rules:", REPLY_RULES[kind], *([AI_RULE] if identity else []), MEMORY_RULE])
 
 
 def _memory_block(r: Retrieved, now: float, about_me: bool = False) -> str:
@@ -91,15 +98,15 @@ def build_messages(*, persona: str, feelings_tag: str, retrieved: Retrieved, tur
                    user_text: str | None, situation: str | None, now: float, examples: str = "",
                    kind: str | None = None) -> list[dict]:
     """examples (the made-up style exchanges) sit right after the persona, never inside the memory block; kind is
-    the reply's turn kind (shaping.turn_kind), which picks the reply-rules line and the facts-only about-me block; an
-    about-me turn with facts also gets about_me_situation."""
+    the reply's turn kind (shaping.turn_kind, or "greeting"), which picks the reply-rules line and the facts-only
+    about-me block; an about-me turn with facts also gets about_me_situation."""
     parts = [persona, *([examples] if examples else []), feelings_tag,
              _memory_block(retrieved, now, about_me=kind == "about_me"), HONESTY_LINE]
     if kind == "about_me" and retrieved.facts:
         situation = " ".join(filter(None, [situation, about_me_situation(retrieved.facts)]))
     if situation:
         parts.append("[Situation] " + situation)
-    if rule := reply_rule(kind):
+    if rule := reply_rule(kind, identity=user_text is not None and is_identity_question(user_text)):
         parts.append(rule)
     last = {"role": "user", "content": SPEAK_FIRST_TURN if user_text is None else user_text}
     return [{"role": "system", "content": "\n\n".join(parts)}, *turns, last]
