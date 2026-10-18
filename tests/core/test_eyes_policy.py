@@ -1,5 +1,7 @@
+import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -113,9 +115,29 @@ def test_window_refusal_is_the_windows_own_reasons():
     assert window_refusal(info(), (), ["code"]) == "denylisted"
 
 
-def test_defaults_are_the_spec_patterns():
-    assert DENY_TITLES.startswith("password|1password|bitwarden") and DENY_TITLES.endswith("sign in to|login")
-    assert DENY_PROCESSES == "keepass.*|1password.*|bitwarden.*|credentialuibroker"
+def _listed(path: str, label: str) -> str:
+    """The `- <label>: `regex`` line of a doc's default denylist."""
+    text = (Path(__file__).resolve().parents[2] / path).read_text(encoding="utf-8")
+    return re.search(rf"^\s*- {label}: `([^`]+)`$", text, re.M).group(1)
+
+
+@pytest.mark.parametrize("doc", ["docs/superpowers/specs/2026-10-18-riya-v0.3-her-eyes-design.md",
+                                 "docs/superpowers/plans/2026-10-18-riya-v0.3-her-eyes.md"])
+def test_defaults_are_exactly_the_spec_patterns(doc):
+    assert DENY_TITLES == _listed(doc, "Title")
+    assert DENY_PROCESSES == _listed(doc, "Process")
+
+
+@pytest.mark.parametrize("title", ["Sign-in - Google Accounts", "Sign in", "Log in to GitHub", "Log-in | Example",
+                                   "Please sign in", "LOG IN"])
+def test_sign_in_and_log_in_pages_are_denied(title):
+    assert denied(info(title=title), (), ())
+
+
+@pytest.mark.parametrize("process", ["Dashlane.exe", "NordPass.exe", "Enpass.exe", "RoboForm.exe",
+                                     "KeeperPasswordManager.exe", "Proton Pass.exe", "ProtonPass.exe"])
+def test_more_password_managers_are_denied(process):
+    assert denied(info(process=process), (), ())
 
 
 def test_extra_patterns_case_insensitive_on_own_field():

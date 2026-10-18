@@ -8,8 +8,10 @@ from riya.core.eyes.capture import WindowInfo, mad
 from riya.core.presence import Clock
 
 DENY_TITLES = ("password|1password|bitwarden|keepass|lastpass|bank|banking|paypal|upi|net ?banking|credit card|"
-               "inprivate|incognito|private browsing|windows security|credential|sign in to|login")
-DENY_PROCESSES = "keepass.*|1password.*|bitwarden.*|credentialuibroker"
+               "inprivate|incognito|private browsing|windows security|credential|sign in to|login|sign in|sign-in|"
+               "log in|log-in")
+DENY_PROCESSES = ("keepass.*|1password.*|bitwarden.*|credentialuibroker|dashlane.*|nordpass.*|enpass.*|roboform.*|"
+                  "keeper.*|proton ?pass.*")
 _LOOKING = ("focused", "talking")
 UNUSABLE_BACKOFF_S = (300, 900, 1800, 3600)  # consecutive replies with no usable note: 5, 15, 30, then 60 min
 # The desktop, the taskbar and the shell's own surfaces: "no window" (the desktop's rect is the whole monitor, so a
