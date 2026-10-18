@@ -115,6 +115,33 @@
     </div>
   </section>
 
+  <section aria-labelledby="h-agents">
+    <h2 id="h-agents">Agents</h2>
+    <p class="note">She can keep an eye on your Claude Code sessions (through hooks) and on Colab runs (through log files), and tell you when one needs you or finishes.</p>
+    <div class="row">
+      <span class="label">Claude Code hooks</span>
+      <span id="agents-hooks" class="static">Events received in the last 24 h: never</span>
+      <p id="agents-receiver" class="err" role="status" hidden></p>
+    </div>
+    <div class="row">
+      <span class="label">Token file</span>
+      <code id="agents-token" class="static"></code>
+      <p class="note">The hooks send this token with every event. This window never reads or changes it.</p>
+    </div>
+    <div class="row">
+      <span class="label">Set up the hooks</span>
+      <code id="agents-setup" class="static"></code>
+      <p class="note">Run this in a terminal to see what it would change; add <code>--apply</code> to install. This window never runs it.</p>
+    </div>
+    <div class="row" data-key="agent_logs">
+      <span class="label">Log files to watch</span>
+      <div id="agent-logs" class="logs"></div>
+      <div class="inline"><button id="agent-log-add" type="button">Add log</button><button id="agent-logs-save" type="button">Save</button></div>
+      <p class="note">One entry per run folder. The glob picks the files; the three patterns are regular expressions matched against new lines (leave one empty to ignore it).</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+  </section>
+
   <section aria-labelledby="h-online">
     <h2 id="h-online">Online model</h2>
     <div class="row check" data-key="online_enabled">
@@ -174,6 +201,7 @@
   </form>
 </dialog>
 
+<script src="src/agents-logic.js"></script>
 <script src="src/settings-logic.js"></script>
 <script src="settings.js"></script>
 </body>

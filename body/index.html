@@ -19,18 +19,24 @@
     <div id="bubble" hidden></div>
   </div>
   <div id="side">
-    <section id="agents" aria-label="Agents"><h2>Agents</h2></section>
+    <section id="agents" class="empty" aria-label="Agents">
+      <h2>Agents</h2>
+      <ul id="agents-list"></ul>
+      <p id="agents-empty">No agents right now.</p>
+    </section>
     <div id="log"></div>
     <form id="composer" autocomplete="off">
       <input id="input" type="text" maxlength="4000" placeholder="Say something…" aria-label="Message to Riya">
     </form>
   </div>
+  <div id="agent-badge" hidden role="status"></div>
   <div id="status" hidden></div>
 </div>
 <script src="src/sprite-logic.js"></script>
 <script src="src/hit-test.js"></script>
 <script src="src/bubble.js"></script>
 <script src="src/stage-logic.js"></script>
+<script src="src/agents-logic.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

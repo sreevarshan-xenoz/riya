@@ -103,7 +103,7 @@ test("fixtures match the committed protocol schema", () => {
   const validators = { core: ajv.compile(schema.core_to_body), body: ajv.compile(schema.body_to_core) };
   const dir = path.join(__dirname, "fixtures");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
-  assert.equal(names.filter((n) => n.startsWith("core_")).length, 12);
+  assert.equal(names.filter((n) => n.startsWith("core_")).length, 13);
   assert.equal(names.filter((n) => n.startsWith("body_")).length, 14);
   for (const n of names) {
     const validate = n.startsWith("core_") ? validators.core : validators.body;

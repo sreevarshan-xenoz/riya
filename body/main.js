@@ -11,7 +11,7 @@ const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
-  DONT_LOOK_HOTKEYS,
+  forgetOnDisconnect, DONT_LOOK_HOTKEYS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -116,7 +116,7 @@ function createBridge() {
 function onCoreStatus(connected) {
   state.connected = connected;
   state.readyPending = connected;
-  if (!connected) state.cache.delete("look"); // the core sends a fresh look on hello
+  if (!connected) forgetOnDisconnect(state.cache); // the core sends a fresh look and agents on hello
   broadcast("core:status", connected);
   sendBodyReady();
 }

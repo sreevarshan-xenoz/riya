@@ -11,8 +11,8 @@ def test_turn_kind_table(about_me, thinking, expected):
 
 
 def test_budgets_and_caps_are_the_specified_numbers():
-    assert BUDGETS == {"small": 110, "about_me": 160, "explain": 380, "greeting": 90, "bid": 40}
-    assert CAPS == {"small": 3, "about_me": 6, "explain": 8, "greeting": 3}
+    assert BUDGETS == {"small": 110, "about_me": 160, "explain": 380, "greeting": 90, "bid": 40, "report": 40}
+    assert CAPS == {"small": 3, "about_me": 6, "explain": 8, "greeting": 3, "report": 1}
 
 
 class Source:

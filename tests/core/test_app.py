@@ -89,7 +89,7 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "eyes"]
+        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "agents", "eyes"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
@@ -330,7 +330,79 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
                 while not self.should_exit:
                     threading.Event().wait(0.01)
 
+    class HookReceiver:                                        # never the real one: it would bind 8766
+        def __init__(self, enqueue):
+            made["enqueue"], made["hooks"], self.stopped = enqueue, self, False
+
+        def start(self):
+            return self
+
+        def stop(self):
+            self.stopped = True
+
+    def start_logwatch(core):                                  # never the real watcher: it would read G:
+        made["logwatch"] = (threading.Event(), threading.Thread(target=lambda: None))
+        assert core is made["core"]
+        made["logwatch"][1].start()
+        return made["logwatch"]
+
     monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(runner, "HookReceiver", HookReceiver)
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["server"].should_exit and made["body_present"]() is False
+    inbox = made["core"].agent_inbox                           # the core's inbox; the receiver feeds it
+    made["enqueue"]({"hook_event_name": "Stop"})
+    assert inbox.get_nowait() == {"hook_event_name": "Stop"} and made["hooks"].stopped
+    assert made["core"].receiver is made["hooks"]               # the settings read its status through the core
+    assert made["logwatch"][0].is_set()                        # the log watcher is stopped on shutdown
+
+
+def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
+    import uvicorn
+
+    from riya.core.protocol import QuitCore
+    made = {}
+
+    def build_core(args, emit, body_present):
+        core, *_ = make_core()
+        made["core"] = core
+        core.handle(QuitCore())
+        return core
+
+    class Server:
+        def __init__(self, config):
+            self.config, self.should_exit = config, False
+
+        def run(self):
+            with TestClient(self.config.app):
+                while not self.should_exit:
+                    threading.Event().wait(0.01)
+
+    monkeypatch.setattr(runner, "build_core", build_core)
+    from riya.agents.hooks import RejectCounter
+
+    class Busy:                                                # 8766 taken: serving later, maybe never
+        ok = False
+
+        def __init__(self, enqueue):
+            made["receiver"], self.rejected = self, RejectCounter()
+
+        def start(self):
+            return self
+
+        def stop(self):
+            made["stopped"] = True
+
+    monkeypatch.setattr(runner, "HookReceiver", Busy)
+    def start_logwatch(core):
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return threading.Event(), thread
+
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    assert runner.main(["--no-voice", "--hash-embed"]) is None
+    assert made["core"].agent_inbox is not None and made["stopped"]
+    assert made["core"]._agents_msg().receiver_ok is False
