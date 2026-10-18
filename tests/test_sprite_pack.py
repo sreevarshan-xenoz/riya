@@ -639,6 +639,52 @@ def test_every_frame_has_the_canvas_size_and_the_same_bottom_centred_anchor(tmp_
     assert boxes[0] == boxes[1] and boxes[0][3] == 1344
 
 
+def to_canvas(x, y):
+    """A raw 832x1216 point on the 768x1344 pack canvas (scale 768/832, bottom offset 222)."""
+    return round(x * 768 / 832), round(y * 768 / 832 + 222)
+
+
+def canvas_box(box, margin):
+    x0, y0 = to_canvas(box[0], box[1])
+    x1, y1 = to_canvas(box[2], box[3])
+    return x0 - margin, y0 - margin, x1 + margin, y1 + margin
+
+
+def alpha_of(path):
+    with Image.open(path) as im:
+        return im.getchannel("A")
+
+
+def test_every_frame_keeps_neutral_closeds_alpha_outside_its_face_mask(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
+    happy = frame((255, 0, 0))
+    happy.paste((0, 255, 0), (100, 1000, 200, 1100))  # silhouette noise outside the face: must not show
+    happy.paste((128, 128, 128), (400, 350, 450, 400))  # a hole inside the face box: its own alpha
+    happy.save(raw / "happy_closed.png")
+    covering = frame((255, 0, 0))
+    covering.paste((0, 0, 255), (150, 500, 250, 650))  # a hand inside the hands box, outside the face box
+    covering.paste((0, 0, 255), (20, 1100, 60, 1150))  # outside every mask: must not show
+    covering.save(raw / "covering_eyes_closed.png")
+    (raw / "run.json").write_text(json.dumps({"outfit": "white_tee", "seed": 1, "face_box": list(BOX), "rerolls": {}}))
+    build_pack(raw, tmp_path / "pack", fake_remove)
+    neutral = alpha_of(tmp_path / "pack" / "neutral_closed.png")
+    happy_a = alpha_of(tmp_path / "pack" / "happy_closed.png")
+    covering_a = alpha_of(tmp_path / "pack" / "covering_eyes_closed.png")
+
+    differs = ImageChops.difference(happy_a, neutral).getbbox()
+    face = canvas_box(BOX, 30)  # the feathered face mask, plus resampling spread
+    assert differs is not None and face[0] <= differs[0] and face[1] <= differs[1]
+    assert differs[2] <= face[2] and differs[3] <= face[3]
+    assert happy_a.getpixel(to_canvas(150, 1050)) == 0  # neutral's alpha, not happy's
+    assert happy_a.getpixel(to_canvas(425, 375)) == 0 and neutral.getpixel(to_canvas(425, 375)) == 255
+
+    differs = ImageChops.difference(covering_a, neutral).getbbox()
+    hands = canvas_box((128, 60, 704, 700), 30)
+    assert differs is not None and hands[0] <= differs[0] and differs[2] <= hands[2] and differs[3] <= hands[3]
+    assert covering_a.getpixel(to_canvas(200, 575)) == 255 and neutral.getpixel(to_canvas(200, 575)) == 0
+    assert covering_a.getpixel(to_canvas(40, 1125)) == 0
+
+
 def test_rebuild_overwrites_and_removes_frames_no_longer_in_raw(tmp_path):
     out = tmp_path / "pack"
     raw = raw_frames(tmp_path / "raw", ["neutral_closed", "sad_open"])
