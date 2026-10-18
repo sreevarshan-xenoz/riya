@@ -25,13 +25,25 @@ class WindowInfo:
 class WindowSource(Protocol):
     def foreground(self) -> WindowInfo | None: ...
 
+    def window(self, hwnd: int) -> WindowInfo | None:
+        """That window as it is now (current title, rect, minimized), or None when it's gone."""
+
 
 class FakeWindowSource:
-    def __init__(self, info: WindowInfo | None = None):
-        self.info = info
+    """info is the foreground window; windows are the other open ones (a window seen in front stays open)."""
+
+    def __init__(self, info: WindowInfo | None = None, windows: dict[int, WindowInfo] | None = None):
+        self.info, self.windows = info, dict(windows or {})
 
     def foreground(self) -> WindowInfo | None:
+        if self.info is not None:
+            self.windows[self.info.hwnd] = self.info
         return self.info
+
+    def window(self, hwnd: int) -> WindowInfo | None:
+        if self.info is not None and self.info.hwnd == hwnd:
+            return self.info
+        return self.windows.get(hwnd)
 
 
 def is_riya_window(path: str, title: str) -> bool:
@@ -98,6 +110,7 @@ class WindowsWindowSource:
         u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         u.IsIconic.argtypes = [wintypes.HWND]
+        u.IsWindow.argtypes = [wintypes.HWND]
         u.MonitorFromWindow.restype = wintypes.HANDLE
         u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
         u.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
@@ -130,8 +143,19 @@ class WindowsWindowSource:
 
     def foreground(self) -> WindowInfo | None:
         try:
+            return self._info(self._user32.GetForegroundWindow())
+        except Exception:
+            return None
+
+    def window(self, hwnd: int) -> WindowInfo | None:
+        try:
+            return self._info(hwnd) if hwnd and self._user32.IsWindow(hwnd) else None
+        except Exception:
+            return None
+
+    def _info(self, hwnd) -> WindowInfo | None:
+        try:
             u, c = self._user32, self._c
-            hwnd = u.GetForegroundWindow()
             if not hwnd:
                 return None
             n = min(max(u.GetWindowTextLengthW(hwnd), 0), 4096) + 1

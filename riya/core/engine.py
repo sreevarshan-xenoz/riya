@@ -46,7 +46,10 @@ PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
-GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, an unusable note): no unforced glances for 30 min
+GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
+UNPARSEABLE_BACKOFF_S = 300  # after a reply with no usable note (or an empty one): 5 min
+GLANCE_WAIT_S = 30  # a screen question waits this long for a glance in flight to finish
+TODAY_KEY = "eyes.today"  # {"day", "count"}: the daily cap survives a restart
 PEEK_EVERY_S = 30  # same window past the refresh time: a local-only thumbnail check, at most this often
 LAST_WINDOW_S = 300  # a screen question typed into her own window looks at the window they were just in
 BID_NOTE_S = 1800  # a note this fresh may be a bid's reason
@@ -134,7 +137,10 @@ class RiyaCore:
         self._acks = 0  # remember-that acks said so far, which picks the next one
         s = self.settings
         self.policy = GlancePolicy(clock, cap=s.glance_daily_cap, min_gap_s=s.glance_min_gap_s)
+        if isinstance(today := self.kv.get(TODAY_KEY), dict):
+            self.policy.restore(today.get("day"), today.get("count"))
         self._eyes_lock = threading.RLock()  # the policy and the eyes state: tick, reply, socket and glance threads
+        self._expr_lock = threading.Lock()  # _sync_expression compares and sets under it
         self._eyes_gen = 0  # bumped whenever she must stop looking (don't-look, eyes off...): in-flight looks discard
         self._dont_look, self._eyes_on = s.dont_look, s.eyes_enabled
         self._glance_thread: threading.Thread | None = None
@@ -546,9 +552,22 @@ class RiyaCore:
         return gen == self._eyes_gen and self._eyes_on and not self._dont_look
 
     def _record(self, info: WindowInfo, small: bytes) -> None:
-        """A look happened (with _eyes_lock held)."""
+        """A look happened (with _eyes_lock held); today's count is saved so the cap survives a restart."""
         self.policy.record(info, small)
         self._glanced = (_key(info), self.clock.now())
+        day, count = self.policy.today()
+        self.kv.set(TODAY_KEY, {"day": day, "count": count})
+
+    def _fresh(self, info: WindowInfo) -> WindowInfo | None:
+        """info re-read by its handle right before a grab: still open, not minimized, not hers, same title and
+        process (so the handle wasn't reused), with its current rect. None otherwise."""
+        try:
+            now = self.windows.window(info.hwnd)
+        except Exception:
+            return None
+        if now is None or now.minimized or now.is_riya or (now.title, now.process) != (info.title, info.process):
+            return None
+        return now
 
     def _eyes_step(self, now: float) -> None:
         """Each tick: tell the body where the window is, and start a glance in a worker thread when one is allowed
@@ -574,11 +593,17 @@ class RiyaCore:
             self._glance_thread.start()
 
     def _glance(self, info: WindowInfo, gen: int, peek: bool) -> None:
-        """The worker: grab, (for a peek) check the screen changed, describe, keep the note. A failure backs off for
-        30 min; closing her eyes at any point drops the look (never sent once closed)."""
+        """The worker: re-read the window and re-check the policy, grab, (for a peek) check the screen changed,
+        describe, keep the note. An outage backs off 30 min, a reply with no usable note 5 min; closing her eyes at any
+        point drops the look (never sent once closed)."""
         try:
-            if not self._may_look(gen):
-                return
+            with self._eyes_lock:
+                if not self._may_look(gen):
+                    return
+                fresh = self._fresh(info)
+                if fresh is None or self._why_not(fresh, self.settings) is not None:
+                    return
+            info = fresh
             jpeg = self._grab(info)
             if not jpeg:
                 return
@@ -589,14 +614,14 @@ class RiyaCore:
                         return
             if not self._may_look(gen):
                 return
-            note = describe(self.vision, jpeg)
+            note, outcome = describe(self.vision, jpeg)
             del jpeg
             with self._eyes_lock:
                 if not self._may_look(gen):
                     log.info("dropped a glance: her eyes closed while it was in flight")
                     return
                 if note is None:
-                    self.policy.backoff(GLANCE_BACKOFF_S)
+                    self.policy.backoff(UNPARSEABLE_BACKOFF_S if outcome == "unparseable" else GLANCE_BACKOFF_S)
                     return
                 self._record(info, small)
                 title = "" if is_private(note.activity) else info.title[:TITLE_CHARS]
@@ -614,8 +639,23 @@ class RiyaCore:
         if info is not None and info.is_riya and self._behind and now - self._behind[1] <= LAST_WINDOW_S:
             info = self._behind[0]  # typed into her own window: the window they were just in
         presence = "gaming" if self.presence.state == "gaming" else "talking"  # they're talking to her right now
+        # one look at a time: a glance in flight finishes first, so the cap and the vision model are never shared
+        # (and no glance can start meanwhile: the tick can't run while a reply holds the core lock)
+        busy = self._glance_thread
+        if busy is not None and busy.is_alive():
+            busy.join(GLANCE_WAIT_S)
         with self._eyes_lock:
-            why, gen = self._why_not(info, s, force=True, presence=presence), self._eyes_gen
+            gen = self._eyes_gen
+            why = self._why_not(info, s, force=True, presence=presence)
+            if why is None and busy is not None and busy.is_alive():
+                why = "you're still busy with another look at their screen"
+            if why is None:
+                fresh = self._fresh(info)
+                why = "the window changed" if fresh is None else self._why_not(fresh, s, force=True,
+                                                                                presence=presence)
+                info = fresh or info
+            if why is None and not self._may_look(gen):
+                why = "don't look" if self._eyes_on else "eyes off"
         jpeg = b""
         if why is None:
             try:
@@ -635,19 +675,20 @@ class RiyaCore:
                 why, guess if why == "online model unavailable" else None))
         return SimpleNamespace(jpeg=jpeg, info=info, thumb=_thumb(jpeg), gen=gen, fell_back=False,
                                situation=SEEING_SITUATION.format(window=guess),
-                               fallback=lambda why: " ".join(filter(None, [*base, cant_see_situation(why, guess)])))
+                               fallback=lambda why: " ".join(filter(None, [*base, cant_see_situation(
+                                   why, guess if why == COULDNT_SEE else None)])))
 
     def _see_stream(self, messages: list[dict], seeing: SimpleNamespace, fallback: Callable[[str], list[dict]],
                     local_budget: int, budget: int) -> Iterator[str]:
         """The vision model's answer about the screen; its first piece counts the look. If her eyes closed since the
-        grab, the image is never sent; if the model fails before saying anything, glances back off for 30 min. Either
-        way the local model answers from fallback(why) instead (text only, no image)."""
+        grab, the image is never sent; if the model fails before saying anything, glances back off (30 min, or 5 min
+        for an empty reply). Either way the local model answers from fallback(why) instead (text only, no image)."""
         if not self._may_look(seeing.gen):
             seeing.fell_back = True
             yield from self.local.stream(fallback("don't look" if self._eyes_on else "eyes off"), local_budget,
                                          LOCAL_TEMPERATURE)
             return
-        stream, said = self.vision.stream(messages, budget), False
+        stream, said, backoff = self.vision.stream(messages, budget), False, UNPARSEABLE_BACKOFF_S
         try:
             for piece in stream:
                 if not said:
@@ -663,10 +704,11 @@ class RiyaCore:
                 log.warning("the vision stream ended early: %s", e)
                 return
             log.warning("couldn't see for a screen question: %s", e)
+            backoff = GLANCE_BACKOFF_S
         finally:
             stream.close()
         with self._eyes_lock:
-            self.policy.backoff(GLANCE_BACKOFF_S)
+            self.policy.backoff(backoff)
         seeing.fell_back = True
         yield from self.local.stream(fallback(COULDNT_SEE), local_budget, LOCAL_TEMPERATURE)
 
@@ -717,10 +759,11 @@ class RiyaCore:
         return "covering_eyes" if self._dont_look else self.feelings.expression()
 
     def _sync_expression(self) -> None:
-        name = self._face()
-        if name != self._expression:
-            self._expression = name
-            self.emit(ExpressionMsg(name=name))
+        with self._expr_lock:  # computed and sent together, so a stale face can't land after a newer one
+            name = self._face()
+            if name != self._expression:
+                self._expression = name
+                self.emit(ExpressionMsg(name=name))
 
     def _state_msg(self) -> StateMsg:
         state = asdict(self.feelings.state)
