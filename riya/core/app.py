@@ -1,0 +1,103 @@
+"""The localhost WebSocket app: a Hub fans core messages out to every connected body, /ws carries the protocol."""
+import asyncio
+import logging
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
+
+from riya.core.engine import RiyaCore
+from riya.core.protocol import ErrorMsg, ProtocolError, UserText, dump, parse_body_message
+
+log = logging.getLogger("riya.app")
+
+
+class Hub:
+    """One queue per connected socket. publish() is safe from any thread and silent before a loop is attached."""
+
+    def __init__(self):
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._queues: set[asyncio.Queue] = set()
+
+    @property
+    def connections(self) -> int:
+        return len(self._queues)
+
+    def attach(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def connect(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        self._queues.add(q)
+        return q
+
+    def disconnect(self, q: asyncio.Queue) -> None:
+        self._queues.discard(q)
+
+    def publish(self, msg: BaseModel) -> None:
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._deliver, msg)
+        except RuntimeError:  # the loop is closed (shutting down)
+            pass
+
+    def _deliver(self, msg: BaseModel) -> None:
+        for q in list(self._queues):
+            q.put_nowait(msg)
+
+
+def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore]) -> FastAPI:
+    hub = Hub()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        hub.attach(asyncio.get_running_loop())
+        app.state.core = await run_in_threadpool(core_factory, hub.publish)
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.hub = hub
+
+    async def receive(ws: WebSocket, core: RiyaCore, q: asyncio.Queue) -> None:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = parse_body_message(raw)
+            except ProtocolError as e:
+                q.put_nowait(ErrorMsg(message=str(e)))
+                continue
+            if isinstance(msg, UserText):
+                await run_in_threadpool(lambda: list(core.reply(msg.text, "typed")))
+            else:
+                await run_in_threadpool(core.handle, msg)
+
+    async def send(ws: WebSocket, q: asyncio.Queue) -> None:
+        while True:
+            await ws.send_text(dump(await q.get()))
+
+    @app.websocket("/ws")
+    async def ws_endpoint(ws: WebSocket) -> None:
+        core: RiyaCore = app.state.core
+        await ws.accept()
+        q = hub.connect()  # before hello, so nothing published in between is lost
+        tasks: list[asyncio.Task] = []
+        try:
+            for msg in core.hello_messages():
+                await ws.send_text(dump(msg))
+            tasks = [asyncio.create_task(receive(ws, core, q)), asyncio.create_task(send(ws, q))]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                if t.exception() and not isinstance(t.exception(), WebSocketDisconnect):
+                    log.warning("websocket closed: %r", t.exception())
+        except WebSocketDisconnect:
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
+            hub.disconnect(q)
+
+    return app

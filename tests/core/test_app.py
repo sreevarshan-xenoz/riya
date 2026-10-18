@@ -1,0 +1,110 @@
+import argparse
+import asyncio
+import threading
+
+from fastapi.testclient import TestClient
+
+from riya.core import __main__ as runner
+from riya.core.__main__ import DEFAULT_HOST
+from riya.core.app import Hub, create_app
+from riya.core.presence import FakeIdleSource
+from riya.core.protocol import ExpressionMsg
+from tests.fakes import make_core
+
+
+def client(replies=("Hi there.",)):
+    def factory(emit):
+        core, _, _, _ = make_core(local_replies=list(replies))
+        core.emit = emit
+        return core
+    return TestClient(create_app(factory))
+
+
+def receive_until(ws, type_):
+    seen = []
+    while True:
+        m = ws.receive_json()
+        seen.append(m["type"])
+        if m["type"] == type_:
+            return seen
+
+
+def test_hello_then_user_text_round_trip():
+    with client() as c, c.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        ws.send_json({"type": "user_text", "text": "hi"})
+        assert "say" in receive_until(ws, "say_end")
+
+
+def test_bad_message_returns_error_and_socket_stays_open():
+    with client() as c, c.websocket_connect("/ws") as ws:
+        ws.send_text("garbage")
+        assert "error" in receive_until(ws, "error")
+        ws.send_json({"type": "user_text", "text": "still there?"})
+        assert "say" in receive_until(ws, "say_end")
+
+
+def test_binds_localhost_only():
+    assert DEFAULT_HOST == "127.0.0.1"
+
+
+def test_non_text_messages_go_to_the_core_and_state_is_exposed():
+    with client() as c, c.websocket_connect("/ws") as ws:
+        assert receive_until(ws, "state") == ["hello", "settings", "state"]
+        ws.send_json({"type": "get_memories"})
+        assert "memories" in receive_until(ws, "memories")
+        assert c.app.state.core.hello_messages()[0].type == "hello"
+
+
+def test_every_connection_gets_hub_broadcasts_and_disconnect_is_cleaned_up():
+    with client() as c:
+        hub = c.app.state.hub
+        with c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
+            for ws in (a, b):
+                receive_until(ws, "state")
+            hub.publish(ExpressionMsg(name="happy"))
+            assert receive_until(a, "expression") == ["expression"]
+            assert receive_until(b, "expression") == ["expression"]
+        c.portal.call(asyncio.sleep, 0.05)
+        assert hub.connections == 0
+
+
+def test_hub_publish_before_attach_is_silent_and_works_from_threads():
+    hub = Hub()
+    hub.publish(ExpressionMsg(name="happy"))  # no loop yet: dropped, never raises
+
+    async def scenario():
+        hub.attach(asyncio.get_running_loop())
+        q = hub.connect()
+        threading.Thread(target=hub.publish, args=(ExpressionMsg(name="sad"),)).start()
+        assert (await asyncio.wait_for(q.get(), 2)).name == "sad"
+        hub.disconnect(q)
+        assert hub.connections == 0
+
+    asyncio.run(scenario())
+    hub.publish(ExpressionMsg(name="happy"))  # loop now closed: still silent
+
+
+def test_build_core_imports_legacy_memory_once(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    legacy = tmp_path / "riya_memory.json"
+    legacy.write_text('{"summary": "We talked about cats."}', encoding="utf-8")
+    args = argparse.Namespace(db=str(tmp_path / "d" / "riya.db"), local_url="http://127.0.0.1:1", hash_embed=True,
+                              legacy_memory=str(legacy))
+    core = runner.build_core(args, lambda m: None)
+    assert [e.summary for e in core.memory.recent_episodes()] == ["We talked about cats."]
+    assert core.kv.get("legacy_imported") is True
+    core.kv.conn.close()
+    again = runner.build_core(args, lambda m: None)
+    assert len(again.memory.recent_episodes()) == 1
+
+
+def test_main_help_lists_options(capsys):
+    try:
+        runner.parse_args(["--help"])
+    except SystemExit as e:
+        assert e.code == 0
+    out = capsys.readouterr().out
+    for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory"):
+        assert flag in out
