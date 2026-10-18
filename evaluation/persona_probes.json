@@ -59,6 +59,15 @@
       ]
     },
     {
+      "id": "greeting",
+      "facts": ["The user is a college student", "The user has a calculus exam on Friday",
+                "The user listens to lo-fi music while working"],
+      "turns": [
+        {"id": "back", "kind": "greeting", "speak_first": true, "away_hours": 30,
+         "text": "(she speaks first: back after 30 hours away)"}
+      ]
+    },
+    {
       "id": "explain",
       "facts": [],
       "turns": [

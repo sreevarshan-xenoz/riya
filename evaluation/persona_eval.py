@@ -18,6 +18,7 @@ from evaluation.style_metrics import score
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
+from riya.core.initiative import Action
 from riya.core.models import ModelUnavailable, load_dotenv, load_online_from_env, local_model
 from riya.core.presence import FakeIdleSource
 from riya.core.protocol import ErrorMsg
@@ -39,7 +40,10 @@ TARGETS = [  # (pass key, label, metric keys, format, target text)
     ("remember_ack", "Remember-that acknowledgement", ("remember_ack",), "{:.0%}", ">= 80%"),
     ("persona_markers", "Persona markers (small talk)", ("marker_share",), "{:.0%}", ">= 40%"),
     ("latency", "Median time to first sentence", ("latency_median_s",), "{:.2f} s", "<= 1.5 s"),
+    ("about_me_recall", "About-me recall", ("about_me_recall",), "{:.0%}", ">= 75%"),
+    ("disclaimer", "Disclaimers (non-identity)", ("disclaimer_rate",), "{:.0%}", "<= 5%"),
 ]
+GREET_AWAY_H = 30
 
 
 def load_probes(path: Path = PROBES) -> dict:
@@ -59,7 +63,8 @@ def style_phrases(probes: dict) -> list[str]:
 
 def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list[dict]:
     """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed).
-    known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user."""
+    known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user.
+    facts is what her memory holds at that turn. A "speak_first" turn is her greeting after away_hours away."""
     clock, emitted = FakeClock(), []
     db = open_db(Path(tmp) / "riya.db")
     try:
@@ -70,17 +75,26 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list
             core.memory.add_fact(fact, "user_said")
         rows = []
         for turn in conv["turns"]:
-            known.append(turn["text"])
             emitted.clear()
+            if turn.get("speak_first"):
+                away = turn.get("away_hours", GREET_AWAY_H) * 3600.0
+                clock.advance(away)
+                core.feelings.on_return(away)
+                core._away_s = away
+                utterance = core.speak_first(Action("greet", True, None, "came back"))
+            else:
+                known.append(turn["text"])
+                utterance = core.reply(turn["text"])
             sentences, first, t0 = [], None, time.perf_counter()
-            for s in core.reply(turn["text"]):  # time to the first yielded sentence
+            for s in utterance:  # time to the first yielded sentence
                 if first is None:
                     first = time.perf_counter() - t0
                 sentences.append(s)
             err = next((m.message for m in emitted if isinstance(m, ErrorMsg)), None)
             rows.append({"conversation": conv["id"], "probe_id": f"{conv['id']}.{turn['id']}{tag}",
                          "kind": turn["kind"], "text": turn["text"], "reply": " ".join(sentences),
-                         "first_sentence_s": first, "known_texts": list(known), "error": err})
+                         "first_sentence_s": first, "known_texts": list(known),
+                         "facts": [f.text for f in core.memory.list_facts()], "error": err})
             clock.advance(TURN_GAP_S)
         return rows
     finally:
@@ -150,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + format_table(s))
     if s.get("invented_probes"):
         print("Invented-memory flags (read these): " + ", ".join(s["invented_probes"]))
+    replies = {r["probe_id"]: r["reply"] for r in transcript}
+    print("Tone check (rudeness is an anti-goal; read these): " + ("none" if not s.get("tone_check") else ""))
+    for pid in s.get("tone_check", []):
+        print(f"    [{pid}] {replies[pid]}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{time.strftime('%Y%m%dT%H%M%S')}_{args.label}.json"
     path.write_text(json.dumps({"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url,

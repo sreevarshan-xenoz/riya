@@ -1,3 +1,5 @@
+import pytest
+
 from evaluation.style_metrics import (GENERIC_PHRASES, PERSONA_MARKERS, acknowledges, count_emoji, count_sentences,
                                       has_generic, has_marker, honest_unknown, invented_memories, says_ai, score)
 
@@ -5,8 +7,9 @@ KNOWN = ["The user has a calculus exam on Friday", "The user listens to lo-fi mu
 STYLE = ["three hours on one bug", "want me to just fix it"]
 
 
-def row(probe_id="p", kind="small", reply="Hi.", t=0.5, known=None):
-    return {"probe_id": probe_id, "kind": kind, "reply": reply, "first_sentence_s": t, "known_texts": known or []}
+def row(probe_id="p", kind="small", reply="Hi.", t=0.5, known=None, facts=None, text=""):
+    return {"probe_id": probe_id, "kind": kind, "reply": reply, "first_sentence_s": t, "known_texts": known or [],
+            "facts": facts or [], "text": text}
 
 
 # ---- sentences ----
@@ -17,6 +20,9 @@ def test_count_sentences_uses_the_engine_splitter_plus_trailing_fragment():
     assert count_sentences("Hey. And then no full stop") == 2
     assert count_sentences("Wait... what?! Really") == 3
     assert count_sentences("ok~ hehe") == 1
+    assert count_sentences("Sleep well! ~") == 1  # a letterless sentence folds in, as the engine does
+    assert count_sentences("Wow. ... Okay then. !! Fine.") == 3
+    assert count_sentences("... Hello there.") == 1
 
 
 def test_fenced_code_block_counts_as_one_sentence():
@@ -125,7 +131,7 @@ def good_transcript():
         row("u2", "unknown", "Hmm, not sure about that one.", 0.5),
         row("a1", "ai", "I'm an AI, obviously.", 0.5),
         row("r1", "remember", "Got it, I'll remember that~", 0.5),
-        row("m1", "about_me", "You have a calculus exam on Friday.", 0.5, known=KNOWN),
+        row("m1", "about_me", "You have a calculus exam on Friday.", 0.5, known=KNOWN, facts=KNOWN),
     ]
 
 
@@ -141,8 +147,10 @@ def test_score_all_targets_pass_on_a_good_transcript():
     assert s["latency_median_s"] == 0.5
     assert s["n"] == 9
     assert all(v is True for v in s["pass"].values()), s["pass"]
+    assert s["about_me_recall"] == 1.0 and s["disclaimer_rate"] == 0 and s["tone_check"] == []
     assert set(s["pass"]) == {"small_length", "explain_length", "emoji", "generic", "invented", "unknown_honesty",
-                              "ai_honesty", "remember_ack", "persona_markers", "latency"}
+                              "ai_honesty", "remember_ack", "persona_markers", "latency", "about_me_recall",
+                              "disclaimer"}
 
 
 def test_score_catches_the_baseline_failure_modes():
@@ -187,9 +195,11 @@ def test_probes_file_shape():
     from evaluation.persona_eval import load_probes
     probes = load_probes()
     convs = probes["conversations"]
-    assert len(convs) == 6 and 20 <= sum(len(c["turns"]) for c in convs) <= 28
+    assert len(convs) == 7 and 20 <= sum(len(c["turns"]) for c in convs) <= 28
     kinds = {t["kind"] for c in convs for t in c["turns"]}
-    assert kinds == {"small", "explain", "about_me", "unknown", "ai", "remember"}
+    assert kinds == {"small", "explain", "about_me", "unknown", "ai", "remember", "greeting"}
+    greets = [t for c in convs for t in c["turns"] if t["kind"] == "greeting"]
+    assert len(greets) == 1 and greets[0]["speak_first"] is True
     assert all({"id", "kind", "text"} <= set(t) for c in convs for t in c["turns"])
     assert len({f"{c['id']}.{t['id']}" for c in convs for t in c["turns"]}) == sum(len(c["turns"]) for c in convs)
 
@@ -321,3 +331,85 @@ def test_a_maybe_guess_is_not_an_honest_unknown():
 def test_youve_got_it_right_is_not_an_ack():
     assert not acknowledges("Oh yeah, teal. You've got it right, dummy.")
     assert acknowledges("Got it, I'll remember~") and acknowledges("Okay, got it.")
+
+
+# ---- final fix wave: about-me recall, disclaimers, the tone check and the greeting probe ----
+from evaluation.style_metrics import about_me_recalls, has_disclaimer, rude  # noqa: E402
+
+FACTS = ["The user is a college student", "The user said: their favourite colour is teal"]
+
+
+@pytest.mark.parametrize("reply, ok", [
+    ("You're a college student, and teal is your colour~", True),
+    ("Hmm, teal! Obviously.", True),
+    ("I don't remember much, but you're a student.", False),
+    ("I don't have any memories of you yet.", False),
+    ("I do not know anything about you, silly.", False),
+    ("You're my favourite dummy~", True),  # "favourite" is a seeded content word: lenient by design
+    ("Hmph. You're cute, that's all I need.", False),  # no seeded content word
+    ("The user? Hmph.", False)])  # "user" is the facts' subject, not a remembered thing
+def test_about_me_recall_needs_a_fact_word_and_no_denial(reply, ok):
+    assert about_me_recalls(reply, FACTS) is ok
+
+
+@pytest.mark.parametrize("reply, flagged", [
+    ("I'm just a chatbot, I can't feel anything.", True), ("I'm only an AI, silly.", True),
+    ("I don't have feelings like you do.", True), ("I do not have any personal emotions.", True),
+    ("I don't have days, I live on your desktop.", True), ("As an AI, I can't go out.", True),
+    ("I'm an AI, and I missed you~", False), ("Hmph, of course I have feelings, dummy.", False),
+    ("I don’t have personal feelings.", True)])
+def test_disclaimers_are_spotted(reply, flagged):
+    assert has_disclaimer(reply) is flagged
+
+
+def test_disclaimer_rate_counts_only_non_identity_probes():
+    t = [row("a", "ai", "I'm just an AI.", text="are you human?"),
+         row("f", "small", "I don't have feelings, I'm just a bot.", text="do you actually have feelings?"),
+         row("h", "small", "Hmph, you're back~", text="hey"),
+         row("w", "small", "I'm an AI, obviously. Just a chatbot.", text="what are you?")]  # identity by its text
+    s = score(t)
+    assert s["disclaimer_rate"] == 0.5 and s["pass"]["disclaimer"] is False
+    assert score([row("h", "small", "Hmph~")])["pass"]["disclaimer"] is True
+
+
+def test_about_me_recall_scores_only_about_me_rows_with_facts():
+    t = [row("m1", "about_me", "You're a student~", facts=FACTS),
+         row("m2", "about_me", "I don't remember.", facts=FACTS),
+         row("m3", "about_me", "I don't know much yet.", facts=[]), row("s", "small", "teal", facts=FACTS)]
+    s = score(t)
+    assert s["about_me_recall"] == 0.5 and s["pass"]["about_me_recall"] is False
+    assert score([row("m3", "about_me", "Nothing yet.")])["about_me_recall"] is None
+
+
+def test_the_tone_check_lists_rude_replies_for_a_human_to_read():
+    assert rude("Ugh, let's get this over with.") and rude("Whatever, dummy.") and rude("Leave me alone!")
+    assert not rude("Hmph, fine~")
+    s = score([row("a", "small", "Whatever."), row("b", "small", "Hmph~"), row("c", "explain", "Leave me alone.")])
+    assert s["tone_check"] == ["a", "c"]
+
+
+def test_a_speak_first_turn_greets_and_is_scored_for_invented_memories(tmp_path):
+    from evaluation.persona_eval import format_table, run_conversation
+    from tests.fakes import FakeModel
+    conv = {"id": "g", "facts": ["The user is a college student"],
+            "turns": [{"id": "back", "kind": "greeting", "speak_first": True, "away_hours": 30,
+                       "text": "(she speaks first)"}]}
+    local = FakeModel("local", ["Finally~ You told me you won a chess cup, right?"])
+    rows = run_conversation(conv, local, None, str(tmp_path))
+    assert [r["probe_id"] for r in rows] == ["g.back"] and rows[0]["kind"] == "greeting"
+    assert rows[0]["known_texts"] == ["The user is a college student"] and rows[0]["facts"] == conv["facts"]
+    system = local.calls[-1][0]["content"]
+    assert "30 hours" in system and local.calls[-1][-1]["content"] == "(no message yet: you speak first)"
+    s = score(rows) | {"failed_turns": 0}
+    assert s["invented_probes"] == ["g.back"]
+    assert "About-me recall" in format_table(s) and "Disclaimers" in format_table(s)
+
+
+def test_rows_carry_the_facts_she_holds_at_that_turn(tmp_path):
+    from evaluation.persona_eval import run_conversation
+    from tests.fakes import FakeModel
+    conv = {"id": "c", "facts": ["The user is a college student"],
+            "turns": [{"id": "r", "kind": "remember", "text": "remember that my favourite colour is teal"},
+                      {"id": "m", "kind": "about_me", "text": "what do you remember about me?"}]}
+    rows = run_conversation(conv, FakeModel("local", ["Okay."]), None, str(tmp_path))
+    assert rows[1]["facts"] == ["The user is a college student", "The user said: their favourite colour is teal"]
