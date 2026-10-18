@@ -160,11 +160,14 @@ class VoiceLoop:
     def _on_mic(self, indata, frames, t, status):
         self.mic.put(indata[:, 0].copy())
 
-    def is_user_speech(self, chunk: np.ndarray, in_utterance: bool = False) -> bool:
-        """VAD says speech; while she talks, it must also be clearly louder than her own voice coming back."""
+    def classify(self, chunk: np.ndarray) -> str:
+        """"user", "echo" or "silence". While she talks, speech counts as the user's only when it is clearly louder
+        than her own voice coming back, even in the middle of an utterance."""
         if self.vad.prob(chunk) <= 0.5:
-            return False
-        return in_utterance or not self.speaking.is_set() or barge_in_ok(rms(chunk), self.playback_rms)
+            return "silence"
+        if self.speaking.is_set() and not barge_in_ok(rms(chunk), self.playback_rms):
+            return "echo"
+        return "user"
 
     def poll(self) -> None:
         """The talk hotkey opens the gate and cuts her off; mute_mic pauses the mic stream."""
@@ -202,16 +205,18 @@ class VoiceLoop:
                 chunk = self.mic.get(timeout=0.1)
             except queue.Empty:
                 continue
-            if self.is_user_speech(chunk, in_utterance=speech):
+            kind = self.classify(chunk)
+            if kind == "user":
                 if self.speaking.is_set():
                     self.interrupt.set()  # you started talking: she stops
                 speech, silent_since = True, None
             elif speech and silent_since is None:
                 silent_since = time.monotonic()
             if speech:
-                buf.append(chunk)
-                if streaming:
-                    self.stt.feed(chunk)
+                if kind != "echo":  # her echo is neither transcribed nor keeps your utterance open
+                    buf.append(chunk)
+                    if streaming:
+                        self.stt.feed(chunk)
                 if silent_since is not None and time.monotonic() - silent_since >= self.end_silence:
                     return np.concatenate(buf), (self.stt.finish() if streaming else None)
         return None
@@ -261,7 +266,8 @@ class VoiceLoop:
 
     def say(self, sentences: Iterator[str]) -> None:
         """Speak sentences as they arrive; playback starts at the first audio chunk. A barge-in stops playback and
-        closes the reply, so the core records only what was said. With mute_voice the sentences are only drained."""
+        closes the reply, so the core records only what was said. With mute_voice the sentences are only drained.
+        Never raises: an audio failure is logged, the rest of the reply is drained, and her state is reset."""
         with self._say_lock:
             settings = self.core.settings
             out = pacer = None
@@ -287,25 +293,38 @@ class VoiceLoop:
                         break
             except Exception:
                 log.exception("voice playback failed; the rest of the reply is shown, not spoken")
-                for _ in sentences:
-                    pass
+                _quietly(lambda: _drain(sentences), "draining the reply")
             finally:
                 cut = self.interrupt.is_set()
-                if hasattr(sentences, "close"):
-                    sentences.close()
-                if out is not None:
-                    (out.abort if cut else out.stop)()
-                    out.close()
-                if pacer is not None:
-                    (pacer.cancel if cut else pacer.finish)()
-                self.playback_rms = 0.0
-                self.speaking.clear()
-                self.on_mouth(0.0)
+                try:
+                    if hasattr(sentences, "close"):
+                        _quietly(sentences.close, "closing the reply")
+                    if out is not None:
+                        _quietly(out.abort if cut else out.stop, "stopping playback")
+                        _quietly(out.close, "closing the audio output")
+                    if pacer is not None:
+                        _quietly(pacer.cancel if cut else pacer.finish, "stopping the mouth")
+                finally:
+                    self.playback_rms = 0.0
+                    self.speaking.clear()
+                    _quietly(lambda: self.on_mouth(0.0), "closing the mouth")
 
     def _synth(self, sentence: str, speed: float, style: str):
         if hasattr(self.tts, "stream"):
             return self.tts.stream(sentence, speed, style)
         return [self.tts.speak(sentence, speed, style)[0]]
+
+
+def _drain(sentences: Iterator[str]) -> None:
+    for _ in sentences:
+        pass
+
+
+def _quietly(step: Callable[[], object], what: str) -> None:
+    try:
+        step()
+    except Exception:
+        log.exception("voice: %s failed", what)
 
 
 def _sounddevice_output(sr: int):

@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 from riya.core import __main__ as runner
 from riya.core.__main__ import DEFAULT_HOST
 from riya.core.app import Hub, create_app
+from riya.core.clock import FakeClock
+from riya.core.engine import Utterance
+from riya.core.listen import ListenGate
 from riya.core.presence import FakeIdleSource
 from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
@@ -146,7 +149,7 @@ def test_main_help_lists_options(capsys):
 
 class FakeVoiceLoop:
     def __init__(self):
-        self.calls = []
+        self.calls, self.gate = [], ListenGate(FakeClock())
 
     def answer(self, sentences, reason="typed"):
         self.calls.append((list(sentences), reason))
@@ -163,8 +166,14 @@ def test_deliver_drains_without_voice_and_speaks_first_with_it():
     runner.deliver(greeting(), None)
     assert steps == ["start", "end"]
     loop = FakeVoiceLoop()
-    runner.deliver(iter(["Welcome back!"]), loop)
+    runner.deliver(Utterance(iter(["Welcome back!"]), spoken=True), loop)
     assert loop.calls == [(["Welcome back!"], "spoke_first")]
+
+
+def test_deliver_never_voices_an_utterance_that_is_not_spoken():
+    loop, silent = FakeVoiceLoop(), Utterance(iter(["psst"]), spoken=False)
+    runner.deliver(silent, loop)
+    assert loop.calls == [] and list(silent) == [] and loop.gate.is_open()
 
 
 def test_speaker_drains_typed_replies_until_the_voice_loop_is_ready():

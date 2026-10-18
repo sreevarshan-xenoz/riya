@@ -72,11 +72,13 @@ def test_bid_is_a_silent_bubble_and_ignoring_it_makes_her_pout():
     clock = FakeClock()
     core, emitted, src, _ = make_core(clock, local_replies=["Hey... water break? you've been at it forever~"])
     core.handle(SetSettings(patch={"quiet_hours": None}))   # the default quiet hours depend on the local timezone
+    hooked = []
+    core.on_spoke_first = hooked.append
     run_ticks(core, clock, 2 * 3600 + 600, step=300)   # long focused stretch
     src.idle = 150
     assert run_ticks(core, clock, 150, step=150) == []  # nothing spoken aloud
     bids = [m for m in emitted if isinstance(m, Say) and m.kind == "bid"]
-    assert len(bids) == 1 and bids[0].spoken is False
+    assert len(bids) == 1 and bids[0].spoken is False and hooked == ["bid"]
     src.idle = 0
     run_ticks(core, clock, 301, step=1)
     assert core.feelings.expression() == "pouty"
