@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://riya.local/sprite-manifest.schema.json",
+  "title": "Riya sprite pack manifest",
+  "description": "Describes one sprite pack. Only expressions.neutral.closed is required; the body falls back per frame for anything missing (variant -> closed -> neutral.variant -> neutral.closed).",
+  "type": "object",
+  "required": ["name", "version", "canvas", "crops", "expressions"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "canvas": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "crops": {
+      "type": "object",
+      "required": ["upper"],
+      "additionalProperties": false,
+      "properties": {
+        "upper": {
+          "description": "[x, y, width, height] of the head-and-shoulders crop used by panel mode, in canvas pixels.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "expressions": {
+      "type": "object",
+      "required": ["neutral"],
+      "additionalProperties": false,
+      "properties": {
+        "neutral": { "$ref": "#/definitions/neutralFrames" },
+        "happy": { "$ref": "#/definitions/frames" },
+        "excited": { "$ref": "#/definitions/frames" },
+        "missed_you": { "$ref": "#/definitions/frames" },
+        "pouty": { "$ref": "#/definitions/frames" },
+        "flustered": { "$ref": "#/definitions/frames" },
+        "teasing": { "$ref": "#/definitions/frames" },
+        "worried": { "$ref": "#/definitions/frames" },
+        "sad": { "$ref": "#/definitions/frames" },
+        "sleepy": { "$ref": "#/definitions/frames" },
+        "curious": { "$ref": "#/definitions/frames" },
+        "thinking": { "$ref": "#/definitions/frames" },
+        "surprised": { "$ref": "#/definitions/frames" },
+        "covering_eyes": { "$ref": "#/definitions/frames" }
+      }
+    }
+  },
+  "definitions": {
+    "file": { "type": "string", "minLength": 1 },
+    "frames": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "closed": { "$ref": "#/definitions/file" },
+        "open": { "$ref": "#/definitions/file" },
+        "blink": { "$ref": "#/definitions/file" }
+      }
+    },
+    "neutralFrames": {
+      "type": "object",
+      "required": ["closed"],
+      "additionalProperties": false,
+      "properties": {
+        "closed": { "$ref": "#/definitions/file" },
+        "open": { "$ref": "#/definitions/file" },
+        "blink": { "$ref": "#/definitions/file" }
+      }
+    }
+  }
+}

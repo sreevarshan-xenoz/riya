@@ -1,0 +1,88 @@
+{
+  "name": "riya-placeholder",
+  "version": 1,
+  "canvas": {
+    "width": 384,
+    "height": 672
+  },
+  "crops": {
+    "upper": [
+      0,
+      0,
+      384,
+      350
+    ]
+  },
+  "expressions": {
+    "neutral": {
+      "closed": "neutral_closed.svg",
+      "open": "neutral_open.svg",
+      "blink": "neutral_blink.svg"
+    },
+    "happy": {
+      "closed": "happy_closed.svg",
+      "open": "happy_open.svg",
+      "blink": "happy_blink.svg"
+    },
+    "excited": {
+      "closed": "excited_closed.svg",
+      "open": "excited_open.svg",
+      "blink": "excited_blink.svg"
+    },
+    "missed_you": {
+      "closed": "missed_you_closed.svg",
+      "open": "missed_you_open.svg",
+      "blink": "missed_you_blink.svg"
+    },
+    "pouty": {
+      "closed": "pouty_closed.svg",
+      "open": "pouty_open.svg",
+      "blink": "pouty_blink.svg"
+    },
+    "flustered": {
+      "closed": "flustered_closed.svg",
+      "open": "flustered_open.svg",
+      "blink": "flustered_blink.svg"
+    },
+    "teasing": {
+      "closed": "teasing_closed.svg",
+      "open": "teasing_open.svg",
+      "blink": "teasing_blink.svg"
+    },
+    "worried": {
+      "closed": "worried_closed.svg",
+      "open": "worried_open.svg",
+      "blink": "worried_blink.svg"
+    },
+    "sad": {
+      "closed": "sad_closed.svg",
+      "open": "sad_open.svg",
+      "blink": "sad_blink.svg"
+    },
+    "sleepy": {
+      "closed": "sleepy_closed.svg",
+      "open": "sleepy_open.svg",
+      "blink": "sleepy_blink.svg"
+    },
+    "curious": {
+      "closed": "curious_closed.svg",
+      "open": "curious_open.svg",
+      "blink": "curious_blink.svg"
+    },
+    "thinking": {
+      "closed": "thinking_closed.svg",
+      "open": "thinking_open.svg",
+      "blink": "thinking_blink.svg"
+    },
+    "surprised": {
+      "closed": "surprised_closed.svg",
+      "open": "surprised_open.svg",
+      "blink": "surprised_blink.svg"
+    },
+    "covering_eyes": {
+      "closed": "covering_eyes_closed.svg",
+      "open": "covering_eyes_open.svg",
+      "blink": "covering_eyes_blink.svg"
+    }
+  }
+}
