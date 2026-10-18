@@ -9,6 +9,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from riya.agents.hooks import HookReceiver
+from riya.agents.logwatch import LogWatch
 from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
@@ -22,6 +24,7 @@ from riya.core.store import open_db
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+LOGWATCH_EVERY_S = 60.0
 VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +130,34 @@ def run_ticks(core: RiyaCore, speaker: Speaker, alive: Callable[[], bool],
             return
 
 
+def run_logwatch(core: RiyaCore, stop: threading.Event, every: float = LOGWATCH_EVERY_S, make=LogWatch) -> None:
+    """Polls the run logs into core.colab_inbox every 60 s until stop is set. The blocking Drive I/O happens here,
+    never under the core lock; the entries are read from settings each cycle, so an edit applies on the next poll."""
+    while not stop.is_set():
+        try:
+            for item in make(core.settings.agent_logs, core.kv, core.clock).poll():
+                core.colab_inbox.put(item)
+        except Exception:
+            log.exception("the log watcher's poll failed")
+        if stop.wait(every):
+            return
+
+
+def start_logwatch(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thread]:
+    """The riya-logwatch daemon thread; set the returned event to stop it."""
+    stop = threading.Event()
+    thread = threading.Thread(target=run_logwatch, args=(core, stop), kwargs=kw, name="riya-logwatch", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def start_receiver(core: RiyaCore, make=None):
+    """The hook receiver, kept up (retried while 8766 is busy) and handed to the core for the settings' status."""
+    receiver = (make or HookReceiver)(core.agent_inbox.put).start()
+    core.receiver = receiver
+    return receiver
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     import uvicorn
@@ -137,6 +168,7 @@ def main(argv: list[str] | None = None) -> None:
     server = uvicorn.Server(uvicorn.Config(app, host=DEFAULT_HOST, port=args.port, log_level="warning"))
     thread = threading.Thread(target=server.run, name="riya-ws", daemon=True)
     thread.start()
+    hooks = logwatch = None
     try:
         while not hasattr(app.state, "core"):
             if not thread.is_alive():
@@ -144,6 +176,9 @@ def main(argv: list[str] | None = None) -> None:
             time.sleep(0.1)
         core = app.state.core
         log.info("Riya core listening on ws://%s:%d/ws", DEFAULT_HOST, args.port)
+        # hook payloads and log lines cross from their own threads into the core's inboxes; the tick drains them
+        hooks = start_receiver(core)
+        logwatch = start_logwatch(core)
         if not args.no_voice:
             try:
                 speaker.loop = build_voice(core, app.state.hub.publish)
@@ -158,6 +193,11 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if speaker.loop is not None:
             speaker.loop.stop()
+        if hooks is not None:
+            hooks.stop()
+        if logwatch is not None:
+            logwatch[0].set()
+            logwatch[1].join(timeout=5)
         server.should_exit = True
         thread.join(timeout=5)
 

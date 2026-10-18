@@ -180,3 +180,14 @@ test("glanceRows shows time, app and activity, newest first as given, tolerating
   ]);
   assert.deepEqual(L.glanceRows({ type: "memories" }), []);
 });
+
+test("agent_logs patches are validated like the core and errors route to their control", () => {
+  const entry = { name: "colab", glob: "G:/runs/**/*.out", done_re: "DONE", fail_re: "FAILED", lost_re: "" };
+  assert.deepEqual(L.settingPatch("agent_logs", [entry]), { ok: true, patch: { agent_logs: [entry] } });
+  assert.deepEqual(L.settingPatch("agent_logs", []), { ok: true, patch: { agent_logs: [] } });
+  assert.equal(L.settingPatch("agent_logs", [{ ...entry, done_re: "(oops" }]).ok, false);
+  assert.equal(L.settingPatch("agent_logs", [{ ...entry, name: "" }]).ok, false);
+  const r = new L.ErrorRouter();
+  assert.equal(r.route("invalid pattern in agent_logs 'colab' done_re: missing )"), "setting:agent_logs");
+  assert.equal(r.route("invalid value for setting 'agent_logs': []"), "setting:agent_logs");
+});

@@ -66,3 +66,14 @@ class KV:
         with self.lock:
             self.conn.execute("insert or replace into kv(key, value) values(?, ?)", (key, json.dumps(value)))
             self.conn.commit()
+
+    def keys_with(self, prefix: str) -> list[str]:
+        """Every key starting with prefix (taken literally)."""
+        with self.lock:
+            rows = self.conn.execute("select key from kv where substr(key, 1, ?) = ?", (len(prefix), prefix))
+            return [r[0] for r in rows]
+
+    def delete(self, key: str) -> None:
+        with self.lock:
+            self.conn.execute("delete from kv where key=?", (key,))
+            self.conn.commit()

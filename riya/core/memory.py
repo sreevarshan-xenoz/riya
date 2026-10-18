@@ -338,10 +338,12 @@ class Memory:
     # --- transcripts ---
 
     @_locked
-    def append_transcript(self, role: str, text: str) -> int:
+    def append_transcript(self, role: str, text: str, consolidate: bool = True) -> int:
+        """consolidate=False keeps the row out of consolidation (her agent reports, game turns): it's stored as
+        already consolidated, so it shows in the transcript but never becomes a fact, an episode or a thread."""
         with self.db:
-            cur = self.db.execute("insert into transcripts(at, role, text) values(?,?,?)",
-                                  (self.clock.now(), role, text))
+            cur = self.db.execute("insert into transcripts(at, role, text, consolidated) values(?,?,?,?)",
+                                  (self.clock.now(), role, text, 0 if consolidate else 1))
         return cur.lastrowid
 
     @_locked

@@ -1,10 +1,12 @@
 """User settings: typed defaults, validated patches, quiet hours and the Windows autostart shortcut."""
+import copy
 import os
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
 
+from riya.agents.logwatch import DEFAULT_ENTRIES
 from riya.core.eyes.policy import validate_patterns
 from riya.core.store import KV
 
@@ -13,6 +15,8 @@ _QUIET_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
 MAX_GLANCE_CAP = 2000
 GLANCE_GAP_RANGE = (10, 86400)  # seconds
 MAX_DENY_PATTERNS, MAX_PATTERN_LEN = 100, 300
+MAX_AGENT_LOGS, MAX_LOG_NAME = 20, 40
+AGENT_LOG_KEYS = ("name", "glob", "done_re", "fail_re", "lost_re")
 
 
 @dataclass
@@ -35,6 +39,7 @@ class Settings:
     eyes_deny_titles: list[str] = field(default_factory=list)  # extra regexes, on top of the built-in denylist
     eyes_deny_processes: list[str] = field(default_factory=list)
     dont_look: bool = False
+    agent_logs: list[dict] = field(default_factory=lambda: copy.deepcopy(DEFAULT_ENTRIES))  # the Colab log watcher
 
 
 def load_settings(kv: KV) -> Settings:
@@ -49,6 +54,27 @@ def save_settings(kv: KV, s: Settings) -> None:
 
 def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _check_agent_logs(v) -> bool:
+    """A list of {name, glob, done_re, fail_re, lost_re}: all strings, a unique non-empty name and a glob; a pattern may
+    be empty (that kind is never matched) but must compile."""
+    if not isinstance(v, list) or len(v) > MAX_AGENT_LOGS:
+        return False
+    names = set()
+    for e in v:
+        if not isinstance(e, dict) or set(e) != set(AGENT_LOG_KEYS) or not all(
+                isinstance(e[k], str) and len(e[k]) <= MAX_PATTERN_LEN for k in AGENT_LOG_KEYS):
+            return False
+        if not e["name"].strip() or len(e["name"]) > MAX_LOG_NAME or e["name"] in names or not e["glob"].strip():
+            return False
+        names.add(e["name"])
+        for k in ("done_re", "fail_re", "lost_re"):
+            try:
+                re.compile(e[k])
+            except re.error as err:
+                raise ValueError(f"invalid pattern in agent_logs {e['name']!r} {k}: {err}") from None
+    return True
 
 
 def _check(key: str, v) -> None:
@@ -74,6 +100,8 @@ def _check(key: str, v) -> None:
               and all(isinstance(p, str) and len(p) <= MAX_PATTERN_LEN for p in v))
         if ok and (bad := validate_patterns(v)):
             raise ValueError(f"invalid pattern in {key!r}: {', '.join(map(repr, bad))}")
+    elif key == "agent_logs":
+        ok = _check_agent_logs(v)
     else:
         ok = isinstance(v, bool)
     if not ok:
