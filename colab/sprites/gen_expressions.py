@@ -7,12 +7,13 @@
 
 base.png is the picked candidate outfit_<id>_<seed>.png copied from --outfits (regenerated with the same prompt and
 seed only if that file is missing). Check the face box first: --preview-box writes base_box.png and stops. Then writes
-<expression>_<closed|open|blink>.png for the 14 expressions, review_sheet.png (14 rows x 3 columns) and face_sheet.png
+<expression>_<closed|open|blink>.png for the 14 expressions (41 frames: covering_eyes has no blink, her hands cover her
+eyes and the body falls back to closed), review_sheet.png (14 rows x 3 columns) and face_sheet.png
 (the same grid of face-box crops at native resolution, to judge identity drift). Each closed frame is inpainted from
 base.png over the face box; its open and blink frames from that closed frame, over only the mouth or the eye band.
 
 <out>/run.json records the outfit, seed, face box and reroll counts. A resume with a different outfit, seed or face box
-is refused unless --reset-run is given; without --face-box the recorded box is used. Resumable: finished frames are
+is refused unless --reset-run is given; without --face-box the recorded box is used (also with --reset-run). Resumable: finished frames are
 skipped. --only restricts which expressions are generated; it never redoes a finished frame. To redo an expression,
 pass --reroll <expression>: its three frames are deleted and regenerated with the next seed (stable_seed + 1000 x its
 reroll count). choice.json may also carry "rerolls": {"<expression>": N}.
@@ -43,6 +44,7 @@ MOUTH = (0.25, 0.6, 0.75, 1.0)  # open: x0, y0, x1, y1 as fractions of the face 
 EYES = (0.1, 0.3, 0.9, 0.55)  # blink: the eye band (30%-55% of the height, middle 80%)
 FACE_STRENGTH, HANDS_STRENGTH = 0.55, 0.75
 FEATHER = 8  # Gaussian radius that softens the mask edge
+NOT_GENERATED = {("covering_eyes", "blink")}  # her hands cover her eyes, so the body falls back blink -> closed
 RUN_FILE = "run.json"
 REROLL_STEP = 1000  # each reroll moves an expression's seed this far
 
@@ -95,8 +97,9 @@ def frame_passes(expression: str, variant: str, box: Box, size: tuple[int, int])
 
 
 def job_list(expressions: list[str], variants: list[str], existing: set[str]) -> list[tuple[str, str]]:
-    """(expression, variant) pairs whose `<expression>_<variant>.png` is not in `existing`, in the given order."""
-    return [(e, v) for e in expressions for v in variants if f"{e}_{v}.png" not in existing]
+    """(expression, variant) pairs whose `<expression>_<variant>.png` is not in `existing`, in the given order
+    (NOT_GENERATED frames are never listed)."""
+    return [(e, v) for e in expressions for v in variants if (e, v) not in NOT_GENERATED and f"{e}_{v}.png" not in existing]
 
 
 def parse_expressions(text: str) -> list[str]:
@@ -310,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
     if args.face_box:
         box = args.face_box
-    elif stored and not args.reset_run:
+    elif stored:  # also with --reset-run: it resets the outfit and seed, not the face box you settled on
         box = tuple(stored["face_box"])
     else:
         box = DEFAULT_FACE_BOX

@@ -130,6 +130,12 @@ def test_job_list_skips_existing_and_keeps_order():
     assert jobs == [("neutral", "open"), ("neutral", "blink"), ("happy", "closed"), ("happy", "blink")]
 
 
+def test_job_list_never_includes_covering_eyes_blink():
+    jobs = job_list(["covering_eyes"], ["closed", "open", "blink"], set())
+    assert jobs == [("covering_eyes", "closed"), ("covering_eyes", "open")]
+    assert job_list(["covering_eyes", "sad"], ["blink"], set()) == [("sad", "blink")]
+
+
 def test_stable_seed_is_the_same_in_fresh_processes_with_different_hash_seeds():
     here = stable_seed("pouty", 5)
     assert here == 9126 + 5 and stable_seed("sad", 5) != here
@@ -477,7 +483,17 @@ def test_first_run_writes_run_json_and_a_resume_refuses_a_different_outfit_seed_
 
     (tmp_path / "choice.json").write_text(json.dumps({"outfit": "white_tee", "seed": 5}))
     gen_expressions.main(expressions_argv(tmp_path, out, "--reset-run"))
-    assert run_json(out) == {"outfit": "white_tee", "seed": 5, "face_box": [256, 60, 576, 420], "rerolls": {}}
+    assert run_json(out) == {"outfit": "white_tee", "seed": 5, "face_box": [200, 50, 600, 450], "rerolls": {}}  # kept
+
+    (tmp_path / "choice.json").write_text(json.dumps({"outfit": "pink_hoodie", "seed": 6}))
+    gen_expressions.main(expressions_argv(tmp_path, out, "--reset-run", "--face-box", "300,100,500,300"))  # the given box wins
+    assert run_json(out) == {"outfit": "pink_hoodie", "seed": 6, "face_box": [300, 100, 500, 300], "rerolls": {}}
+
+
+def test_reset_run_with_no_run_json_and_no_face_box_records_the_default_box(tmp_path):
+    out = frames_dir(tmp_path, with_base=True)
+    gen_expressions.main(expressions_argv(tmp_path, out, "--reset-run"))
+    assert run_json(out)["face_box"] == [256, 60, 576, 420]
 
 
 def test_a_corrupt_run_json_fails_clearly(tmp_path):
@@ -567,7 +583,8 @@ def test_build_pack_writes_valid_manifest_and_lists_missing(tmp_path):
     missing = build_pack(raw, out, fake_remove)
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["expressions"]["neutral"]["open"] == "neutral_open.png"
-    assert "neutral.blink" in missing and "happy.open" in missing and len(missing) == 14 * 3 - 3
+    assert "neutral.blink" in missing and "happy.open" in missing and len(missing) == 14 * 3 - 3 - 1
+    assert "covering_eyes.blink" not in missing and "covering_eyes.open" in missing  # the body falls back blink -> closed
     with Image.open(out / "neutral_closed.png") as im:
         assert im.getpixel((0, 0))[3] == 0
 
