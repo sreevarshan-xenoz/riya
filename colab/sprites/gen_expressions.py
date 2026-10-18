@@ -27,7 +27,10 @@ from colab.sprites.review_sheet import make_sheet
 
 Box = tuple[int, int, int, int]
 DEFAULT_FACE_BOX: Box = (256, 60, 576, 420)  # the head on the 832x1216 base
-HANDS_EXTENSION = 280  # covering_eyes: the mask runs this far below the face box to take in the hands
+HANDS_EXTENSION = 280  # covering_eyes: the hands mask runs this far below the face box
+HANDS_WIDTH = 1.8  # covering_eyes: the hands mask is this many face-box widths wide, centred on the face
+MOUTH = (0.25, 0.6, 0.75, 1.0)  # open: x0, y0, x1, y1 as fractions of the face box (lower 40%, middle 50%)
+EYES = (0.1, 0.3, 0.9, 0.55)  # blink: the eye band (30%-55% of the height, middle 80%)
 FACE_STRENGTH, HANDS_STRENGTH = 0.55, 0.75
 FEATHER = 8  # Gaussian radius that softens the mask edge
 
@@ -42,13 +45,41 @@ def stable_seed(expression: str, seed: int) -> int:
     return zlib.crc32(expression.encode()) % 10000 + seed
 
 
-def face_mask(size: tuple[int, int], box: Box, extend_down: int = 0) -> Image.Image:
-    """Inpaint mask (white = repaint) for `box`, extended down by `extend_down` px, clamped to the image and feathered."""
+def box_mask(size: tuple[int, int], box: Box) -> Image.Image:
+    """Inpaint mask (white = repaint) for `box`, clamped to the image and feathered."""
     width, height = size
     x0, y0, x1, y1 = box
     mask = Image.new("L", size, 0)
-    mask.paste(255, (max(0, x0), max(0, y0), min(width, x1), min(height, y1 + extend_down)))
+    mask.paste(255, (max(0, x0), max(0, y0), min(width, x1), min(height, y1)))
     return mask.filter(ImageFilter.GaussianBlur(FEATHER))
+
+
+def sub_box(box: Box, fractions: tuple[float, float, float, float]) -> Box:
+    """The part of `box` given as (x0, y0, x1, y1) fractions of its width and height."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    fx0, fy0, fx1, fy1 = fractions
+    return x0 + round(fx0 * w), y0 + round(fy0 * h), x0 + round(fx1 * w), y0 + round(fy1 * h)
+
+
+def hands_box(box: Box, size: tuple[int, int]) -> Box:
+    """covering_eyes hands region: HANDS_WIDTH face widths, centred, from the face top to HANDS_EXTENSION below it."""
+    x0, y0, x1, y1 = box
+    centre, half = (x0 + x1) / 2, HANDS_WIDTH * (x1 - x0) / 2
+    return max(0, round(centre - half)), max(0, y0), min(size[0], round(centre + half)), min(size[1], y1 + HANDS_EXTENSION)
+
+
+def frame_passes(expression: str, variant: str, box: Box, size: tuple[int, int]) -> list[tuple[Box, float]]:
+    """(region, strength) inpaint passes for one frame: closed repaints the face (plus the hands for covering_eyes);
+    open repaints only the mouth and blink only the eye band, so talking and blinking don't repaint the whole face."""
+    if variant == "open":
+        return [(sub_box(box, MOUTH), FACE_STRENGTH)]
+    if variant == "blink":
+        return [(sub_box(box, EYES), FACE_STRENGTH)]
+    passes = [(box, FACE_STRENGTH)]
+    if expression == "covering_eyes":
+        passes.append((hands_box(box, size), HANDS_STRENGTH))
+    return passes
 
 
 def job_list(expressions: list[str], variants: list[str], existing: set[str]) -> list[tuple[str, str]]:
@@ -115,9 +146,9 @@ def _load(path: Path) -> Image.Image:
 def run_jobs(jobs, out: Path, outfit: str, seed: int, box: Box, inpaint) -> None:
     """Render each (expression, variant) frame with `inpaint(image, mask, prompt, strength, seed) -> image`.
 
-    closed starts from base.png; open and blink start from that expression's closed frame (made first if missing).
-    covering_eyes gets a second, hands pass over the extended mask. Each pass is composited back through its own
-    feathered mask, so pixels outside the mask stay exactly as they were (no VAE round-trip drift in the body).
+    closed starts from base.png and repaints the face (covering_eyes adds a hands pass); open and blink start from that
+    expression's closed frame (made first if missing) and repaint only the mouth or the eye band (see frame_passes).
+    Each pass is composited back through its own feathered mask, so pixels outside it stay exactly as they were.
     """
     out = Path(out)
     base = _load(out / "base.png")
@@ -131,11 +162,9 @@ def run_jobs(jobs, out: Path, outfit: str, seed: int, box: Box, inpaint) -> None
         else:
             render(expression, "closed")
             image = _load(out / f"{expression}_closed.png")
-        passes = [(face_mask(base.size, box), FACE_STRENGTH)]
-        if expression == "covering_eyes":
-            passes.append((face_mask(base.size, box, HANDS_EXTENSION), HANDS_STRENGTH))
         prompt, frame_seed = frame_prompt(outfit, expression, variant), stable_seed(expression, seed)
-        for mask, strength in passes:
+        for region, strength in frame_passes(expression, variant, box, base.size):
+            mask = box_mask(base.size, region)
             image = Image.composite(inpaint(image, mask, prompt, strength, frame_seed).convert("RGB"), image, mask)
         save_image_atomic(image, path)
         print("wrote", path, flush=True)

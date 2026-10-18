@@ -14,7 +14,7 @@ from PIL import Image, ImageChops
 from colab.sprites import build_pack as build_pack_module, gen_expressions, gen_outfits
 from colab.sprites.build_pack import build_pack, normalise
 from colab.sprites.gen_expressions import (
-    face_box, face_mask, job_list, parse_face_box, parse_only, run_jobs, stable_seed,
+    box_mask, face_box, frame_passes, hands_box, job_list, parse_face_box, parse_only, run_jobs, stable_seed,
 )
 from colab.sprites.common import (
     EXPRESSION_PROMPTS, OUTFITS, VARIANT_PROMPTS, existing_pngs, load_pipeline, save_image_atomic,
@@ -106,19 +106,49 @@ def test_stable_seed_is_the_same_in_fresh_processes_with_different_hash_seeds():
         assert int(out.stdout) == here
 
 
-def test_face_mask_is_white_on_the_box_black_elsewhere_and_feathered():
-    mask = face_mask((832, 1216), BOX)
+def test_box_mask_is_white_on_the_box_black_elsewhere_and_feathered():
+    mask = box_mask((832, 1216), BOX)
     assert mask.mode == "L" and mask.size == (832, 1216)
     assert mask.getpixel((416, 240)) == 255 and mask.getpixel((20, 1000)) == 0 and mask.getpixel((416, 800)) == 0
     assert 0 < mask.getpixel((256, 240)) < 255  # the edge is soft
-
-
-def test_face_mask_extends_down_for_hands_and_clamps_to_the_image():
-    plain, hands = face_mask((832, 1216), BOX), face_mask((832, 1216), BOX, extend_down=280)
-    assert plain.getpixel((416, 600)) == 0 and hands.getpixel((416, 600)) == 255  # 420 + 280 = 700
-    assert hands.getpixel((416, 800)) == 0
-    low = face_mask((200, 300), (50, 100, 150, 250), extend_down=280)  # the extension runs past the bottom edge
+    low = box_mask((200, 300), (50, 100, 150, 400))  # a box running past the bottom edge is clamped
     assert low.size == (200, 300) and low.getpixel((100, 299)) == 255
+
+
+def test_hands_box_is_1_8_face_widths_centred_extended_down_and_clamped():
+    assert hands_box(BOX, (832, 1216)) == (128, 60, 704, 700)  # 576 wide around x=416, 420 + 280 below
+    assert hands_box((600, 100, 800, 1100), (832, 1216)) == (520, 100, 832, 1216)
+    assert hands_box((0, 0, 100, 100), (832, 1216))[0] == 0
+
+
+def test_frame_passes_per_variant():
+    face, hands = (BOX, 0.55), ((128, 60, 704, 700), 0.75)
+    mouth, eyes = ((336, 276, 496, 420), 0.55), ((288, 168, 544, 258), 0.55)  # lower 40%, middle 50% / 30-55%, 80%
+    assert frame_passes("happy", "closed", BOX, (832, 1216)) == [face]
+    assert frame_passes("happy", "open", BOX, (832, 1216)) == [mouth]
+    assert frame_passes("happy", "blink", BOX, (832, 1216)) == [eyes]
+    assert frame_passes("covering_eyes", "closed", BOX, (832, 1216)) == [face, hands]
+    assert frame_passes("covering_eyes", "open", BOX, (832, 1216)) == [mouth]
+    assert frame_passes("covering_eyes", "blink", BOX, (832, 1216)) == [eyes]
+
+
+def test_open_and_blink_inpaint_only_their_feathered_sub_mask(tmp_path):
+    grey_base(tmp_path)
+    masks = {}
+
+    def record(image, mask, prompt, strength, seed):
+        masks.setdefault(prompt, mask)
+        return Image.new("RGB", image.size, (255, 0, 0))
+
+    run_jobs([("sad", "open"), ("sad", "blink")], tmp_path, "white_tee", 1, BOX, record)
+    by_variant = {v: m for p, m in masks.items() for v in ("open", "blink") if VARIANT_PROMPTS[v] in p}
+    assert by_variant["open"].getpixel((416, 350)) == 255 and by_variant["open"].getpixel((416, 210)) == 0
+    assert by_variant["open"].getpixel((300, 400)) == 0 and 0 < by_variant["open"].getpixel((336, 400)) < 255
+    assert by_variant["blink"].getpixel((416, 210)) == 255 and by_variant["blink"].getpixel((416, 400)) == 0
+    assert by_variant["blink"].getpixel((416, 100)) == 0 and 0 < by_variant["blink"].getpixel((288, 210)) < 255
+    with Image.open(tmp_path / "sad_closed.png") as closed, Image.open(tmp_path / "sad_open.png") as opened:
+        assert opened.getpixel((416, 210)) == closed.getpixel((416, 210))  # the eyes stay as in closed
+        assert opened.getpixel((416, 350)) == (255, 0, 0)
 
 
 def test_parse_only_validates_against_the_expression_prompts():
@@ -181,7 +211,7 @@ def test_run_jobs_chains_variants_from_closed_and_adds_a_hands_pass(tmp_path):
     run_jobs([("happy", "closed"), ("happy", "open"), ("covering_eyes", "closed")], tmp_path, "white_tee", 7, BOX,
              fake_inpaint(calls))
     assert sorted(p.name for p in tmp_path.glob("*_*.png")) == ["covering_eyes_closed.png", "happy_closed.png", "happy_open.png"]
-    assert [c["strength"] for c in calls] == [0.55, 0.55, 0.55, 0.75]
+    assert [c["strength"] for c in calls] == [0.55, 0.55, 0.55, 0.75]  # only covering_eyes closed has a hands pass
     assert calls[0]["src"] == (128, 128, 128)  # closed comes from base
     assert calls[1]["src"] == (1, 0, 0)  # open comes from happy_closed, not base
     assert calls[2]["src"] == (128, 128, 128) and calls[3]["src"] == (3, 0, 0)  # the hands pass runs on the face pass
