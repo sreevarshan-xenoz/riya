@@ -1,23 +1,28 @@
-"""Riya's live voice loop (all speech on CPU, so the GPU only holds her small LLM).
+"""Riya's live voice, driven by the core (all speech on CPU, so the GPU only holds her small LLM).
 
-  python -m riya.voice --url http://127.0.0.1:8090
+  python -m riya.core                 # runs the core with voice; --no-voice for text only
+  python -m riya.voice_candidates     # writes sample WAVs to pick her voice (settings.voice)
 
-mic -> VAD (Silero) -> end of turn -> STT -> Riya.reply() streamed sentence by sentence -> TTS -> speaker
+mic -> VAD (Silero) -> end of turn -> STT -> listen gate -> RiyaCore.reply() sentence by sentence -> TTS -> speaker
 - Sentence streaming: sentence 1 is spoken while sentence 2 is still being generated (low time-to-first-audio).
-- Barge-in: if you start speaking while Riya talks, playback stops and she listens.
+- She listens after her name, the talk hotkey, typed text or her speaking first, until ~2 min pass without a turn.
+- Barge-in: your voice stops her only when it is clearly louder than her own playback in the mic; so does the hotkey.
 - Affect -> voice: arousal/energy set speaking rate; valence picks a warmer or softer voice blend.
+- Mouth levels for the body's lip flap are reported at 30 Hz while she speaks.
 Engines are small adapters so the winner of colab/bench_voice.py can be swapped in.
 """
-import argparse
+import logging
 import queue
 import threading
 import time
+from collections.abc import Callable, Iterator
 
 import numpy as np
 
-from riya.chat import Riya
+from riya.core.listen import MOUTH_FPS, ListenGate, barge_in_ok, mouth_level, mouth_levels, rms
 
 SR = 16000
+log = logging.getLogger("riya.voice")
 
 
 def voice_params(state, energy):
@@ -81,91 +86,229 @@ class SileroVAD:
         return float(self.model(self.torch.from_numpy(chunk512), SR).item())
 
 
+class MouthPacer:
+    """Reports mouth levels for the audio being played, one per 1/fps, from its own thread so TTS never waits on it.
+    Frames carry over chunk boundaries, and the timeline slips forward when playback starves."""
+
+    def __init__(self, on_mouth: Callable[[float], None], sr: int, fps: int = MOUTH_FPS):
+        self.on_mouth, self.sr, self.fps, self.win = on_mouth, sr, fps, sr // fps
+        self.rest = np.zeros(0, np.float32)
+        self.t0: float | None = None
+        self.frames = 0
+        self.q: queue.Queue = queue.Queue()
+        self.cancelled = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="riya-mouth", daemon=True)
+        self.thread.start()
+
+    def push(self, chunk: np.ndarray) -> None:
+        now = time.monotonic()
+        if self.t0 is None:
+            self.t0 = now
+        pushed_until = self.t0 + (self.frames * self.win + len(self.rest)) / self.sr
+        if now > pushed_until:  # playback ran dry: this chunk starts now
+            self.t0 += now - pushed_until
+        audio = np.concatenate([self.rest, chunk])
+        full = len(audio) // self.win * self.win
+        for level in mouth_levels(audio[:full], self.sr, self.fps):
+            self._queue(level)
+        self.rest = audio[full:]
+
+    def _queue(self, level: float) -> None:
+        self.q.put((self.t0 + self.frames / self.fps, level))
+        self.frames += 1
+
+    def finish(self) -> None:
+        """Flush the last partial frame and wait until every level has been reported."""
+        if len(self.rest) and self.t0 is not None:
+            self._queue(mouth_level(self.rest))
+        self.q.put(None)
+        self.thread.join()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+        self.q.put(None)
+        self.thread.join()
+
+    def _run(self) -> None:
+        while (item := self.q.get()) is not None:
+            at, level = item
+            if self.cancelled.wait(max(0.0, at - time.monotonic())):
+                return
+            self.on_mouth(level)
+
+
 class VoiceLoop:
-    def __init__(self, riya, stt, tts, vad, end_silence_ms=350, barge_in=True):
-        import sounddevice as sd
+    """Listens for the core and speaks for it. run() owns the mic; say() may be called from any thread and speaks one
+    utterance at a time, so the mic keeps listening (for barge-in) while she talks."""
 
-        self.sd, self.riya, self.stt, self.tts, self.vad = sd, riya, stt, tts, vad
+    def __init__(self, core, stt, tts, vad, gate: ListenGate, on_mouth: Callable[[float], None],
+                 end_silence_ms: int = 350, open_output: Callable[[int], object] | None = None,
+                 settings_every_s: float = 0.5):
+        self.core, self.stt, self.tts, self.vad, self.gate, self.on_mouth = core, stt, tts, vad, gate, on_mouth
         self.end_silence = end_silence_ms / 1000
-        self.barge_in, self.speaking = barge_in, threading.Event()
-        self.interrupt = threading.Event()
-        self.mic = queue.Queue()
+        self.open_output = open_output or _sounddevice_output
+        self.settings_every_s = settings_every_s
+        self.speaking, self.interrupt, self.stopped = threading.Event(), threading.Event(), threading.Event()
+        self.mic: queue.Queue = queue.Queue()
+        self.mic_stream = None
+        self.playback_rms = 0.0
+        self._say_lock = threading.Lock()
+        self._mic_muted = False
+        self._next_settings_check = 0.0
 
+    # ---- listening ----------------------------------------------------------------------------------
     def _on_mic(self, indata, frames, t, status):
         self.mic.put(indata[:, 0].copy())
 
-    def listen(self):
-        """Collect one user utterance: starts on speech, ends after end_silence of non-speech.
-        With a streaming STT (feed/finish), audio is transcribed while you talk; returns (audio, text_or_None)."""
+    def is_user_speech(self, chunk: np.ndarray, in_utterance: bool = False) -> bool:
+        """VAD says speech; while she talks, it must also be clearly louder than her own voice coming back."""
+        if self.vad.prob(chunk) <= 0.5:
+            return False
+        return in_utterance or not self.speaking.is_set() or barge_in_ok(rms(chunk), self.playback_rms)
+
+    def poll(self) -> None:
+        """The talk hotkey opens the gate and cuts her off; mute_mic pauses the mic stream."""
+        if self.core.talk_requested:
+            self.core.talk_requested = False
+            self.gate.open("hotkey")
+            if self.speaking.is_set():
+                self.interrupt.set()
+        now = time.monotonic()
+        if now >= self._next_settings_check:
+            self._next_settings_check = now + self.settings_every_s
+            self._set_mic_muted(self.core.settings.mute_mic)
+
+    def _set_mic_muted(self, muted: bool) -> None:
+        if muted == self._mic_muted:
+            return
+        self._mic_muted = muted
+        if self.mic_stream is not None:
+            (self.mic_stream.stop if muted else self.mic_stream.start)()
+        while muted and not self.mic.empty():
+            self.mic.get_nowait()
+
+    def listen(self) -> tuple[np.ndarray, str | None] | None:
+        """Collect one user utterance: starts on speech, ends after end_silence of non-speech. With a streaming STT
+        (feed/finish) it's transcribed while you talk. Returns (audio, text_or_None), or None when stopped or muted."""
         buf, speech, silent_since = [], False, None
         streaming = hasattr(self.stt, "feed")
-        while True:
-            chunk = self.mic.get()
-            p = self.vad.prob(chunk)
-            if p > 0.5:
-                if self.speaking.is_set() and self.barge_in:
-                    self.interrupt.set()  # you started talking: Riya stops
+        while not self.stopped.is_set():
+            self.poll()
+            if self._mic_muted and speech:
+                if streaming and hasattr(self.stt, "reset"):
+                    self.stt.reset()
+                return None
+            try:
+                chunk = self.mic.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if self.is_user_speech(chunk, in_utterance=speech):
+                if self.speaking.is_set():
+                    self.interrupt.set()  # you started talking: she stops
                 speech, silent_since = True, None
-            elif speech:
-                silent_since = silent_since or time.time()
+            elif speech and silent_since is None:
+                silent_since = time.monotonic()
             if speech:
                 buf.append(chunk)
                 if streaming:
                     self.stt.feed(chunk)
-                if silent_since and time.time() - silent_since >= self.end_silence:
+                if silent_since is not None and time.monotonic() - silent_since >= self.end_silence:
                     return np.concatenate(buf), (self.stt.finish() if streaming else None)
+        return None
 
-    def say(self, sentences):
-        """Speak sentences as they arrive; with a streaming TTS, playback starts at the first audio chunk."""
-        self.speaking.set()
-        self.interrupt.clear()
-        try:
-            sr = getattr(self.tts, "sr", 24000)
-            with self.sd.OutputStream(samplerate=sr, channels=1, dtype="float32") as out:
+    def hear(self, text: str) -> threading.Thread | None:
+        """A finished transcript goes through the gate; her reply is spoken in the background so the mic stays live."""
+        text = text.strip()
+        accepted = self.gate.accept(text, gaming=self.core.presence.state == "gaming") if text else None
+        if accepted is None:
+            return None
+        t = threading.Thread(target=self._turn, args=(self.core.reply(accepted, source="voice"),), name="riya-say",
+                             daemon=True)
+        t.start()
+        return t
+
+    def _turn(self, sentences: Iterator[str]) -> None:
+        self.say(sentences)
+        self.gate.note_turn()
+
+    def run(self) -> None:
+        import sounddevice as sd
+
+        with sd.InputStream(samplerate=SR, channels=1, blocksize=512, dtype="float32", callback=self._on_mic) as mic:
+            self.mic_stream = mic
+            log.info("Riya is listening for her name or the talk hotkey")
+            while not self.stopped.is_set():
+                try:
+                    if (heard := self.listen()) is not None:
+                        audio, text = heard
+                        self.hear(text if text is not None else self.stt.transcribe(audio))
+                except Exception:
+                    log.exception("couldn't handle what the mic heard")
+
+    def stop(self) -> None:
+        self.stopped.set()
+
+    # ---- speaking -----------------------------------------------------------------------------------
+    def answer(self, sentences: Iterator[str], reason: str = "typed") -> None:
+        """Speak a reply to typed text, or her speaking first; the mic then stays open for a follow-up without her
+        name. While gaming only the hotkey opens it."""
+        listen = self.core.presence.state != "gaming"
+        if listen:
+            self.gate.open(reason)
+        self.say(sentences)
+        if listen:
+            self.gate.note_turn()
+
+    def say(self, sentences: Iterator[str]) -> None:
+        """Speak sentences as they arrive; playback starts at the first audio chunk. A barge-in stops playback and
+        closes the reply, so the core records only what was said. With mute_voice the sentences are only drained."""
+        with self._say_lock:
+            settings = self.core.settings
+            out = pacer = None
+            self.interrupt.clear()
+            try:
                 for sentence in sentences:
-                    if self.interrupt.is_set():
-                        break
-                    speed, style = voice_params(self.riya.affect.state, float(self.riya.body[0]))
-                    chunks = (self.tts.stream(sentence, speed, style) if hasattr(self.tts, "stream")
-                              else [self.tts.speak(sentence, speed, style)[0]])
-                    for chunk in chunks:
+                    if settings.mute_voice:
+                        continue
+                    speed, style = voice_params(*self.core.voice_state())
+                    for chunk in self._synth(sentence, speed, style):
                         if self.interrupt.is_set():
                             break
+                        if out is None:
+                            sr = getattr(self.tts, "sr", 24000)
+                            out, pacer = self.open_output(sr), MouthPacer(self.on_mouth, sr)
+                            out.start()
+                            self.speaking.set()  # from her first sound on, barge-in needs the echo margin
+                        chunk = np.asarray(chunk, dtype=np.float32).reshape(-1) * np.float32(settings.volume)
+                        self.playback_rms = rms(chunk)
                         out.write(chunk.reshape(-1, 1))
-        finally:
-            self.speaking.clear()
+                        pacer.push(chunk)
+                    if self.interrupt.is_set():
+                        break
+            except Exception:
+                log.exception("voice playback failed; the rest of the reply is shown, not spoken")
+                for _ in sentences:
+                    pass
+            finally:
+                cut = self.interrupt.is_set()
+                if hasattr(sentences, "close"):
+                    sentences.close()
+                if out is not None:
+                    (out.abort if cut else out.stop)()
+                    out.close()
+                if pacer is not None:
+                    (pacer.cancel if cut else pacer.finish)()
+                self.playback_rms = 0.0
+                self.speaking.clear()
+                self.on_mouth(0.0)
 
-    def run(self):
-        with self.sd.InputStream(samplerate=SR, channels=1, blocksize=512, dtype="float32", callback=self._on_mic):
-            print("Riya is listening... (Ctrl+C to quit)")
-            while True:
-                audio, text = self.listen()
-                t0 = time.time()
-                text = text if text is not None else self.stt.transcribe(audio)
-                if not text:
-                    continue
-                print(f"you> {text}   (STT {1000 * (time.time() - t0):.0f} ms)")
-                threading.Thread(target=self.say, args=(self.riya.reply(text),), daemon=True).start()
-
-
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--url", default="http://127.0.0.1:8090")
-    p.add_argument("--tts", choices=["pocket", "kokoro"], default="pocket")
-    p.add_argument("--voice", default="alba", help="Pocket TTS voice name or a reference WAV of Riya's voice")
-    p.add_argument("--kokoro_dir", default="voice_models")
-    p.add_argument("--stt", default="moonshine-small",
-                   help="moonshine-tiny|moonshine-small|moonshine-medium (streaming) or a faster-whisper size")
-    a = p.parse_args()
-    tts = PocketTTS(a.voice) if a.tts == "pocket" else KokoroTTS(a.kokoro_dir)
-    if a.stt.startswith("moonshine-"):
-        from riya.stt_moonshine import MoonshineStreamSTT
-
-        stt = MoonshineStreamSTT(a.stt.split("-", 1)[1])
-    else:
-        stt = WhisperSTT(a.stt)
-    VoiceLoop(Riya(a.url), stt, tts, SileroVAD()).run()
+    def _synth(self, sentence: str, speed: float, style: str):
+        if hasattr(self.tts, "stream"):
+            return self.tts.stream(sentence, speed, style)
+        return [self.tts.speak(sentence, speed, style)[0]]
 
 
-if __name__ == "__main__":
-    main()
+def _sounddevice_output(sr: int):
+    import sounddevice as sd
+
+    return sd.OutputStream(samplerate=sr, channels=1, dtype="float32")

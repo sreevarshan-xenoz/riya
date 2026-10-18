@@ -12,12 +12,12 @@ from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
 
 
-def client(replies=("Hi there.",)):
+def client(replies=("Hi there.",), speak=None, delay=0.0):
     def factory(emit):
-        core, _, _, _ = make_core(local_replies=list(replies))
-        core.emit = emit
+        core, _, _, local = make_core(local_replies=list(replies))
+        core.emit, local.delay = emit, delay
         return core
-    return TestClient(create_app(factory))
+    return TestClient(create_app(factory, speak=speak))
 
 
 def receive_until(ws, type_):
@@ -42,6 +42,40 @@ def test_bad_message_returns_error_and_socket_stays_open():
         assert "error" in receive_until(ws, "error")
         ws.send_json({"type": "user_text", "text": "still there?"})
         assert "say" in receive_until(ws, "say_end")
+
+
+def test_typed_replies_go_through_the_speaker():
+    heard, done = [], threading.Event()
+
+    def speak(sentences):
+        heard.append(list(sentences))
+        done.set()
+
+    with client(replies=("Hello you. Nice day.",), speak=speak) as c, c.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "user_text", "text": "hi"})
+        receive_until(ws, "say_end")
+        assert done.wait(2)
+    assert heard == [["Hello you.", "Nice day."]]
+
+
+def test_other_messages_do_not_wait_behind_a_slow_reply():
+    with client(replies=("One two three four five.",), delay=0.1) as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "state")
+        ws.send_json({"type": "user_text", "text": "tell me something"})
+        ws.send_json({"type": "get_memories"})
+        seen = receive_until(ws, "say_end")
+        assert "memories" in seen and seen.index("memories") < seen.index("say_end")
+
+
+def test_typed_replies_on_one_socket_keep_their_order():
+    with client(replies=("First.", "Second."), delay=0.05) as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "state")
+        ws.send_json({"type": "user_text", "text": "one"})
+        ws.send_json({"type": "user_text", "text": "two"})
+        receive_until(ws, "say_end")
+        receive_until(ws, "say_end")
+        asked = [messages[-1]["content"] for messages in c.app.state.core.local.calls]
+    assert asked == ["one", "two"]
 
 
 def test_binds_localhost_only():
@@ -108,3 +142,36 @@ def test_main_help_lists_options(capsys):
     out = capsys.readouterr().out
     for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory"):
         assert flag in out
+
+
+class FakeVoiceLoop:
+    def __init__(self):
+        self.calls = []
+
+    def answer(self, sentences, reason="typed"):
+        self.calls.append((list(sentences), reason))
+
+
+def test_deliver_drains_without_voice_and_speaks_first_with_it():
+    steps = []
+
+    def greeting():
+        steps.append("start")
+        yield "Welcome back!"
+        steps.append("end")
+
+    runner.deliver(greeting(), None)
+    assert steps == ["start", "end"]
+    loop = FakeVoiceLoop()
+    runner.deliver(iter(["Welcome back!"]), loop)
+    assert loop.calls == [(["Welcome back!"], "spoke_first")]
+
+
+def test_speaker_drains_typed_replies_until_the_voice_loop_is_ready():
+    speaker = runner.Speaker()
+    early = iter(["a", "b"])
+    speaker(early)
+    assert list(early) == []
+    speaker.loop = FakeVoiceLoop()
+    speaker(iter(["c"]))
+    assert speaker.loop.calls == [(["c"], "typed")]
