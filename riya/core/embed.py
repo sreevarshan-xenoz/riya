@@ -1,5 +1,5 @@
 """Text embedders: a dependency-free hashing embedder and a lazy fastembed wrapper."""
-import re
+import unicodedata
 import zlib
 from typing import Protocol
 
@@ -11,7 +11,20 @@ STOPWORDS = frozenset(
     "will would can could should about into than then there here what which who not no "
     "user s riya you".split()
 )
-_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def tokenize(text: str) -> list[str]:
+    """Unicode word tokens on casefolded NFC text; combining marks (Indic vowel signs) stay inside words."""
+    out, cur = [], []
+    for c in unicodedata.normalize("NFC", text.casefold()):
+        if c.isalnum() or c == "_" or unicodedata.category(c).startswith("M"):
+            cur.append(c)
+        elif cur:
+            out.append("".join(cur))
+            cur = []
+    if cur:
+        out.append("".join(cur))
+    return out
 
 
 class Embedder(Protocol):
@@ -27,7 +40,7 @@ class HashEmbedder:
     def embed(self, texts: list[str]) -> np.ndarray:
         out = np.zeros((len(texts), self.dim), dtype=np.float32)
         for i, text in enumerate(texts):
-            toks = [t for t in _TOKEN.findall(text.lower()) if t not in STOPWORDS]
+            toks = [t for t in tokenize(text) if t not in STOPWORDS]
             for g in toks + [f"{a} {b}" for a, b in zip(toks, toks[1:])]:
                 out[i, zlib.crc32(g.encode()) % self.dim] += 1.0
         norms = np.linalg.norm(out, axis=1, keepdims=True)
