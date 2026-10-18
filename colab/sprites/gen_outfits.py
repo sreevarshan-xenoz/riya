@@ -17,14 +17,24 @@ SIZE = (832, 1216)  # (width, height)
 REF_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def square_crop(image):
+    """Square crop that keeps the head: top-anchored (0, 0, w, w) for portrait images, centred for landscape ones.
+    The IP-Adapter's CLIP processor centre-crops to a square, which would cut the head off a portrait reference."""
+    w, h = image.size
+    if h > w:
+        return image.crop((0, 0, w, w))
+    left = (w - h) // 2
+    return image.crop((left, 0, left + h, h))
+
+
 def load_refs(folder: Path) -> list:
-    """Every reference image in `folder`, sorted by name (names may contain spaces and emoji)."""
+    """Every reference image in `folder` sorted by name (names may contain spaces and emoji), as square_crop RGB images."""
     from PIL import Image
 
     images = []
     for p in sorted(q for q in Path(folder).iterdir() if q.suffix.lower() in REF_SUFFIXES):
         with Image.open(p) as im:
-            images.append(im.convert("RGB"))
+            images.append(square_crop(im.convert("RGB")))
     if not images:
         raise SystemExit(f"no reference images (.jpg/.jpeg/.png/.webp) in {folder}")
     return images

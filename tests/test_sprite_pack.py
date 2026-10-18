@@ -74,6 +74,27 @@ def test_gen_outfits_resumes_without_torch_when_everything_exists(tmp_path):
     assert (tmp_path / "outfits_sheet.png").exists()
 
 
+def test_load_refs_returns_top_anchored_square_crops(tmp_path):
+    portrait = Image.new("RGB", (100, 250), (0, 0, 255))
+    portrait.paste((255, 0, 0), (0, 0, 100, 100))  # the head is at the top
+    portrait.save(tmp_path / "a portrait.png")
+    landscape = Image.new("RGB", (300, 100), (0, 0, 255))
+    landscape.paste((0, 255, 0), (100, 0, 200, 100))  # the centre square
+    landscape.save(tmp_path / "b landscape.jpg", quality=95)
+    Image.new("RGB", (64, 64), (9, 9, 9)).save(tmp_path / "c square.webp")
+    (tmp_path / "notes.txt").write_text("not an image")
+    refs = gen_outfits.load_refs(tmp_path)
+    assert [r.size for r in refs] == [(100, 100), (100, 100), (64, 64)] and all(r.mode == "RGB" for r in refs)
+    assert refs[0].getcolors() == [(100 * 100, (255, 0, 0))]
+    green = refs[1].getpixel((50, 50))
+    assert green[1] > 200 and green[0] < 50 and green[2] < 50 and refs[1].getpixel((2, 50))[2] < 100
+
+
+def test_load_refs_without_images_exits(tmp_path):
+    with pytest.raises(SystemExit, match="no reference images"):
+        gen_outfits.load_refs(tmp_path)
+
+
 def test_common_imports_without_torch_or_diffusers():
     code = (
         "import sys, colab.sprites.common as c, colab.sprites.gen_outfits;"
