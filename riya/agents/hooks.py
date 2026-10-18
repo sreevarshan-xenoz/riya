@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -39,7 +40,10 @@ def load_or_create_token(path: Path | str) -> str:
 
 def create_hook_app(token: str, enqueue: Callable[[dict], None]) -> FastAPI:
     """POST /hook. Checks run in order: Origin (403), token (401), size (413), then parse. Anything that passes them
-    answers 200 with an empty body; a payload that isn't a JSON object is dropped."""
+    answers 200 with an empty body; a payload that isn't a JSON object is dropped. enqueue runs on the event loop, so it
+    must not block (queue.SimpleQueue.put is fine)."""
+    if not token.strip():
+        raise ValueError("the hook token can't be empty")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     want = token.encode()
 
@@ -50,7 +54,7 @@ def create_hook_app(token: str, enqueue: Callable[[dict], None]) -> FastAPI:
         if not hmac.compare_digest(request.headers.get("x-riya-token", "").encode(), want):
             return Response(status_code=401)
         declared = request.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > MAX_BODY:
+        if re.fullmatch(r"[0-9]+", declared) and int(declared) > MAX_BODY:  # else rely on the counted-bytes limit
             return Response(status_code=413)
         body = bytearray()
         async for chunk in request.stream():  # count the bytes actually read, not what the header claims
@@ -59,7 +63,7 @@ def create_hook_app(token: str, enqueue: Callable[[dict], None]) -> FastAPI:
                 return Response(status_code=413)
         try:
             payload = json.loads(bytes(body))
-        except ValueError:  # includes bad UTF-8 and bad JSON
+        except (ValueError, RecursionError):  # bad UTF-8, bad JSON, absurdly deep nesting
             payload = None
         if isinstance(payload, dict):
             try:

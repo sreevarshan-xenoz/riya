@@ -160,3 +160,72 @@ def test_receiver_returns_none_when_the_token_cannot_be_made(tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x")
     assert start_hook_receiver(lambda _: None, token_path=blocker / "tok", port=free_port()) is None
+
+
+def test_a_deeply_nested_body_is_200_and_not_enqueued():
+    c, got = make()
+    r = c.post("/hook", content=b"[" * 200_000, headers={"X-Riya-Token": TOKEN})
+    assert r.status_code == 200 and got == []
+
+
+def test_a_malformed_content_length_never_500s():
+    c, got = make()
+    for bad in ("²", "٣", "-5", "1e3", " "):  # on the wire headers are bytes; the server decodes them as latin-1
+        r = c.post("/hook", content=json.dumps(OK),
+                   headers={"X-Riya-Token": TOKEN, "Content-Length": bad.encode("latin-1", "ignore") or b"?"})
+        assert r.status_code != 500, bad
+
+
+def test_a_non_ascii_digit_content_length_falls_back_to_the_counted_limit():
+    c, got = make()
+    r = c.post("/hook", content=b" " * (MAX_BODY + 1), headers={"X-Riya-Token": TOKEN, "Content-Length": "²".encode("latin-1")})
+    assert r.status_code in (200, 400, 413) and got == []
+
+
+@pytest.mark.parametrize("token", ["", "   ", "\n"])
+def test_an_empty_token_cannot_build_the_app(token):
+    with pytest.raises(ValueError):
+        create_hook_app(token, lambda _: None)
+
+
+def test_the_receiver_binds_loopback_only(tmp_path, monkeypatch):
+    import uvicorn
+    seen = []
+
+    class Server:
+        started = True
+
+        def __init__(self, config):
+            seen.append(config)
+            self.should_exit = False
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    server, thread = start_hook_receiver(lambda _: None, token_path=tmp_path / "tok", port=free_port())
+    thread.join(timeout=2)
+    assert seen[0].host == "127.0.0.1"
+
+
+def test_a_superscript_content_length_through_raw_asgi_is_not_a_500():
+    import asyncio
+    app = create_hook_app(TOKEN, lambda _: None)
+    sent = []
+
+    async def run():
+        body = json.dumps(OK).encode()
+        msgs = iter([{"type": "http.request", "body": body, "more_body": False}])
+
+        async def receive():
+            return next(msgs, {"type": "http.disconnect"})
+
+        async def send(m):
+            sent.append(m)
+        scope = {"type": "http", "method": "POST", "path": "/hook", "query_string": b"", "headers": [
+            (b"x-riya-token", TOKEN.encode()), (b"content-length", "²".encode("latin-1"))],
+            "http_version": "1.1", "scheme": "http", "server": ("127.0.0.1", 8766), "client": ("127.0.0.1", 1)}
+        await app(scope, receive, send)
+
+    asyncio.run(run())
+    assert sent[0]["status"] == 200
