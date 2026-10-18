@@ -267,3 +267,24 @@ def test_online_turns_can_get_their_own_token_budget_and_the_fallback_keeps_the_
     r.online = Spy("online", fail=ModelUnavailable("429"))
     list(r.stream(MSGS, "explain recursion", 380, online_tokens=600))
     assert seen == [("online", 600), ("online", 600), ("local", 380)]
+
+
+def test_openai_compat_sends_list_content_parts_unchanged():
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n')
+
+        def log_message(self, *a):
+            pass
+
+    part = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "what is this?"}, part]}]
+    srv, url = _serve(H)
+    assert "".join(OpenAICompatModel("t", url).stream(msgs)) == "ok"
+    srv.shutdown()
+    assert __import__("json").loads(seen["body"])["messages"] == msgs

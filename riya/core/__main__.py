@@ -13,6 +13,7 @@ from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
+from riya.core.eyes.capture import make_window_source, set_dpi_awareness
 from riya.core.listen import ListenGate
 from riya.core.models import load_dotenv, load_online_from_env, local_model
 from riya.core.presence import make_idle_source
@@ -21,6 +22,7 @@ from riya.core.store import open_db
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
@@ -51,11 +53,18 @@ def make_embedder(hash_embed: bool):
         return HashEmbedder()
 
 
-def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None]) -> RiyaCore:
+def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None],
+               body_present: Callable[[], bool] = lambda: True) -> RiyaCore:
+    """Per-monitor DPI awareness comes first, before any window source or capture, so window rects and pixels agree.
+    Her eyes get their own online model instance (a longer first-token timeout); on other platforms she has no
+    window to look at. body_present gates her eyes on a connected body."""
+    set_dpi_awareness()
     load_dotenv()
     core = RiyaCore(db=open_db(args.db), embedder=make_embedder(args.hash_embed), clock=SystemClock(),
                     idle_source=make_idle_source(), local=local_model(args.local_url),
-                    online=load_online_from_env(), emit=emit)
+                    online=load_online_from_env(), emit=emit,
+                    vision=load_online_from_env(name="vision", first_token_timeout_s=VISION_TIMEOUT_S),
+                    window_source=make_window_source(), body_present=body_present)
     legacy = Path(args.legacy_memory)
     legacy = legacy if legacy.is_absolute() else REPO_ROOT / legacy
     if not core.kv.get("legacy_imported") and legacy.is_file():
@@ -107,12 +116,24 @@ def deliver(sentences: Iterator[str], loop, gaming: bool = False) -> None:
             loop.gate.open("spoke_first")
 
 
+def run_ticks(core: RiyaCore, speaker: Speaker, alive: Callable[[], bool],
+              wait: Callable[[float], bool] | None = None) -> None:
+    """The 1 s tick loop, until the server stops or the body asks the core to quit (wait returns True then)."""
+    wait = wait or core.quit_requested.wait
+    while alive() and not core.quit_requested.is_set():
+        if (sentences := core.tick()) is not None:
+            deliver(sentences, speaker.loop, gaming=core.presence.state == "gaming")
+        if wait(1.0):
+            return
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     speaker = Speaker()
-    app = create_app(lambda emit: build_core(args, emit), speak=speaker)
+    app = create_app(lambda emit: build_core(args, emit, body_present=lambda: app.state.hub.connections > 0),
+                     speak=speaker)
     server = uvicorn.Server(uvicorn.Config(app, host=DEFAULT_HOST, port=args.port, log_level="warning"))
     thread = threading.Thread(target=server.run, name="riya-ws", daemon=True)
     thread.start()
@@ -129,10 +150,9 @@ def main(argv: list[str] | None = None) -> None:
                 threading.Thread(target=speaker.loop.run, name="riya-voice", daemon=True).start()
             except Exception:
                 log.exception("voice failed to start; running text-only")
-        while thread.is_alive():
-            if (sentences := core.tick()) is not None:
-                deliver(sentences, speaker.loop, gaming=core.presence.state == "gaming")
-            time.sleep(1.0)
+        run_ticks(core, speaker, thread.is_alive)
+        if core.quit_requested.is_set():
+            log.info("Riya was quit from the tray; stopping the core")
     except KeyboardInterrupt:
         pass
     finally:

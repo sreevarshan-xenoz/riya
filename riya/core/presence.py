@@ -47,7 +47,9 @@ class WindowsIdleSource:
         from ctypes import wintypes
 
         self._c, self._w = ctypes, wintypes
-        self._user32, self._kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        # private handles: argtypes on the shared ctypes.windll objects would be overwritten by other modules
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
         class LASTINPUTINFO(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]

@@ -1,5 +1,5 @@
 "use strict";
-/** Electron main process: the three window modes, click-through and dragging, tray, talk hotkey and the core relay.
+/** Electron main process: the three window modes, click-through and dragging, tray, hotkeys and the core relay.
  *
  *  Electron 33's main process has no WebSocket (Node 20), so the single core connection runs in a hidden bridge window
  *  (bridge.html) built on the reusable CoreClient and is relayed here over IPC; this process fans it out to the stage
@@ -9,7 +9,10 @@ const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipc
 const { boundsFor, clampToArea } = require("./src/geometry");
 const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
-const { pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay } = require("./src/main-logic");
+const {
+  pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
+  DONT_LOOK_HOTKEYS,
+} = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
 const OPEN_SETTINGS = process.env.RIYA_OPEN_SETTINGS === "1"; // dev/smoke: open the settings window at startup
@@ -29,6 +32,8 @@ const state = {
   connected: false,
   readyPending: false,
   hotkey: null,
+  dontLookHotkey: null,
+  dontLook: false, // the core's latest eyes.dont_look
   userDragged: false,
   ignoring: false,
   drag: null,
@@ -111,6 +116,7 @@ function createBridge() {
 function onCoreStatus(connected) {
   state.connected = connected;
   state.readyPending = connected;
+  if (!connected) state.cache.delete("look"); // the core sends a fresh look on hello
   broadcast("core:status", connected);
   sendBodyReady();
 }
@@ -125,6 +131,13 @@ function sendBodyReady() {
 function onCoreMessage(msg) {
   if (!msg || typeof msg.type !== "string") return;
   rememberForReplay(state.cache, msg);
+  if (msg.type === "eyes") {
+    const dontLook = msg.dont_look === true;
+    if (dontLook !== state.dontLook) {
+      state.dontLook = dontLook;
+      refreshTrayMenu();
+    }
+  }
   if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
     state.settings = { ...msg.settings };
     ensureMode(state.settings.mode);
@@ -162,9 +175,22 @@ function loadPack() {
 
 /** The active talk-hotkey accelerator (e.g. "Control+Alt+F9" when the preferred one was taken), or null. */
 ipcMain.handle("hotkey:get", (event) => (isUiSender(event.sender) ? state.hotkey : null));
+/** The active don't-look accelerator (Control+Alt+H, or Control+Alt+F10 when that was taken), or null. */
+ipcMain.handle("hotkey:dontlook", (event) => (isUiSender(event.sender) ? state.dontLookHotkey : null));
 ipcMain.handle("pack:get", (event) => (isStageSender(event.sender) ? loadPack() : null));
 
 // ---- windows --------------------------------------------------------------------------------------------------------
+
+/** The saved buddy_position is in physical pixels (what the core compares with window rects); Electron places in DIPs. */
+/** Electron's own DIP <-> physical conversion on Windows (exact with mixed-DPI monitors); a scale-factor fallback elsewhere. */
+function converter() {
+  if (process.platform === "win32") return screen;
+  return displayConverter(screen.getAllDisplays().map((d) => ({ bounds: d.bounds, scaleFactor: d.scaleFactor })));
+}
+
+function savedPosDip() {
+  return toDip(state.settings.buddy_position, converter());
+}
 
 function workAreaFor(mode, pos) {
   const finite = Array.isArray(pos) && pos.length === 2 && pos.every(Number.isFinite);
@@ -175,7 +201,7 @@ function workAreaFor(mode, pos) {
 }
 
 function createStageWindow(mode) {
-  const savedPos = state.settings.buddy_position;
+  const savedPos = savedPosDip();
   const bounds = boundsFor(mode, workAreaFor(mode, savedPos), savedPos);
   const overlay = mode === "buddy" || mode === "panel";
   const win = new BrowserWindow({
@@ -263,7 +289,7 @@ function applyLateSavedPosition() {
   const win = state.win;
   if (!win || win.isDestroyed()) return;
   const current = win.getPosition();
-  const savedPos = state.settings.buddy_position;
+  const savedPos = savedPosDip();
   const target = repositionTarget({
     mode: state.mode,
     dragging: Boolean(state.drag),
@@ -348,9 +374,10 @@ function stopDrag(save) {
   state.drag = null;
   if (!save || drag.win.isDestroyed()) return;
   const [x, y] = drag.win.getPosition();
-  state.settings.buddy_position = [x, y];
+  const position = toPhysical([x, y], converter());
+  state.settings.buddy_position = position;
   state.userDragged = true;
-  sendToCore({ type: "set_settings", patch: { buddy_position: [x, y] } });
+  sendToCore({ type: "set_settings", patch: { buddy_position: position } });
 }
 
 // ---- tray, settings and hotkey ----------------------------------------------------------------------------------
@@ -402,6 +429,18 @@ function requestMode(mode) {
   sendToCore({ type: "set_settings", patch: { mode } });
 }
 
+function toggleDontLook() {
+  sendToCore({ type: "dont_look", on: !state.dontLook });
+  refreshTrayMenu(); // the checkbox flips by itself when clicked; put it back until the core's eyes message says so
+}
+
+/** The tray's Quit: the core stops too (quit_core), so nothing keeps glancing with no body; then the body exits. */
+function quitRiya() {
+  if (state.quitting) return;
+  sendToCore({ type: "quit_core" });
+  setTimeout(() => app.quit(), quitDelay(state.connected));
+}
+
 function refreshTrayMenu() {
   if (!state.tray) return;
   const modeItem = (mode, label) => ({
@@ -415,8 +454,9 @@ function refreshTrayMenu() {
     modeItem("panel", "Panel"),
     modeItem("window", "Window"),
     { type: "separator" },
+    { label: "Don't look", type: "checkbox", checked: state.dontLook, click: toggleDontLook },
     { label: "Settings…", click: openSettings },
-    { label: "Quit", click: () => app.quit() },
+    { label: "Quit", click: quitRiya },
   ]));
 }
 
@@ -450,8 +490,12 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     state.hotkey = pickHotkey(TALK_HOTKEYS, (accelerator) =>
       globalShortcut.register(accelerator, () => sendToCore({ type: "talk_hotkey" })));
+    state.dontLookHotkey = pickHotkey(DONT_LOOK_HOTKEYS, (accelerator) =>
+      globalShortcut.register(accelerator, toggleDontLook));
     if (OPEN_SETTINGS) openSettings();
     log(state.hotkey ? `talk hotkey: ${state.hotkey}` : `no talk hotkey registered (tried ${TALK_HOTKEYS.join(", ")})`);
+    log(state.dontLookHotkey ? `don't-look hotkey: ${state.dontLookHotkey}`
+      : `no don't-look hotkey registered (tried ${DONT_LOOK_HOTKEYS.join(", ")})`);
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, relayout);
     // Wait briefly for the core's settings so she opens in the right mode; show buddy if the core isn't there.
     state.firstSettingsTimer = setTimeout(() => ensureMode(state.settings.mode), FIRST_SETTINGS_WAIT_MS);

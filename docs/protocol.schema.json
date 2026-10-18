@@ -20,6 +20,25 @@
         "title": "BodyReady",
         "type": "object"
       },
+      "DontLook": {
+        "properties": {
+          "on": {
+            "title": "On",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "dont_look",
+            "default": "dont_look",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "DontLook",
+        "type": "object"
+      },
       "EpisodeDelete": {
         "description": "Deletes the episode outright (no forgotten marker: its facts are deleted separately).",
         "properties": {
@@ -50,6 +69,25 @@
           }
         },
         "title": "GetMemories",
+        "type": "object"
+      },
+      "GlanceDelete": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "glance_delete",
+            "default": "glance_delete",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "GlanceDelete",
         "type": "object"
       },
       "MemoryCorrect": {
@@ -98,6 +136,19 @@
           "id"
         ],
         "title": "MemoryDelete",
+        "type": "object"
+      },
+      "QuitCore": {
+        "description": "The user chose Quit in the tray: the core stops too.",
+        "properties": {
+          "type": {
+            "const": "quit_core",
+            "default": "quit_core",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "QuitCore",
         "type": "object"
       },
       "SetSettings": {
@@ -195,10 +246,13 @@
     "discriminator": {
       "mapping": {
         "body_ready": "#/$defs/BodyReady",
+        "dont_look": "#/$defs/DontLook",
         "episode_delete": "#/$defs/EpisodeDelete",
         "get_memories": "#/$defs/GetMemories",
+        "glance_delete": "#/$defs/GlanceDelete",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
+        "quit_core": "#/$defs/QuitCore",
         "set_settings": "#/$defs/SetSettings",
         "talk_hotkey": "#/$defs/TalkHotkey",
         "thread_resolve": "#/$defs/ThreadResolve",
@@ -237,6 +291,15 @@
       },
       {
         "$ref": "#/$defs/SetSettings"
+      },
+      {
+        "$ref": "#/$defs/DontLook"
+      },
+      {
+        "$ref": "#/$defs/GlanceDelete"
+      },
+      {
+        "$ref": "#/$defs/QuitCore"
       }
     ]
   },
@@ -308,6 +371,91 @@
         "title": "ExpressionMsg",
         "type": "object"
       },
+      "EyesMsg": {
+        "properties": {
+          "cap": {
+            "title": "Cap",
+            "type": "integer"
+          },
+          "dont_look": {
+            "title": "Dont Look",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "glances_today": {
+            "title": "Glances Today",
+            "type": "integer"
+          },
+          "type": {
+            "const": "eyes",
+            "default": "eyes",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "dont_look",
+          "glances_today",
+          "cap"
+        ],
+        "title": "EyesMsg",
+        "type": "object"
+      },
+      "GlanceInfo": {
+        "description": "A note from one look at the screen (the screenshot itself is never kept).",
+        "properties": {
+          "activity": {
+            "title": "Activity",
+            "type": "string"
+          },
+          "app": {
+            "title": "App",
+            "type": "string"
+          },
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "details": {
+            "title": "Details",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "notable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notable"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "app",
+          "title",
+          "activity",
+          "details",
+          "notable"
+        ],
+        "title": "GlanceInfo",
+        "type": "object"
+      },
       "Hello": {
         "properties": {
           "expressions": {
@@ -335,6 +483,43 @@
         "title": "Hello",
         "type": "object"
       },
+      "Look": {
+        "description": "The side of her the active window is on (null: none, or her own) and whether she's watching it.",
+        "properties": {
+          "side": {
+            "anyOf": [
+              {
+                "enum": [
+                  "left",
+                  "right",
+                  "center"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
+          },
+          "type": {
+            "const": "look",
+            "default": "look",
+            "title": "Type",
+            "type": "string"
+          },
+          "watching": {
+            "title": "Watching",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "side",
+          "watching"
+        ],
+        "title": "Look",
+        "type": "object"
+      },
       "MemoriesMsg": {
         "properties": {
           "episodes": {
@@ -350,6 +535,13 @@
               "type": "object"
             },
             "title": "Facts",
+            "type": "array"
+          },
+          "glances": {
+            "items": {
+              "$ref": "#/$defs/GlanceInfo"
+            },
+            "title": "Glances",
             "type": "array"
           },
           "threads": {
@@ -539,7 +731,9 @@
       "mapping": {
         "error": "#/$defs/ErrorMsg",
         "expression": "#/$defs/ExpressionMsg",
+        "eyes": "#/$defs/EyesMsg",
         "hello": "#/$defs/Hello",
+        "look": "#/$defs/Look",
         "memories": "#/$defs/MemoriesMsg",
         "mouth": "#/$defs/Mouth",
         "say": "#/$defs/Say",
@@ -576,6 +770,12 @@
       },
       {
         "$ref": "#/$defs/ErrorMsg"
+      },
+      {
+        "$ref": "#/$defs/Look"
+      },
+      {
+        "$ref": "#/$defs/EyesMsg"
       }
     ]
   },

@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _V1 = """
 create table facts(id integer primary key, text text not null, key text, source text not null
@@ -21,10 +21,19 @@ create table forgotten(id integer primary key, description text not null, key te
 create table kv(key text primary key, value text not null);
 """
 
-_MIGRATIONS = [_V1]
+# v0.3: her glance notes (never the screenshots)
+_V2 = """
+create table glances(id integer primary key, at real not null, app text not null, title text not null,
+  activity text not null, details text not null, notable text);
+create index glances_at on glances(at);
+"""
+
+_MIGRATIONS = [_V1, _V2]
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:
+    """Opens (creating) the database and brings its schema up to date; each migration and its version bump commit
+    together, so a failure leaves the previous version intact."""
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -33,7 +42,12 @@ def open_db(path: str | Path) -> sqlite3.Connection:
     conn.execute("pragma foreign_keys=on")
     version = conn.execute("pragma user_version").fetchone()[0]
     for i in range(version, len(_MIGRATIONS)):
-        conn.executescript(_MIGRATIONS[i] + f"pragma user_version={i + 1};")
+        try:
+            conn.executescript(f"begin; {_MIGRATIONS[i]} pragma user_version={i + 1}; commit;")
+        except sqlite3.Error:
+            conn.rollback()
+            conn.close()
+            raise
     return conn
 
 

@@ -34,6 +34,7 @@ GENERIC_PHRASES: tuple[str, ...] = (  # assistant-speak she never says; the pers
 GENERIC_MAX_WORDS = 6
 _IDENTITY = re.compile(r"\b(?:are you (?:human|real|alive|an? (?:ai|person|bot|robot|program|real (?:person|girl)))"
                        r"|what are you(?=\s*(?:[?!.,]|$))|is this an? ai)\b", re.I)
+_FEELINGS = re.compile(r"\b(?:do you (?:actually |really )?have feelings|can you feel|do you feel)\b", re.I)
 
 
 def turn_kind(text: str, *, about_me: bool, needs_thinking: bool) -> Literal["small", "explain", "about_me"]:
@@ -67,6 +68,11 @@ def cap_sentences(sentences: Iterator[str], n: int) -> Iterator[str]:
 def is_identity_question(text: str) -> bool:
     """"are you human / real / an AI / a bot...", "what are you", "is this an AI": she must say she's an AI."""
     return bool(_IDENTITY.search(text))
+
+
+def is_feelings_question(text: str) -> bool:
+    """"do you (actually/really) have feelings", "can you feel", "do you feel": she says she has her own kind."""
+    return bool(_FEELINGS.search(text))
 
 
 def is_generic(sentence: str) -> bool:

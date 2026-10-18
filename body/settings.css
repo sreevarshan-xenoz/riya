@@ -20,9 +20,11 @@ h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
 .inline { display: flex; gap: 8px; }
 code { padding: 1px 4px; border-radius: 4px; background: #14121b; font-size: 12px; }
 input[type="text"], select { box-sizing: border-box; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: inherit; }
-input[type="text"] { width: 100%; }
+input[type="text"], textarea { width: 100%; }
+textarea { box-sizing: border-box; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: 12px/1.4 Consolas, monospace; resize: vertical; margin-bottom: 6px; }
+input[type="number"] { box-sizing: border-box; width: 120px; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: inherit; }
 select { min-width: 140px; }
-input:focus, select:focus, button:focus-visible { border-color: #8a63c4; outline: 1px solid #8a63c4; }
+input:focus, select:focus, textarea:focus, button:focus-visible { border-color: #8a63c4; outline: 1px solid #8a63c4; }
 input[type="range"] { width: 100%; accent-color: #8a63c4; }
 input[type="checkbox"] { accent-color: #8a63c4; }
 button { padding: 5px 12px; border: 1px solid #3f3a52; border-radius: 8px; background: #322e40; color: #f1eef6; font: inherit; cursor: pointer; }
