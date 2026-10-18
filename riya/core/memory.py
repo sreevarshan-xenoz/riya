@@ -99,11 +99,13 @@ class Memory:
     # --- facts ---
 
     def add_fact(self, text: str, source: str, confidence: float = 0.9, key: str | None = None,
-                 episode_id: int | None = None) -> Fact | None:
+                 episode_id: int | None = None, *, check_forgotten: bool | None = None) -> Fact | None:
+        """check_forgotten: None checks forgotten markers unless the source is user_said, True always checks."""
         if source not in RANK:
             raise ValueError(f"unknown source {source!r}")
         vec = self._embed(text)
-        if source != "user_said":  # an explicit user statement always overrides a forgotten marker
+        if check_forgotten or (check_forgotten is None and source != "user_said"):
+            # a live, explicit user statement overrides a forgotten marker; a model's reading of a transcript doesn't
             forgotten = self.db.execute("select key, embedding from forgotten").fetchall()
             if key is not None and any(r["key"] == key for r in forgotten):
                 return None

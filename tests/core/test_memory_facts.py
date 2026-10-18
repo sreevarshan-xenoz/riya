@@ -140,6 +140,14 @@ def test_user_said_overrides_forgotten_marker_but_inference_stays_blocked(mem):
     assert again is not None and again.status == "active"
 
 
+def test_check_forgotten_true_blocks_even_user_said(mem):
+    f = mem.add_fact("The user's old project is called Nova", source="user_said", key="user.old_project")
+    mem.delete_fact(f.id)
+    text = "The user's old project is called Nova"
+    assert mem.add_fact(text, source="user_said", key="user.old_project", check_forgotten=True) is None
+    assert mem.add_fact(text, source="inferred", key="user.old_project", check_forgotten=False) is not None
+
+
 def test_delete_removes_whole_supersession_chain(mem):
     old = mem.add_fact("The user's exam is on Thursday", source="user_said")
     new = mem.correct(old.id, "The user's exam is on Friday")

@@ -1,0 +1,106 @@
+import json
+
+from riya.core.clock import FakeClock
+from riya.core.consolidate import Consolidator, Proposals, parse_proposals, remember_intent
+from riya.core.embed import HashEmbedder
+from riya.core.memory import Memory
+from riya.core.models import ModelUnavailable
+from riya.core.store import open_db
+from tests.fakes import FakeModel
+
+PROPOSAL = {"facts": [{"text": "The user has a calculus exam on Thursday", "key": "user.exam", "confidence": 0.9,
+                       "source": "user_said"}],
+            "episode_summary": "They talked about the user's calculus exam.", "user_mood": "nervous",
+            "threads": [{"text": "Ask how the calculus exam went", "due_in_hours": 20}]}
+
+
+def setup():
+    clock = FakeClock()
+    return clock, Memory(open_db(":memory:"), HashEmbedder(), clock)
+
+
+def test_parse_proposals_tolerates_prose():
+    p = parse_proposals("Sure! " + json.dumps(PROPOSAL) + " hope that helps")
+    assert p.facts[0]["key"] == "user.exam" and p.threads[0]["due_in_hours"] == 20
+
+
+def test_parse_proposals_bad_json_is_empty():
+    assert parse_proposals("nope {") == Proposals.empty()
+
+
+def test_due_after_ten_quiet_minutes():
+    clock, mem = setup()
+    c = Consolidator(mem, lambda: FakeModel(), clock)
+    assert not c.due(clock.now())
+    mem.append_transcript("user", "hi")
+    t = clock.now()
+    clock.advance(599)
+    assert not c.due(t)
+    clock.advance(1)
+    assert c.due(t)
+
+
+def test_run_applies_everything():
+    clock, mem = setup()
+    mem.append_transcript("user", "I have a calculus exam on Thursday, I'm nervous")
+    mem.append_transcript("assistant", "You'll do great.")
+    Consolidator(mem, lambda: FakeModel(replies=[json.dumps(PROPOSAL)]), clock).run()
+    assert mem.recent_episodes(1)[0].summary.startswith("They talked")
+    assert mem.list_facts()[0].source == "user_said"
+    clock.advance(20 * 3600)
+    assert mem.due_threads()[0].text == "Ask how the calculus exam went"
+    assert mem.unconsolidated() == []
+
+
+def test_run_does_not_resurrect_forgotten_facts():
+    clock, mem = setup()
+    f = mem.add_fact("The user has a calculus exam on Thursday", source="user_said", key="user.exam")
+    mem.delete_fact(f.id)
+    mem.append_transcript("user", "exam talk")
+    Consolidator(mem, lambda: FakeModel(replies=[json.dumps(PROPOSAL)]), clock).run()
+    assert mem.list_facts() == []
+
+
+def test_run_sends_transcript_lines_as_role_text():
+    clock, mem = setup()
+    mem.append_transcript("user", "hello there")
+    mem.append_transcript("assistant", "hi!")
+    model = FakeModel(replies=[json.dumps(PROPOSAL)])
+    Consolidator(mem, lambda: model, clock).run()
+    system, user = model.calls[0]
+    assert system["role"] == "system" and user["role"] == "user"
+    assert user["content"] == "user: hello there\nassistant: hi!"
+
+
+def test_unknown_fact_source_becomes_inferred():
+    clock, mem = setup()
+    mem.append_transcript("user", "talk")
+    odd = {**PROPOSAL, "facts": [{**PROPOSAL["facts"][0], "source": "looked_up"}]}
+    Consolidator(mem, lambda: FakeModel(replies=[json.dumps(odd)]), clock).run()
+    assert mem.list_facts()[0].source == "inferred"
+
+
+def test_run_survives_unavailable_model_and_retries_later():
+    clock, mem = setup()
+    mem.append_transcript("user", "I have an exam")
+    out = Consolidator(mem, lambda: FakeModel(fail=ModelUnavailable("down")), clock).run()
+    assert out == Proposals.empty() and len(mem.unconsolidated()) == 1
+    out = Consolidator(mem, lambda: FakeModel(replies=["not json at all"]), clock).run()
+    assert out == Proposals.empty() and len(mem.unconsolidated()) == 1
+    assert mem.recent_episodes(1) == []
+    Consolidator(mem, lambda: FakeModel(replies=[json.dumps(PROPOSAL)]), clock).run()
+    assert mem.unconsolidated() == [] and len(mem.recent_episodes(1)) == 1
+
+
+def test_run_with_nothing_to_consolidate_does_not_call_the_model():
+    clock, mem = setup()
+    model = FakeModel()
+    assert Consolidator(mem, lambda: model, clock).run() == Proposals.empty()
+    assert model.calls == []
+
+
+def test_remember_intent():
+    assert remember_intent("Riya, remember that my exam is on Friday.") == "my exam is on Friday"
+    assert remember_intent("remember I hate mornings") == "I hate mornings"
+    assert remember_intent("do you remember me?") is None
+    assert remember_intent("remember that I like tea?") is None
