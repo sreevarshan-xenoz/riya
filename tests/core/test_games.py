@@ -4,8 +4,8 @@ import random
 import pytest
 
 from riya.core import games
-from riya.core.games import (MAX_TURNS, RIDDLES, THINGS, WORDS, detect_start, game_situation, guard, is_accept,
-                             is_stop, mentions, new_game, opening, play, stop)
+from riya.core.games import (MAX_QUESTIONS, MAX_TURNS, RIDDLES, THINGS, WORDS, detect_start, game_situation, guard,
+                             is_accept, is_stop, mentions, mid_game_note, new_game, opening, play, stop)
 
 
 def rng():
@@ -18,15 +18,27 @@ def rng():
     ("let's play word chain", "word_chain"), ("Lets play Word-Chain!", "word_chain"),
     ("can we play 20 questions?", "twenty_questions"), ("play twenty questions", "twenty_questions"),
     ("could we play riddles", "riddles"), ("let's play a riddle", "riddles"),
-    ("wanna play some riddles?", "riddles"), ("let's play a game of 20 questions", "twenty_questions")])
+    ("wanna play some riddles?", "riddles"), ("let's play a game of 20 questions", "twenty_questions"),
+    ("hey riya, shall we play word chain", "word_chain"), ("so... should we play riddles?", "riddles"),
+    ("I want to play riddles", "riddles"), ("do you want to play 20 questions?", "twenty_questions"),
+    ("how about riddles?", "riddles"), ("play word chain with me!", "word_chain"), ("Riddles?", "riddles"),
+    ("20 questions!", "twenty_questions"), ("let’s play riddles", "riddles")])
 def test_detect_start_phrases(text, kind):
     assert detect_start(text, None) == kind
 
 
-@pytest.mark.parametrize("text", ["word chain is fun", "I asked 20 questions today", "riddles are hard",
-                                  "let's play minecraft", "hello", ""])
+@pytest.mark.parametrize("text", [
+    "word chain is fun", "I asked 20 questions today", "riddles are hard", "let's play minecraft", "hello", "",
+    "I don't want to play riddles", "my kids play 20 questions in the car", "we used to play word chain at school",
+    "I don’t wanna play word chain", "never play riddles with me", "let's not play riddles",
+    "can we not play 20 questions", "riddles", "play riddles at the party tomorrow", "ok no, how about riddles?"])
 def test_detect_start_ignores_other_text(text):
     assert detect_start(text, None) is None
+
+
+def test_a_decline_of_her_offer_is_no_start():
+    assert detect_start("I don't want to play riddles", "riddles") is None
+    assert detect_start("nah, not riddles", "riddles") is None
 
 
 @pytest.mark.parametrize("text", ["sure", "Yeah!", "ok", "okay let's go", "let's go", "yes please", "sure, why not",
@@ -48,7 +60,7 @@ def test_a_named_game_wins_over_the_offered_one():
 
 
 @pytest.mark.parametrize("text", ["stop", "Stop.", "quit", "enough", "stop the game", "let's stop", "I give up",
-                                  "ok stop", "stop please", "enough!"])
+                                  "ok stop", "stop please", "enough!", "let\u2019s stop"])
 def test_stop_phrases(text):
     assert is_stop(text)
 
@@ -87,10 +99,16 @@ def test_word_chain_valid_word_gets_her_word():
     assert f'"{v.word}"' in game_situation(s, v)
 
 
-def test_word_chain_takes_the_word_out_of_a_sentence():
+def test_word_chain_takes_the_word_out_of_a_short_message():
     s = chain("apple")
-    assert play(s, "um, my word is eagle").kind == "ok"
-    assert "eagle" in s.used
+    assert play(s, "eagle, your turn").kind == "ok"
+    assert "eagle" in s.used and s.turns == 1
+
+
+def test_word_chain_more_than_3_words_is_off_topic():
+    s = chain("apple")
+    v = play(s, "hang on, my agent just finished")
+    assert v.kind == "off" and not v.over and s.turns == 0 and s.word == "apple" and s.used == {"apple"}
 
 
 @pytest.mark.parametrize("text,reason", [("banana", "wrong letter"), ("e4gle", "not a word"), ("", "not a word"),
@@ -153,11 +171,41 @@ def test_twenty_questions_an_alias_or_plural_wins():
     assert play(s, "bikes?").kind == "win"
 
 
-def test_twenty_questions_the_20th_question_loses():
+def test_twenty_questions_the_20th_question_loses_and_the_countdown_is_true():
     s = twenty()
-    s.questions = 19
+    for n in range(1, MAX_QUESTIONS):
+        v = play(s, "is it blue?")
+        assert v.kind == "ok" and f"question {n} of 20; {20 - n} left" in game_situation(s, v)
     v = play(s, "is it blue?")
     assert v.kind == "loss" and v.over and v.answer == "banana" and "banana" in (v.say or "")
+
+
+def test_twenty_questions_is_not_cut_at_15_turns():
+    s = twenty()
+    for _ in range(MAX_TURNS):
+        play(s, "does it fly?")
+    assert not s.over and s.questions == MAX_TURNS
+
+
+@pytest.mark.parametrize("text", ["Can it fly", "was it expensive", "is it a car?", "a car", "car", "maybe a fork",
+                                  "bigger than a dog?"])
+def test_twenty_questions_questions_and_guesses_are_moves(text):
+    s = twenty()
+    assert play(s, text).kind == "ok" and s.questions == 1
+
+
+@pytest.mark.parametrize("text", ["I'm so tired today", "lol", "brb my agent needs me", "that was hard"])
+def test_twenty_questions_other_chat_is_off_topic_and_never_counts(text):
+    s = twenty()
+    v = play(s, text)
+    assert v.kind == "off" and s.questions == 0 and s.turns == 0 and not s.over
+
+
+def test_twenty_questions_singular_and_joined_names_win():
+    s = twenty("headphones")
+    assert play(s, "is it a headphone?").kind == "win"
+    s = twenty("ice cream")
+    assert play(s, "icecream?").kind == "win"
 
 
 def test_giving_up_reveals_the_secret_but_stop_doesnt():
@@ -185,7 +233,7 @@ def test_riddles_right_answer_moves_on():
     first = s.riddle
     v = play(s, f"is it {RIDDLES[first].answers[0]}?")
     assert v.kind == "right" and s.solved == 1 and s.riddle != first
-    assert v.riddle == RIDDLES[s.riddle].question and v.say == v.riddle and v.answer == RIDDLES[first].answers[0]
+    assert v.riddle == RIDDLES[s.riddle].question and v.say == v.riddle and v.answer == RIDDLES[first].told
 
 
 def test_riddles_wrong_answer_keeps_the_riddle_then_reveals_after_three():
@@ -195,8 +243,23 @@ def test_riddles_wrong_answer_keeps_the_riddle_then_reveals_after_three():
         v = play(s, "a potato")
         assert v.kind == "wrong" and s.riddle == first and v.say is None
     v = play(s, "a potato")
-    assert v.kind == "wrong" and v.answer == RIDDLES[first].answers[0] and s.riddle != first
-    assert v.say == RIDDLES[s.riddle].question
+    assert v.kind == "wrong" and v.answer == RIDDLES[first].told and s.riddle != first
+    assert v.say == f"It was {RIDDLES[first].told}! Next one: {RIDDLES[s.riddle].question}"   # the engine tells it
+
+
+def test_riddles_a_long_message_that_isnt_right_is_off_topic():
+    s = riddles()
+    first = s.riddle
+    v = play(s, "sorry one sec, my agent is asking me for approval again")
+    assert v.kind == "off" and s.turns == 0 and s.misses == 0 and s.riddle == first
+    v = play(s, f"hmm let me think about it for a bit, is it {RIDDLES[first].answers[0]}")
+    assert v.kind == "right"
+
+
+def test_riddle_plural_answers_take_the_singular():
+    s = riddles()
+    s.riddle = next(i for i, r in enumerate(RIDDLES) if r.answers[0] == "footsteps")
+    assert play(s, "a footstep").kind == "right"
 
 
 def test_riddle_answers_match_whole_words_only():
@@ -216,23 +279,25 @@ def test_riddles_run_out_is_a_win():
 def test_giving_up_a_riddle_reveals_its_answer():
     s = riddles()
     v = stop(s, "i give up")
-    assert v.answer == RIDDLES[s.riddle].answers[0]
+    assert v.answer == RIDDLES[s.riddle].told and v.say == f"It was {RIDDLES[s.riddle].told}!"
 
 
 # --- the turn limit and the guard ----------------------------------------------------------------------------------
 
-def test_the_15th_turn_ends_the_game():
-    s = twenty()
+def test_the_15th_move_ends_riddles_and_tells_the_open_answer():
+    s = riddles()
     for _ in range(MAX_TURNS - 1):
-        assert play(s, "is it alive?").kind == "ok"
-    v = play(s, "is it alive?")
-    assert v.kind == "ended" and v.reason == "turns" and s.over and v.answer == "banana"
-    assert "banana" in v.say and "over" in game_situation(s, v)
+        play(s, "a potato")
+        play(s, "this is a long message about something else entirely, not a guess")   # never counts
+    open_riddle = s.riddle
+    v = play(s, "a potato")
+    assert v.kind == "ended" and v.reason == "turns" and s.over and v.answer == RIDDLES[open_riddle].told
+    assert v.say == f"It was {RIDDLES[open_riddle].told}!" and "over" in game_situation(s, v)
 
 
-def test_a_win_on_the_15th_turn_is_still_a_win():
+def test_a_win_on_the_20th_question_is_still_a_win():
     s = twenty()
-    s.turns = MAX_TURNS - 1
+    s.questions = MAX_QUESTIONS - 1
     assert play(s, "banana").kind == "win"
 
 
@@ -253,6 +318,21 @@ def test_guard_replaces_sentences_naming_the_secret_while_live():
     assert guard(s, "It was ice cream!") == "It was ice cream!"
 
 
+def test_guard_catches_singular_and_joined_names():
+    s = twenty("headphones")
+    assert guard(s, "A headphone? Nope!") in games.TEASES
+    s = twenty("ice cream")
+    assert guard(s, "Icecream is cold.") in games.TEASES
+
+
+def test_the_mid_game_note_never_carries_the_secret():
+    s = twenty()
+    note = mid_game_note(s)
+    assert "20 questions" in note and "banana" not in note and "20 questions left" in note
+    assert '"e"' in mid_game_note(chain("apple"))
+    assert "riddles" in mid_game_note(riddles())
+
+
 def test_guard_only_matters_for_twenty_questions():
     s = chain("apple")
     assert guard(s, "Elephant is a nice word.") == "Elephant is a nice word."
@@ -267,4 +347,5 @@ def test_situation_keeps_the_rules_and_one_sentence():
     for kind in ("word_chain", "twenty_questions", "riddles"):
         s = new_game(kind, rng())
         sit = game_situation(s, opening(s))
-        assert "one short" in sit and "playing" in sit
+        assert sit.startswith(games._RULES[kind]) and sit.endswith("Say one short, playful sentence.")
+        assert "already judged" in sit and (s.secret in sit if kind == "twenty_questions" else True)

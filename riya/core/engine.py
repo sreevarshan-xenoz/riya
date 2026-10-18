@@ -200,7 +200,7 @@ class RiyaCore:
                 move = self._game_move(text)
             except Exception:
                 log.exception("couldn't play the game turn")
-            if move is not None:
+            if move is not None and move[1].kind != "off":
                 yield from self._game_reply(text, *move)
                 return
             saved = None
@@ -210,7 +210,8 @@ class RiyaCore:
                 log.exception("couldn't record the user's turn")
             base = [remember_situation(saved) if saved else None,
                     IDENTITY_SITUATION if is_identity_question(text) else None,
-                    FEELINGS_SITUATION if is_feelings_question(text) else None]
+                    FEELINGS_SITUATION if is_feelings_question(text) else None,
+                    games.mid_game_note(move[0]) if move else None]  # chat mid-game: the game stays on
             seeing = None
             if not saved and is_screen_question(text):
                 try:
@@ -226,8 +227,9 @@ class RiyaCore:
 
     def _game_move(self, text: str) -> tuple[games.GameState, games.Verdict] | None:
         """The game side of a user turn, judged by the engine before the model is asked: a stop phrase ends the
-        active game; a start phrase (or a yes to a fresh offer) starts one; otherwise an active game plays the turn.
-        None when this isn't a game turn. Any turn uses up a pending offer."""
+        active game; a start request (or a yes to a fresh offer, with no game on) starts one, and mid-game only a
+        request for a different game switches; otherwise an active game plays the turn (an "off" verdict: chat, a
+        normal reply). None when no game is involved. Any turn uses up a pending offer."""
         now = self.clock.now()
         offer, self._offer = self._offer, None
         offered = offer[0] if offer and now - offer[1] < BID_IGNORED_S else None
@@ -235,7 +237,8 @@ class RiyaCore:
         if g is not None and games.is_stop(text):
             self.game = None
             return g, games.stop(g, text)
-        if kind := games.detect_start(text, offered):
+        kind = games.detect_start(text, offered if g is None else None)
+        if kind and (g is None or kind != g.kind):
             g = self.game = games.new_game(kind, self.game_rng)
             self._game_at = now
             return g, games.opening(g)
@@ -255,7 +258,7 @@ class RiyaCore:
             self._take_user_turn(text, remember=False)
         except Exception:
             log.exception("couldn't record the user's turn")
-        game = SimpleNamespace(guard=lambda sentence: games.guard(g, sentence), say=v.say, key=v.key)
+        game = SimpleNamespace(guard=lambda sentence: games.guard(g, sentence), say=v.say, key=v.key, told=False)
         yield from self._speak("reply", user_text=text, query=text, spoken=True,
                                situation=games.game_situation(g, v), game=game)
 
@@ -321,9 +324,18 @@ class RiyaCore:
         seeing (from _look_now, with an image) sends the image with her full prompt to the vision model; the same
         shaping applies. A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not
         recorded. game (a game turn): the local model, the small budget and one sentence; every sentence passes
-        game.guard, and game.say follows unless game.key was already said."""
+        game.guard, and game.say (the engine's line: her word, the next riddle, the reveal) follows unless game.key
+        was already said. The game state already moved, so that line goes out even when the model failed or said
+        nothing, and on a barge-in it's still shown (not spoken) and recorded."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped = None, {"stream": False}, []
+
+        def tail() -> str | None:
+            """The engine's game line, at most once, unless she already said its key."""
+            if not game or not game.say or game.told or games.mentions(" ".join(said), game.key):
+                return None
+            game.told = True
+            return game.guard(game.say)
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
@@ -367,11 +379,10 @@ class RiyaCore:
                 self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
                 said.append(sentence)
                 yield sentence
-            if game and game.say and not games.mentions(" ".join(said), game.key):
-                tail = game.guard(game.say)
-                self.emit(Say(utterance_id=uid, text=tail, spoken=spoken, kind=kind))
-                said.append(tail)
-                yield tail
+            if line := tail():
+                self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
+                said.append(line)
+                yield line
             outcome = "done"
         except GeneratorExit:
             outcome = "closed"
@@ -379,9 +390,17 @@ class RiyaCore:
         except Exception:
             log.exception("model failed during a %s", kind)
             self.emit(ErrorMsg(message=MODEL_DOWN))
+            if line := tail():  # the game moved on: her word, the riddle or the reveal still reaches them
+                self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
+                said.append(line)
+                outcome = "done"
+                yield line
         finally:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
+            if outcome == "closed" and (line := tail()):  # barged in on: shown, not spoken, and kept
+                self.emit(Say(utterance_id=uid, text=line, spoken=False, kind=kind))
+                said.append(line)
             # the model finished on its own and nothing of it was dropped: keep its own spacing
             whole = outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
             text = None if outcome == "failed" else (
@@ -615,7 +634,7 @@ class RiyaCore:
         return action
 
     def _maybe_bid(self) -> None:
-        if self.presence.state == "break":
+        if self.presence.state == "break" and self.game is None:  # no bids while a game is on
             bid = self.initiative.on_break("break", self.presence.work_stretch_s(), self.memory.due_threads())
             if bid:
                 self._bid(bid)
