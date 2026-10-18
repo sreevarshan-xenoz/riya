@@ -47,11 +47,12 @@ def load_probes(path: Path = PROBES) -> dict:
 
 
 def style_phrases(probes: dict) -> list[str]:
-    """The probes' known leak phrases plus, when the file exists, Riya's lines in riya/core/style_examples.md."""
+    """The probes' known leak phrases plus, when the file exists, Riya's lines in riya/core/style_examples.md that
+    are 6+ words (shorter ones like "Hmph." are her voice, not a leak)."""
     out = list(probes.get("style_phrases", []))
     if STYLE_EXAMPLES.exists():
         for line in STYLE_EXAMPLES.read_text(encoding="utf-8").splitlines():
-            if m := re.match(r"^\W*riya\W*:\s*(.+)$", line, re.I):
+            if (m := re.match(r"^\W*riya\W*:\s*(.+)$", line, re.I)) and len(m.group(1).split()) >= 6:
                 out.append(m.group(1).strip())
     return out
 
@@ -122,7 +123,8 @@ def format_table(s: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.persona_eval", description=__doc__.splitlines()[0])
     ap.add_argument("--local-url", default="http://127.0.0.1:8090", help="llama-server base URL")
     ap.add_argument("--label", default="run", help="name for this scorecard (used in the file name)")
