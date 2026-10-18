@@ -254,6 +254,14 @@ class RiyaCore:
         return (len(buf) if head is None else head, len(buf)) if final and buf.strip() else None
 
     @staticmethod
+    def _unfinished(buf: str) -> bool:
+        """buf ends in words with no sentence end after them: a reply cut off mid-sentence."""
+        pos = 0
+        while (n := RiyaCore._boundary(buf[pos:])) is not None:
+            pos += n
+        return _worded(buf[pos:]) and not _ENDED.search(buf[pos:])
+
+    @staticmethod
     def _sentences(stream: Iterator[str], parts: list[str], done: dict, ran_out: Callable[[], bool] = lambda: False,
                    said: bool = False) -> Iterator[str]:
         """The model's pieces as whole sentences (_cut), each with only the reply's first emoji (an emoji's leftovers
@@ -284,7 +292,7 @@ class RiyaCore:
                     if sentence := take(cut):
                         said = True
                         yield sentence
-            if said and _worded(buf) and not _ENDED.search(buf) and ran_out():
+            if said and RiyaCore._unfinished(buf) and ran_out():
                 buf, done["cut"] = "", True
             while (cut := RiyaCore._cut(buf, final=True)) is not None:
                 if sentence := take(cut):

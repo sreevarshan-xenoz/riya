@@ -791,7 +791,8 @@ def test_a_reply_cut_by_the_token_budget_drops_its_unfinished_last_fragment():
     ("I was thinking that we could", "length", ["I was thinking that we could"]),  # nothing else was said
     ("Hey you. I was thinking that we could", "stop", ["Hey you.", "I was thinking that we could"]),
     ("Hey you. Sleep well! ~", "length", ["Hey you.", "Sleep well! ~"]),
-    ("Hey you. Night.", "length", ["Hey you.", "Night."])])
+    ("Hey you. Night.", "length", ["Hey you.", "Night."]),
+    ("Hey you. Night. 😀", "length", ["Hey you.", "Night. 😀"])])
 def test_only_an_unterminated_fragment_after_a_said_sentence_is_dropped(reply, finish, want):
     core, *_ = _cut_core(reply, finish)
     assert list(core.reply("hey riya")) == want
