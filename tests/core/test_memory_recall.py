@@ -252,3 +252,13 @@ def test_stale_open_threads_are_resolved(mem, clock):
     assert mem.resolve_stale_threads() == 1
     assert [t.id for t in mem.due_threads()] == [fresh.id]
     assert mem.db.execute("select status from threads where id=?", (stale.id,)).fetchone()[0] == "resolved"
+
+
+def test_both_latest_episodes_survive_the_cap_of_three(mem, clock):
+    now = clock.now()
+    a = mem.add_episode(now - 40 * DAY, now - 40 * DAY, "We discussed the calculus exam preparation")
+    b = mem.add_episode(now - 30 * DAY, now - 30 * DAY, "We discussed the calculus exam results")
+    prev = mem.add_episode(now - 3 * DAY, now - 3 * DAY, "Planned the weekend trip to Goa")
+    last = mem.add_episode(now - DAY, now - DAY, "Chose a new mechanical keyboard")
+    got = [e.id for e in mem.retrieve("calculus exam").episodes]
+    assert len(got) == 3 and got[:2] == [last.id, prev.id] and got[2] in (a.id, b.id)

@@ -168,7 +168,6 @@ class Memory:
                 (text, key, source, confidence, now, status, supersedes_id, episode_id, vec.tobytes(), now))
         return self.get_fact(cur.lastrowid)
 
-    @_locked
     def _duplicate(self, vec: np.ndarray, text: str, row) -> bool:
         """Close in meaning and made of the same words: "exam on Thursday" vs "...Friday" is a correction, kept."""
         return self._max_sim(vec, [row]) >= self.dup_sim and content_tokens(text) == content_tokens(row["text"])
@@ -390,9 +389,9 @@ class Memory:
         facts.sort(key=lambda p: p[0], reverse=True)
         episodes.sort(key=lambda p: p[0], reverse=True)
         latest = self.recent_episodes(2)
-        picked = latest[:1] + [e for _, e in episodes[:k_episodes]] + [
-            e for e in latest[1:] if now - e.ended_at <= RECENT_EPISODE_S]
-        unique = list({e.id: e for e in reversed(picked)}.values())[::-1]  # first occurrence wins
+        picked = latest[:1] + [e for e in latest[1:] if now - e.ended_at <= RECENT_EPISODE_S] + [
+            e for _, e in episodes[:k_episodes]]
+        unique = list({e.id: e for e in picked}.values())  # in order of first appearance
         chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
         return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen,
                          self._relevant_threads(vec, qtokens, k_threads))
