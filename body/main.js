@@ -195,7 +195,6 @@ function createStageWindow(mode) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      backgroundThrottling: false,
     },
   });
   stageWindows.add(win);

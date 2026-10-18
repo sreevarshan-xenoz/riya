@@ -48,6 +48,12 @@ class BubbleModel {
     return nowMs < this.endedAt + (this._kind === "bid" ? BID_HIDE_MS : HIDE_AFTER_MS);
   }
 
+  /** When a finished, still-visible bubble hides (for a timer), else null. */
+  hidesAt(nowMs) {
+    if (this.endedAt === null || !this.visible(nowMs)) return null;
+    return this.endedAt + (this._kind === "bid" ? BID_HIDE_MS : HIDE_AFTER_MS);
+  }
+
   text() {
     return this._text;
   }
