@@ -154,3 +154,54 @@ def test_clock_jump_back_in_break_tail_recovers():
     assert p.state == "break" and p.work_stretch_s() >= 0
     clock.advance(BREAK_TAIL_S + 1)
     assert kinds(p.update()) == ["break_ended"] and p.state == "focused"
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+def test_fullscreen_without_input_is_gaming_not_a_break():
+    clock, src, p = make()
+    p.update()
+    src.is_fullscreen = True
+    clock.advance(150); src.idle = 150
+    assert p.update() == [] and p.state == "gaming"
+    clock.advance(600); src.idle = 750
+    p.update()
+    assert p.state == "gaming"
+    clock.advance(200); src.idle = 950
+    assert kinds(p.update()) == ["went_away"] and p.state == "away"
+
+
+def test_a_spoken_turn_counts_as_input():
+    clock, src, p = make()
+    p.update()
+    for _ in range(20):
+        clock.advance(60); src.idle += 60
+        p.note_turn()
+        assert p.update() == [] and p.state == "talking"
+    clock.advance(150); src.idle += 150
+    assert kinds(p.update()) == ["break_started"]
+
+
+class CountingKV(KV):
+    def __init__(self, conn):
+        super().__init__(conn)
+        self.writes = []
+
+    def set(self, key, value):
+        self.writes.append(key)
+        super().set(key, value)
+
+
+def test_presence_writes_kv_only_when_something_moved():
+    clock, src = FakeClock(), FakeIdleSource()
+    kv = CountingKV(open_db(":memory:"))
+    _, _, p = make(clock, src, kv)
+    for _ in range(120):
+        clock.advance(1); p.update()
+    assert kv.writes.count("presence.last_active_at") == 4      # at 1, 31, 61 and 91 s: every 30 s of activity
+    assert kv.writes.count("presence.left_at") == 0
+    src.idle = 950; clock.advance(1); p.update()
+    assert kv.writes.count("presence.left_at") == 1
+    for _ in range(10):
+        clock.advance(1); src.idle += 1; p.update()
+    assert kv.writes.count("presence.left_at") == 1

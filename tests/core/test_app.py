@@ -203,3 +203,9 @@ def test_websocket_without_origin_or_from_a_file_page_is_accepted():
         for headers in ({}, {"origin": "file://"}, {"origin": "null"}):
             with c.websocket_connect("/ws", headers=headers) as ws:
                 assert ws.receive_json()["type"] == "hello"
+
+
+def test_deliver_never_opens_the_mic_for_a_silent_utterance_while_gaming():
+    loop, silent = FakeVoiceLoop(), Utterance(iter(["psst"]), spoken=False)
+    runner.deliver(silent, loop, gaming=True)
+    assert loop.calls == [] and list(silent) == [] and not loop.gate.is_open()

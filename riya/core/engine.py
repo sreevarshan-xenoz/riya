@@ -210,6 +210,8 @@ class RiyaCore:
         self.memory.append_transcript("assistant", line)
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.pending_bid_at = self.clock.now()
+        if self.presence.state == "gaming":  # only the hotkey opens the mic during a game
+            return
         try:
             self.on_spoke_first("bid")
         except Exception:

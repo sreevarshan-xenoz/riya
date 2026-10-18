@@ -81,16 +81,17 @@ class Speaker:
             self.loop.answer(sentences, reason="typed")
 
 
-def deliver(sentences: Iterator[str], loop) -> None:
+def deliver(sentences: Iterator[str], loop, gaming: bool = False) -> None:
     """The one place a tick's utterance (her speaking first) is consumed: spoken if it's meant aloud, then the mic
-    listens for an answer."""
+    listens for an answer, except during a game (the voice loop's answer() checks that itself)."""
     if loop is None:
         drain(sentences)
     elif getattr(sentences, "spoken", True):
         loop.answer(sentences, reason="spoke_first")
     else:
         drain(sentences)
-        loop.gate.open("spoke_first")
+        if not gaming:
+            loop.gate.open("spoke_first")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> None:
                 log.exception("voice failed to start; running text-only")
         while thread.is_alive():
             if (sentences := core.tick()) is not None:
-                deliver(sentences, speaker.loop)
+                deliver(sentences, speaker.loop, gaming=core.presence.state == "gaming")
             time.sleep(1.0)
     except KeyboardInterrupt:
         pass
