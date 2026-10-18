@@ -28,10 +28,30 @@ body.mode-panel #app { flex-direction: column; }
 body.mode-panel #stage { flex: none; width: 100%; }
 body.mode-window #stage { flex: none; width: 38%; height: 100%; background: #23202d; }
 body.mode-window #sprite-box { height: 100%; aspect-ratio: var(--ar, 0.571); }
-/* panel only: an empty area reserved for phase 3 (agents) */
-#agents { display: none; flex: none; box-sizing: border-box; min-height: 56px; margin: 6px 10px 0; padding: 6px 10px; border: 1px dashed #3f3a52; border-radius: 10px; }
-#agents h2 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #8d86a0; }
+/* agents: a list in panel and window (window collapses it when empty), a corner badge in buddy. All text arrives through
+   textContent; chip tones are fixed classes. */
+#agents { display: none; flex: none; box-sizing: border-box; margin: 6px 10px 0; padding: 6px 10px; border: 1px solid #2c2838; border-radius: 10px; background: #211e2b; }
+#agents h2 { margin: 0 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #8d86a0; }
 body.mode-panel #agents { display: block; }
+body.mode-window #agents:not(.empty) { display: block; }
+body.mode-window #agents h2 { display: none; }
+#agents-list { margin: 0; padding: 0; list-style: none; max-height: 112px; overflow-y: auto; }
+body.mode-window #agents-list { max-height: 84px; }
+#agents-empty { margin: 0; font-size: 12px; color: #8d86a0; }
+#agents:not(.empty) #agents-empty { display: none; }
+.agent { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; min-width: 0; }
+.agent.ended { opacity: 0.5; }
+.agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-age { flex: none; color: #8d86a0; font-size: 11px; }
+.chip { flex: none; min-width: 52px; box-sizing: border-box; padding: 0 8px; border-radius: 9px; text-align: center; font-size: 11px; line-height: 17px; background: #3a3550; color: #d9d3e4; }
+.chip.busy { background: #35406a; color: #cfd8ff; }
+.chip.dim { background: #2c2838; color: #9a93ad; }
+.chip.good { background: #2d4a3b; color: #bfe8cf; }
+.chip.alert { background: #8a5a1f; color: #ffe3b8; }
+.chip.bad { background: #7a3249; color: #ffd0da; }
+/* buddy badge: never takes the mouse, so the click-through hit test is untouched */
+#agent-badge { display: none; position: absolute; right: 8px; bottom: 32px; min-width: 22px; height: 22px; box-sizing: border-box; padding: 0 6px; border-radius: 11px; text-align: center; font-size: 12px; font-weight: 600; line-height: 22px; background: #c0623a; color: #fff6ec; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4); pointer-events: none; }
+body.mode-buddy #agent-badge:not([hidden]) { display: block; }
 #side { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 #log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 6px; user-select: text; }
 .entry { max-width: 88%; padding: 6px 10px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

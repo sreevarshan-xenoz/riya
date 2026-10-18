@@ -9,6 +9,7 @@
   const { frameFor, leanFor, BlinkScheduler } = RiyaSprite;
   const { isOpaqueAt, toImageCoords } = RiyaHitTest;
   const { BubbleModel } = RiyaBubble;
+  const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS } = RiyaAgents;
   const {
     ExpressionModel, MouthTracker, StatusLine, Motion, cropBox, buddySpriteBox, idleAnimates, nextDeadline, isSettingsError,
   } = RiyaStage;
@@ -26,6 +27,7 @@
   const els = {
     box: $("sprite-box"), sprite: $("sprite"), bubble: $("bubble"), status: $("status"),
     log: $("log"), form: $("composer"), input: $("input"), layers: [$("layer-a"), $("layer-b")],
+    agents: $("agents"), agentList: $("agents-list"), badge: $("agent-badge"),
   };
 
   const bubble = new BubbleModel();
@@ -204,6 +206,66 @@
     refresh();
   });
 
+  // ---- agents (panel and window: a list; buddy: a needs-attention badge) ---------------------------------------
+  // Names, details and statuses come from hook payloads, so they only ever reach the DOM through textContent and the
+  // title property; the chip class comes from a fixed table (agentChip).
+
+  let agents = [];
+  let ageEls = []; // { el, since } of the rows on screen
+  let agentsShown = false; // the list is on screen: panel, or window with rows
+  let lastAgeRefresh = null;
+  let ageTimer = null; // the pending timeout for the next age refresh
+  const ageText = (since) => relativeAge(Date.now() - since * 1000);
+
+  function agentRow(a) {
+    const chip = agentChip(a.status);
+    const li = document.createElement("li");
+    li.className = `agent${a.status === "ended" ? " ended" : ""}`;
+    li.title = agentTitle(a);
+    const name = document.createElement("span");
+    name.className = "agent-name";
+    name.textContent = String(a.name);
+    const chipEl = document.createElement("span");
+    chipEl.className = `chip ${chip.tone}`;
+    chipEl.textContent = chip.label;
+    const age = document.createElement("span");
+    age.className = "agent-age";
+    age.textContent = Number.isFinite(a.since) ? ageText(a.since) : "";
+    if (Number.isFinite(a.since)) ageEls.push({ el: age, since: a.since });
+    li.append(chipEl, name, age);
+    return li;
+  }
+
+  function refreshAges() {
+    lastAgeRefresh = Date.now();
+    for (const { el, since } of ageEls) el.textContent = ageText(since);
+  }
+
+  /** One timeout, 30 s after the last refresh, while the list is visible and has rows; a hidden page or an empty
+   *  list runs nothing. */
+  function scheduleAges() {
+    clearTimeout(ageTimer);
+    ageTimer = null;
+    if (!agentsShown || ageEls.length === 0 || document.hidden) return;
+    ageTimer = setTimeout(() => { ageTimer = null; refreshAges(); scheduleAges(); }, AGE_REFRESH_MS);
+  }
+
+  function renderAgents() {
+    const count = badgeCount(agents);
+    if (mode === "buddy") {
+      els.badge.hidden = count === 0;
+      els.badge.textContent = count > 9 ? "9+" : String(count);
+      els.badge.setAttribute("aria-label", `${count} agent${count === 1 ? "" : "s"} need${count === 1 ? "s" : ""} you`);
+      return;
+    }
+    ageEls = [];
+    els.agentList.replaceChildren(...sortAgents(agents).map(agentRow));
+    els.agents.classList.toggle("empty", agents.length === 0);
+    agentsShown = mode === "panel" || agents.length > 0;
+    lastAgeRefresh = Date.now();
+    scheduleAges();
+  }
+
   // ---- core messages -------------------------------------------------------------------------------------------
 
   window.riya.onCoreMessage((msg) => {
@@ -233,6 +295,10 @@
         break;
       case "look":
         look = { side: msg.side, watching: msg.watching === true };
+        break;
+      case "agents":
+        agents = Array.isArray(msg.items) ? msg.items.filter((a) => a && typeof a === "object") : [];
+        renderAgents();
         break;
       case "error":
         if (!isSettingsError(msg.message)) errorLine.show(msg.message, t); // the settings window shows those
@@ -342,6 +408,10 @@
     if (document.hidden && mode === "buddy") {
       endDrag();
       setClickable(false);
+    }
+    if (mode !== "buddy") {
+      if (!document.hidden && ageRefreshDue({ last: lastAgeRefresh, now: Date.now(), hidden: false, count: ageEls.length })) refreshAges();
+      scheduleAges();
     }
     refresh(); // hidden: stops every timer; visible: catches up and restarts them
   });

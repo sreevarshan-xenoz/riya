@@ -7,6 +7,7 @@
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
     DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
+  const { hookStatus, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
   const errorEls = new Map(); // target -> its inline error element
@@ -40,6 +41,57 @@
     send(msg);
   }
 
+  // ---- agents: hook status, fixed token and setup text, and the editable log-watch entries ------------------------
+
+  const LOG_LABELS = { name: "Name", glob: "Glob", done_re: "Done", fail_re: "Failed", lost_re: "Lost" };
+  let logsDirty = false; // edited and not yet saved: a settings message must not overwrite it
+  let hooksSeenAt = null;
+
+  function logEntry(entry) {
+    const box = h("div", "log-entry");
+    for (const key of LOG_KEYS) {
+      const input = h("input");
+      input.type = "text";
+      input.dataset.key = key;
+      input.value = typeof entry[key] === "string" ? entry[key] : "";
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      input.maxLength = 300;
+      input.id = `log-${Math.random().toString(36).slice(2)}-${key}`;
+      const label = h("label", null, LOG_LABELS[key]);
+      label.htmlFor = input.id;
+      input.addEventListener("input", () => { logsDirty = true; });
+      box.append(label, input);
+    }
+    const remove = h("button", "small log-remove", "Remove");
+    remove.type = "button";
+    remove.addEventListener("click", () => { box.remove(); logsDirty = true; });
+    box.append(remove);
+    return box;
+  }
+
+  function renderLogs(list) {
+    $("agent-logs").replaceChildren(...list.filter((e) => e && typeof e === "object").map(logEntry));
+    logsDirty = false;
+  }
+
+  /** The entries as typed; validation (and trimming) is settingPatch's job. */
+  function readLogs() {
+    return [...$("agent-logs").children].map((box) => {
+      const entry = {};
+      for (const input of box.querySelectorAll("input[data-key]")) entry[input.dataset.key] = input.value;
+      return entry;
+    });
+  }
+
+  function renderHooks() {
+    $("agents-hooks").textContent = hookStatus(hooksSeenAt, Date.now());
+  }
+
+  $("agents-token").textContent = TOKEN_PATH;
+  $("agents-setup").textContent = SETUP_COMMAND;
+  setInterval(() => { if (!document.hidden) renderHooks(); }, 60_000);
+
   // ---- settings controls ------------------------------------------------------------------------------------------
 
   const SETTING_ROWS = document.querySelectorAll(".row[data-key]");
@@ -48,8 +100,12 @@
   function changeSetting(key, raw) {
     const target = `setting:${key}`;
     const result = settingPatch(key, raw);
-    if (!result.ok) return showError(target, result.error);
+    if (!result.ok) {
+      showError(target, result.error);
+      return false;
+    }
     act(target, { type: "set_settings", patch: result.patch });
+    return true;
   }
 
   const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
@@ -59,6 +115,13 @@
   for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
     $(save).addEventListener("click", () => changeSetting(key, $(key).value));
   }
+  $("agent-logs-save").addEventListener("click", () => {
+    if (changeSetting("agent_logs", readLogs())) logsDirty = false; // the core's echo then replaces the entries
+  });
+  $("agent-log-add").addEventListener("click", () => {
+    $("agent-logs").append(logEntry({ name: "", glob: "", done_re: "", fail_re: "", lost_re: "" }));
+    logsDirty = true;
+  });
   $("mode").addEventListener("change", (e) => changeSetting("mode", e.target.value));
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
   $("volume").addEventListener("input", (e) => { $("volume-out").textContent = `${Math.round(e.target.value * 100)}%`; });
@@ -104,6 +167,7 @@
     for (const key of ["eyes_deny_titles", "eyes_deny_processes"]) {
       if (Array.isArray(s[key])) set(key, "value", s[key].filter((p) => typeof p === "string").join("\n"));
     }
+    if (Array.isArray(s.agent_logs) && !logsDirty) renderLogs(s.agent_logs);
     if (s.quiet_hours === null || typeof s.quiet_hours === "string") set("quiet_hours", "value", s.quiet_hours || "");
   }
 
@@ -279,11 +343,16 @@
       applySettings(msg.settings);
     } else if (msg.type === "eyes") {
       renderEyes(msg);
+    } else if (msg.type === "agents") {
+      hooksSeenAt = typeof msg.hooks_seen_at === "number" ? msg.hooks_seen_at : null;
+      renderHooks();
     } else if (msg.type === "memories") {
       router.settle();
       renderMemories(msg);
     } else if (msg.type === "error") {
-      showError(router.route(msg.message), String(msg.message));
+      const target = router.route(msg.message);
+      if (target === "setting:agent_logs") logsDirty = true; // the core refused them: keep what was typed
+      showError(target, String(msg.message));
     }
   });
 
