@@ -49,3 +49,13 @@ def test_feelings_reexports_expressions():
 
 def test_committed_schema_matches():
     assert json.loads(Path("docs/protocol.schema.json").read_text(encoding="utf-8")) == schema()
+
+
+def test_episode_and_thread_messages():
+    from riya.core.protocol import EpisodeDelete, MemoriesMsg, ThreadResolve
+    assert parse_body_message('{"type":"episode_delete","id":3}') == EpisodeDelete(id=3)
+    assert parse_body_message('{"type":"thread_resolve","id":4}') == ThreadResolve(id=4)
+    with pytest.raises(ProtocolError):
+        parse_body_message('{"type":"episode_delete"}')
+    old_style = MemoriesMsg(facts=[], transcript_days=[])      # the body's existing fixture has neither list
+    assert old_style.episodes == [] and old_style.threads == []
