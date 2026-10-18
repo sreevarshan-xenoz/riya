@@ -269,12 +269,27 @@ class Memory:
         return [_episode(r) for r in rows]
 
     @_locked
+    def list_episodes(self) -> list[Episode]:
+        return [_episode(r) for r in self.db.execute(
+            f"select {_EPISODE_COLS} from episodes order by ended_at desc, id desc")]
+
+    @_locked
+    def delete_episode(self, episode_id: int) -> None:
+        with self.db:
+            self.db.execute("delete from episodes where id=?", (episode_id,))
+
+    @_locked
     def add_thread(self, text: str, due_at: float, episode_id: int | None = None) -> Thread:
         with self.db:
             cur = self.db.execute(
                 "insert into threads(text, due_at, status, created_at, episode_id) values(?,?,?,?,?)",
                 (text, due_at, "open", self.clock.now(), episode_id))
         return _thread(self.db.execute(f"select {_THREAD_COLS} from threads where id=?", (cur.lastrowid,)).fetchone())
+
+    @_locked
+    def open_threads(self) -> list[Thread]:
+        return [_thread(r) for r in self.db.execute(
+            f"select {_THREAD_COLS} from threads where status='open' order by due_at, id")]
 
     @_locked
     def due_threads(self) -> list[Thread]:

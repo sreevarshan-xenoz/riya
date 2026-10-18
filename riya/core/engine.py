@@ -19,9 +19,9 @@ from riya.core.models import ChatModel
 from riya.core.persona import load_traits, persona_prompt
 from riya.core.presence import Presence
 from riya.core.prompt import bid_situation, build_messages, greeting_situation
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ErrorMsg, ExpressionMsg, GetMemories, Hello,
-                                MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings, SettingsMsg,
-                                StateMsg, TalkHotkey, TranscriptDelete)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
+                                Hello, MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings,
+                                SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
 from riya.core.store import KV
@@ -370,6 +370,10 @@ class RiyaCore:
                 self.memory.correct(msg.id, msg.text)
             elif isinstance(msg, TranscriptDelete):
                 self.memory.delete_transcript_day(msg.day)
+            elif isinstance(msg, EpisodeDelete):
+                self.memory.delete_episode(msg.id)
+            elif isinstance(msg, ThreadResolve):
+                self.memory.mark_thread(msg.id, status="resolved")
             elif isinstance(msg, SetSettings):
                 self._set_settings(msg.patch)
                 return
@@ -381,8 +385,14 @@ class RiyaCore:
         except (KeyError, ValueError) as e:
             self.emit(ErrorMsg(message=str(e)))
             return
-        self.emit(MemoriesMsg(facts=[asdict(f) for f in self.memory.list_facts()],
-                              transcript_days=self.memory.transcript_days()))
+        self.emit(self._memories_msg())
+
+    def _memories_msg(self) -> MemoriesMsg:
+        mem = self.memory
+        return MemoriesMsg(facts=[asdict(f) for f in mem.list_facts()], transcript_days=mem.transcript_days(),
+                           episodes=[{"id": e.id, "started_at": e.started_at, "ended_at": e.ended_at,
+                                      "summary": e.summary} for e in mem.list_episodes()],
+                           threads=[{"id": t.id, "text": t.text, "due_at": t.due_at} for t in mem.open_threads()])
 
     def _set_settings(self, patch: dict) -> None:
         old = self.settings

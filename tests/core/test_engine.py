@@ -461,3 +461,28 @@ def test_no_consolidation_while_gaming():
     src.is_fullscreen = False
     run_ticks(core, clock, 60, step=60)
     assert len(local.calls) == 2 and not core.memory.unconsolidated()
+
+
+# --- final review: episodes and threads are visible and deletable ---------------------------------------------------
+
+def test_memories_list_episodes_and_open_threads_and_both_can_be_removed():
+    from riya.core.protocol import EpisodeDelete, ThreadResolve
+    core, emitted, _, _ = make_core()
+    now = core.clock.now()
+    ep = core.memory.add_episode(now - 600, now - 60, "Talked about the calculus exam")
+    other = core.memory.add_episode(now - 60, now, "Played a word game")
+    thread = core.memory.add_thread("Ask how the calculus exam went", due_at=now + 3600)
+    done = core.memory.add_thread("Ask about the trip", due_at=now)
+    core.memory.mark_thread(done.id, status="followed_up")
+    core.handle(GetMemories())
+    m = emitted[-1].model_dump()
+    assert [e["id"] for e in m["episodes"]] == [other.id, ep.id]
+    assert m["episodes"][1] == {"id": ep.id, "started_at": now - 600, "ended_at": now - 60,
+                             "summary": "Talked about the calculus exam"}
+    assert m["threads"] == [{"id": thread.id, "text": "Ask how the calculus exam went", "due_at": now + 3600}]
+    core.handle(EpisodeDelete(id=ep.id))
+    assert [e.id for e in emitted[-1].episodes] == [other.id]
+    assert core.memory.db.execute("select count(*) from episodes where id=?", (ep.id,)).fetchone()[0] == 0
+    core.handle(ThreadResolve(id=thread.id))
+    assert emitted[-1].threads == []
+    assert core.memory.db.execute("select status from threads where id=?", (thread.id,)).fetchone()[0] == "resolved"

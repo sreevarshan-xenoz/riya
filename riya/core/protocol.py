@@ -57,10 +57,25 @@ class Mouth(BaseModel):
     level: float = Field(ge=0, le=1)
 
 
+class EpisodeInfo(BaseModel):
+    id: int
+    started_at: float
+    ended_at: float
+    summary: str
+
+
+class ThreadInfo(BaseModel):
+    id: int
+    text: str
+    due_at: float
+
+
 class MemoriesMsg(BaseModel):
     type: Literal["memories"] = "memories"
     facts: list[dict]
     transcript_days: list[str]
+    episodes: list[EpisodeInfo] = Field(default_factory=list)  # newest first
+    threads: list[ThreadInfo] = Field(default_factory=list)  # open follow-ups, soonest due first
 
 
 class ErrorMsg(BaseModel):
@@ -104,6 +119,17 @@ class TranscriptDelete(BaseModel):
     day: str
 
 
+class EpisodeDelete(BaseModel):
+    """Deletes the episode outright (no forgotten marker: its facts are deleted separately)."""
+    type: Literal["episode_delete"] = "episode_delete"
+    id: int
+
+
+class ThreadResolve(BaseModel):
+    type: Literal["thread_resolve"] = "thread_resolve"
+    id: int
+
+
 class SetSettings(BaseModel):
     type: Literal["set_settings"] = "set_settings"
     patch: dict
@@ -112,7 +138,7 @@ class SetSettings(BaseModel):
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg],
                         Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
-                              TranscriptDelete, SetSettings], Field(discriminator="type")]
+                              TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings], Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)
 

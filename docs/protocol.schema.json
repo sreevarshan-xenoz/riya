@@ -20,6 +20,26 @@
         "title": "BodyReady",
         "type": "object"
       },
+      "EpisodeDelete": {
+        "description": "Deletes the episode outright (no forgotten marker: its facts are deleted separately).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "episode_delete",
+            "default": "episode_delete",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "EpisodeDelete",
+        "type": "object"
+      },
       "GetMemories": {
         "properties": {
           "type": {
@@ -112,6 +132,25 @@
         "title": "TalkHotkey",
         "type": "object"
       },
+      "ThreadResolve": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "thread_resolve",
+            "default": "thread_resolve",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ThreadResolve",
+        "type": "object"
+      },
       "TranscriptDelete": {
         "properties": {
           "day": {
@@ -156,11 +195,13 @@
     "discriminator": {
       "mapping": {
         "body_ready": "#/$defs/BodyReady",
+        "episode_delete": "#/$defs/EpisodeDelete",
         "get_memories": "#/$defs/GetMemories",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
         "set_settings": "#/$defs/SetSettings",
         "talk_hotkey": "#/$defs/TalkHotkey",
+        "thread_resolve": "#/$defs/ThreadResolve",
         "transcript_delete": "#/$defs/TranscriptDelete",
         "user_text": "#/$defs/UserText"
       },
@@ -189,12 +230,46 @@
         "$ref": "#/$defs/TranscriptDelete"
       },
       {
+        "$ref": "#/$defs/EpisodeDelete"
+      },
+      {
+        "$ref": "#/$defs/ThreadResolve"
+      },
+      {
         "$ref": "#/$defs/SetSettings"
       }
     ]
   },
   "core_to_body": {
     "$defs": {
+      "EpisodeInfo": {
+        "properties": {
+          "ended_at": {
+            "title": "Ended At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "number"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "started_at",
+          "ended_at",
+          "summary"
+        ],
+        "title": "EpisodeInfo",
+        "type": "object"
+      },
       "ErrorMsg": {
         "properties": {
           "message": {
@@ -262,12 +337,26 @@
       },
       "MemoriesMsg": {
         "properties": {
+          "episodes": {
+            "items": {
+              "$ref": "#/$defs/EpisodeInfo"
+            },
+            "title": "Episodes",
+            "type": "array"
+          },
           "facts": {
             "items": {
               "additionalProperties": true,
               "type": "object"
             },
             "title": "Facts",
+            "type": "array"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/$defs/ThreadInfo"
+            },
+            "title": "Threads",
             "type": "array"
           },
           "transcript_days": {
@@ -420,6 +509,29 @@
           "feelings"
         ],
         "title": "StateMsg",
+        "type": "object"
+      },
+      "ThreadInfo": {
+        "properties": {
+          "due_at": {
+            "title": "Due At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "due_at"
+        ],
+        "title": "ThreadInfo",
         "type": "object"
       }
     },
