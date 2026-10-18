@@ -3,11 +3,13 @@
   python colab/sprites/gen_expressions.py --choice <drive>/jarvis/sprites/choice.json
       --refs "<drive>/jarvis/riya images" --out <drive>/jarvis/sprites/frames [--only pouty,sad] [--face-box x0,y0,x1,y1]
 
-Writes base.png once, then <expression>_<closed|open|blink>.png for the 14 expressions, and review_sheet.png
-(14 rows x 3 columns). Resumable: existing files are skipped; delete a frame and re-run (or pass --only) to redo it.
+base.png is the picked candidate outfit_<id>_<seed>.png copied from --outfits (regenerated with the same prompt and
+seed only if that file is missing). Then writes <expression>_<closed|open|blink>.png for the 14 expressions,
+and review_sheet.png (14 rows x 3 columns). Resumable: existing files are skipped; delete a frame and re-run (or pass --only) to redo it.
 Each expression's closed frame is inpainted from base.png; its open and blink frames from that closed frame.
 """
 import argparse
+import gc
 import json
 import sys
 import zlib
@@ -20,7 +22,7 @@ from PIL import Image, ImageFilter
 from colab.sprites.common import (
     BASE_PROMPT, EXPRESSION_PROMPTS, NEGATIVE, OUTFITS, VARIANT_PROMPTS, existing_pngs, load_pipeline, save_image_atomic,
 )
-from colab.sprites.gen_outfits import SIZE, load_refs
+from colab.sprites.gen_outfits import SIZE, load_refs, outfit_prompt
 from colab.sprites.review_sheet import make_sheet
 
 Box = tuple[int, int, int, int]
@@ -28,7 +30,6 @@ DEFAULT_FACE_BOX: Box = (256, 60, 576, 420)  # the head on the 832x1216 base
 HANDS_EXTENSION = 280  # covering_eyes: the mask runs this far below the face box to take in the hands
 FACE_STRENGTH, HANDS_STRENGTH = 0.55, 0.75
 FEATHER = 8  # Gaussian radius that softens the mask edge
-BACKGROUND = "flat #808080 grey background"
 
 
 def face_box(width: int, height: int, override: Box | None) -> Box:
@@ -89,6 +90,19 @@ def load_choice(path: Path) -> tuple[str, int]:
     return outfit, seed
 
 
+def prepare_base(out: Path, outfits_dir: Path, outfit: str, seed: int) -> bool:
+    """Copy the picked outfit candidate to out/base.png (resized to SIZE if needed). False if the candidate is missing."""
+    candidate = Path(outfits_dir) / f"outfit_{outfit}_{seed}.png"
+    if not candidate.exists():
+        return False
+    image = _load(candidate)
+    if image.size != SIZE:
+        image = image.resize(SIZE, Image.LANCZOS)
+    save_image_atomic(image, Path(out) / "base.png")
+    print("base.png copied from", candidate, flush=True)
+    return True
+
+
 def frame_prompt(outfit: str, expression: str, variant: str) -> str:
     return f"{BASE_PROMPT}, {OUTFITS[outfit]}, {EXPRESSION_PROMPTS[expression]}, {VARIANT_PROMPTS[variant]}"
 
@@ -143,6 +157,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--choice", type=Path, required=True, help='choice.json: {"outfit": "...", "seed": N}')
     ap.add_argument("--refs", type=Path, required=True, help="folder of reference images")
     ap.add_argument("--out", type=Path, required=True, help="output folder")
+    ap.add_argument("--outfits", type=Path, default=None, help="outfit candidates folder (default: <out>/../outfits)")
     ap.add_argument("--lora", type=Path, default=None, help="optional character LoRA (.safetensors)")
     ap.add_argument("--lora-scale", type=float, default=0.8)
     ap.add_argument("--only", type=parse_only, default=None, help="comma-separated expressions to generate, e.g. pouty,sad")
@@ -154,6 +169,8 @@ def main(argv: list[str] | None = None) -> None:
     box = face_box(*SIZE, args.face_box)
 
     done = {p.name for p in existing_pngs(args.out)}
+    if "base.png" not in done and prepare_base(args.out, args.outfits or args.out.parent / "outfits", outfit, seed):
+        done.add("base.png")
     jobs = job_list(args.only or list(EXPRESSION_PROMPTS), list(VARIANT_PROMPTS), done)
     need_base = "base.png" not in done
     if need_base or jobs:
@@ -163,8 +180,7 @@ def main(argv: list[str] | None = None) -> None:
         if need_base:
             pipe = load_pipeline("txt2img", args.lora, args.lora_scale)
             base = pipe(
-                prompt=f"{BASE_PROMPT}, {OUTFITS[outfit]}, {EXPRESSION_PROMPTS['neutral']}, "
-                f"{VARIANT_PROMPTS['closed']}, {BACKGROUND}",
+                prompt=outfit_prompt(outfit),  # exactly the candidate's prompt and seed, so it reproduces it
                 negative_prompt=NEGATIVE,
                 ip_adapter_image=[refs],
                 width=SIZE[0],
@@ -173,7 +189,8 @@ def main(argv: list[str] | None = None) -> None:
             ).images[0]
             save_image_atomic(base, args.out / "base.png")
             print("wrote", args.out / "base.png", flush=True)
-            del pipe  # a T4 can't hold both pipelines
+            del pipe  # a T4 can't hold both pipelines; diffusers pipelines hold reference cycles, so collect first
+            gc.collect()
             torch.cuda.empty_cache()
         if jobs:
             pipe = load_pipeline("inpaint", args.lora, args.lora_scale)

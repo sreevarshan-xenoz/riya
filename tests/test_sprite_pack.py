@@ -227,3 +227,104 @@ def test_main_resumes_without_torch_and_writes_a_14_by_3_review_sheet(tmp_path):
     gen_expressions.main(["--choice", str(tmp_path / "choice.json"), "--refs", str(tmp_path), "--out", str(out)])
     with Image.open(out / "review_sheet.png") as sheet:
         assert sheet.size == (3 * (256 + 8) + 8, 14 * (372 + 28 + 8) + 8)
+
+
+class FakeTorch:
+    """Stands in for torch so main()'s generation path runs without it; records generator seeds."""
+
+    seeds: list = []
+
+    class cuda:
+        @staticmethod
+        def empty_cache():
+            pass
+
+    class Generator:
+        def __init__(self, device):
+            pass
+
+        def manual_seed(self, seed):
+            FakeTorch.seeds.append(seed)
+            return self
+
+
+class FakePipe:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return type("Out", (), {"images": [Image.new("RGB", (kwargs["width"], kwargs["height"]), (1, 2, 3))]})()
+
+
+def fake_generation(monkeypatch, module, kinds, calls):
+    FakeTorch.seeds = []
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setattr(module, "load_refs", lambda folder: ["ref"])
+
+    def fake_load(kind, lora=None, lora_scale=0.8):
+        kinds.append(kind)
+        return FakePipe(calls)
+
+    monkeypatch.setattr(module, "load_pipeline", fake_load)
+
+
+def frames_dir(tmp_path, *, with_base):
+    out = tmp_path / "frames"
+    out.mkdir()
+    (tmp_path / "choice.json").write_text(json.dumps({"outfit": "pink_hoodie", "seed": 22}))
+    for expr in EXPRESSION_PROMPTS:
+        for variant in VARIANT_PROMPTS:
+            Image.new("RGB", (64, 96)).save(out / f"{expr}_{variant}.png")
+    if with_base:
+        Image.new("RGB", (64, 96)).save(out / "base.png")
+    return out
+
+
+def expressions_argv(tmp_path, out, *extra):
+    return ["--choice", str(tmp_path / "choice.json"), "--refs", str(tmp_path), "--out", str(out), *extra]
+
+
+def test_base_is_the_picked_candidate_copied_and_loads_no_pipeline(tmp_path, monkeypatch):
+    out = frames_dir(tmp_path, with_base=False)
+    (tmp_path / "outfits").mkdir()  # the default --outfits is <out>/../outfits
+    Image.new("RGB", (416, 608), (9, 8, 7)).save(tmp_path / "outfits" / "outfit_pink_hoodie_22.png")
+    Image.new("RGB", (416, 608), (1, 1, 1)).save(tmp_path / "outfits" / "outfit_pink_hoodie_11.png")
+    kinds = []
+    fake_generation(monkeypatch, gen_expressions, kinds, [])
+    gen_expressions.main(expressions_argv(tmp_path, out))
+    assert kinds == []
+    with Image.open(out / "base.png") as base:
+        assert base.size == (832, 1216) and base.getpixel((400, 600)) == (9, 8, 7)  # the seed-22 candidate, resized
+    assert [p.name for p in out.iterdir() if p.name.endswith(".tmp.png")] == []
+
+
+def test_explicit_outfits_dir_is_used(tmp_path, monkeypatch):
+    out = frames_dir(tmp_path, with_base=False)
+    Image.new("RGB", (832, 1216), (5, 5, 5)).save(tmp_path / "elsewhere.png")
+    (tmp_path / "picks").mkdir()
+    (tmp_path / "elsewhere.png").replace(tmp_path / "picks" / "outfit_pink_hoodie_22.png")
+    fake_generation(monkeypatch, gen_expressions, [], [])
+    gen_expressions.main(expressions_argv(tmp_path, out, "--outfits", str(tmp_path / "picks")))
+    with Image.open(out / "base.png") as base:
+        assert base.getpixel((10, 10)) == (5, 5, 5)
+
+
+def test_missing_candidate_regenerates_with_exactly_the_outfit_sheets_prompt_and_seed(tmp_path, monkeypatch):
+    out = frames_dir(tmp_path, with_base=False)
+    kinds, calls = [], []
+    fake_generation(monkeypatch, gen_expressions, kinds, calls)
+    gen_expressions.main(expressions_argv(tmp_path, out))
+    assert kinds == ["txt2img"] and FakeTorch.seeds == [22]
+    assert (out / "base.png").exists() and calls[0]["width"] == 832 and calls[0]["height"] == 1216
+
+    sheet_calls = []
+    fake_generation(monkeypatch, gen_outfits, [], sheet_calls)
+    sheet_out = tmp_path / "sheet_out"
+    sheet_out.mkdir()
+    for oid in OUTFITS:
+        if oid != "pink_hoodie":
+            Image.new("RGB", (32, 48)).save(sheet_out / f"outfit_{oid}_22.png")
+    gen_outfits.main(["--refs", str(tmp_path), "--out", str(sheet_out), "--seeds", "22"])
+    assert [c["prompt"] for c in sheet_calls] == [calls[0]["prompt"]]
+    assert calls[0]["negative_prompt"] == sheet_calls[0]["negative_prompt"] and FakeTorch.seeds[-1] == 22
