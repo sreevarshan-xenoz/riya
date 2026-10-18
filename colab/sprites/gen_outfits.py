@@ -10,13 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # run as a script from anywhere
 
-from colab.sprites.common import BASE_PROMPT, NEGATIVE, OUTFITS
+from colab.sprites.common import BASE_PROMPT, NEGATIVE, OUTFITS, existing_pngs, load_pipeline, save_image_atomic
 from colab.sprites.review_sheet import make_sheet
 
-MODEL = "cagliostrolab/animagine-xl-3.1"
-IP_ADAPTER = ("h94/IP-Adapter", "sdxl_models", "ip-adapter_sdxl.bin")
 SIZE = (832, 1216)  # (width, height)
-IP_SCALE = 0.6
 REF_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -45,19 +42,13 @@ def main(argv: list[str] | None = None) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
 
     jobs = [(oid, seed, args.out / f"outfit_{oid}_{seed}.png") for oid in OUTFITS for seed in seeds]
-    todo = [j for j in jobs if not j[2].exists()]
+    done = existing_pngs(args.out, "outfit_*.png")
+    todo = [j for j in jobs if j[2] not in done]
     if todo:
         import torch
-        from diffusers import StableDiffusionXLPipeline
 
         refs = load_refs(args.refs)
-        pipe = StableDiffusionXLPipeline.from_pretrained(MODEL, torch_dtype=torch.float16).to("cuda")
-        pipe.load_ip_adapter(IP_ADAPTER[0], subfolder=IP_ADAPTER[1], weight_name=IP_ADAPTER[2])
-        pipe.set_ip_adapter_scale(IP_SCALE)
-        extra = {}
-        if args.lora:
-            pipe.load_lora_weights(str(args.lora.parent), weight_name=args.lora.name)
-            extra["cross_attention_kwargs"] = {"scale": args.lora_scale}
+        pipe = load_pipeline("txt2img", args.lora, args.lora_scale)
         for oid, seed, path in todo:
             image = pipe(
                 prompt=f"{BASE_PROMPT}, {OUTFITS[oid]}",
@@ -66,9 +57,8 @@ def main(argv: list[str] | None = None) -> None:
                 width=SIZE[0],
                 height=SIZE[1],
                 generator=torch.Generator("cuda").manual_seed(seed),
-                **extra,
             ).images[0]
-            image.save(path)
+            save_image_atomic(image, path)
             print("wrote", path, flush=True)
 
     make_sheet([j[2] for j in jobs], [f"{oid} #{seed}" for oid, seed, _ in jobs], args.out / "outfits_sheet.png",
