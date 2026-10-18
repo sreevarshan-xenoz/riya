@@ -14,14 +14,13 @@ DENY_PROCESSES = ("keepass.*|1password.*|bitwarden.*|credentialuibroker|dashlane
                   "keeper.*|proton ?pass.*")
 _LOOKING = ("focused", "talking")
 UNUSABLE_BACKOFF_S = (300, 900, 1800, 3600)  # consecutive replies with no usable note: 5, 15, 30, then 60 min
-# The desktop, the taskbar and the shell's own surfaces: "no window" (the desktop's rect is the whole monitor, so a
-# grab would send every window on it). These classes always; the shell's CoreWindow (Start, search) only in a shell
-# process; these processes whatever the class.
+# The desktop, the taskbar and the shell's own surfaces: "no window" (the desktop's or Task View's rect is the whole
+# monitor, so a grab would send every window on it). These classes in any process; in explorer.exe every class but
+# File Explorer's (Task View, Alt-Tab, Start...); these processes whatever the class.
 SHELL_CLASSES = frozenset(c.casefold() for c in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"))
+FILE_EXPLORER = frozenset(c.casefold() for c in ("CabinetWClass", "ExploreWClass"))
 SHELL_APPS = frozenset(("searchhost.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe", "lockapp.exe",
-                        "searchapp.exe"))
-SHELL_PROCESSES = SHELL_APPS | {"explorer.exe"}
-CORE_WINDOW = "windows.ui.core.corewindow"
+                        "searchapp.exe", "screenclippinghost.exe"))
 OVERLAY = 0x80000 | 0x20  # WS_EX_LAYERED | WS_EX_TRANSPARENT: a click-through overlay
 
 
@@ -57,7 +56,7 @@ def denied(info: WindowInfo, extra_titles: Iterable[str] = (), extra_processes: 
 
 def is_shell_surface(info: WindowInfo) -> bool:
     cls, proc = info.cls.casefold(), info.process.casefold()
-    return cls in SHELL_CLASSES or proc in SHELL_APPS or (cls == CORE_WINDOW and proc in SHELL_PROCESSES)
+    return cls in SHELL_CLASSES or proc in SHELL_APPS or (proc == "explorer.exe" and cls not in FILE_EXPLORER)
 
 
 def window_refusal(info: WindowInfo | None, extra_titles: Iterable[str] = (),

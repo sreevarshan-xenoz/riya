@@ -74,6 +74,11 @@ def test_ordinary_windows_not_denied(title, process):
     ("Notification Centre", "ShellExperienceHost.exe", ""),
     ("Windows Default Lock Screen", "LockApp.exe", ""),
     ("Search", "SearchApp.exe", ""),
+    ("Task View", "explorer.exe", "XamlExplorerHostIslandWindow"),   # Task View and Alt-Tab (Windows 11)
+    ("Task View", "explorer.exe", "MultitaskingViewFrame"),          # Task View (Windows 10)
+    ("", "explorer.exe", "SomethingNew"),                            # anything else explorer shows
+    ("", "explorer.exe", ""),
+    ("Snipping", "ScreenClippingHost.exe", "anything"),              # the frozen full-screen snip overlay
 ])
 def test_the_desktop_taskbar_and_shell_count_as_no_window(title, process, cls):
     p, _ = make()
@@ -85,6 +90,7 @@ def test_the_desktop_taskbar_and_shell_count_as_no_window(title, process, cls):
 
 @pytest.mark.parametrize("title,process,cls", [
     ("Documents", "explorer.exe", "CabinetWClass"),        # a File Explorer window is an ordinary window
+    ("Documents", "Explorer.EXE", "ExploreWClass"),        # File Explorer's other class
     ("Calculator", "ApplicationFrameHost.exe", "ApplicationFrameWindow"),
     ("Photos", "Photos.exe", "Windows.UI.Core.CoreWindow"),  # an app's CoreWindow, not the shell's
 ])
@@ -609,3 +615,12 @@ def test_an_outage_backoff_leaves_the_streak_alone():
     p.backoff(1800)
     clock.advance(1800)
     assert p.unusable() == 900
+
+
+def test_the_spec_lists_every_shell_surface():
+    """Spec §4.2 names each shell class and process, and File Explorer's classes, so it stays authoritative."""
+    from riya.core.eyes import policy
+    spec = (Path(__file__).resolve().parents[2] / "docs/superpowers/specs/2026-10-18-riya-v0.3-her-eyes-design.md")
+    listed = {m.casefold() for m in re.findall(r"`([^`]+)`", spec.read_text(encoding="utf-8"))}
+    for name in policy.SHELL_CLASSES | policy.SHELL_APPS | policy.FILE_EXPLORER | {"explorer.exe"}:
+        assert name in listed, name
