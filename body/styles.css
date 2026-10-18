@@ -27,6 +27,10 @@ body.mode-panel #app { flex-direction: column; }
 body.mode-panel #stage { flex: none; width: 100%; }
 body.mode-window #stage { flex: none; width: 38%; height: 100%; background: #23202d; }
 body.mode-window #sprite-box { height: 100%; aspect-ratio: var(--ar, 0.571); }
+/* panel only: an empty area reserved for phase 3 (agents) */
+#agents { display: none; flex: none; box-sizing: border-box; min-height: 56px; margin: 6px 10px 0; padding: 6px 10px; border: 1px dashed #3f3a52; border-radius: 10px; }
+#agents h2 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #8d86a0; }
+body.mode-panel #agents { display: block; }
 #side { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 #log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 6px; user-select: text; }
 .entry { max-width: 88%; padding: 6px 10px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
