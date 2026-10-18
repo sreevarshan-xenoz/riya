@@ -20,7 +20,7 @@ riya_slots/
 # brainstorm/sdd scratch and private character art
 .superpowers/
 riya images/
-sprites/
+/sprites/
 *.db
 *.db-wal
 *.db-shm
