@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Literal
 
 BASE_PROMPT = (
-    "1girl, solo, alya, long silver hair, blue eyes, red hair ribbon, upper body to thighs, standing, "
-    "facing viewer, simple grey background, anime style, masterpiece, best quality"
+    "1girl, solo, alya, alisa mikhailovna kujou, long silver hair, blue eyes, red hair ribbon, upper body to thighs, "
+    "standing, facing viewer, simple grey background, anime style, masterpiece, best quality"
 )
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, text, watermark, signature, multiple girls, cropped head, nsfw"
 
@@ -30,10 +30,10 @@ EXPRESSION_PROMPTS = {
     "teasing": "smug, teasing smirk, half-closed eyes",
     "worried": "worried, furrowed brows, concerned",
     "sad": "sad, downcast eyes, frown",
-    "sleepy": "sleepy, drowsy half-closed eyes, yawning",
-    "curious": "curious, head tilt, raised eyebrow",
-    "thinking": "thinking, looking up, finger on chin",
-    "surprised": "surprised, wide eyes, small open mouth",
+    "sleepy": "sleepy, drowsy half-closed eyes",
+    "curious": "curious, raised eyebrow, interested eyes",
+    "thinking": "thinking, looking up, pensive",
+    "surprised": "surprised, wide eyes, raised eyebrows",
     "covering_eyes": "covering eyes with both hands, peeking, blush",
 }
 

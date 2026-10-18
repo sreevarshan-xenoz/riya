@@ -18,18 +18,31 @@ from colab.sprites.gen_expressions import (
     parse_expressions, parse_face_box, read_run, run_jobs, stable_seed,
 )
 from colab.sprites.common import (
-    EXPRESSION_PROMPTS, OUTFITS, VARIANT_PROMPTS, existing_pngs, load_pipeline, save_image_atomic,
+    BASE_PROMPT, EXPRESSION_PROMPTS, OUTFITS, VARIANT_PROMPTS, existing_pngs, save_image_atomic,
 )
 from colab.sprites.review_sheet import make_sheet
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def protocol_expressions():
-    return json.loads(Path("docs/protocol.schema.json").read_text(encoding="utf-8"))["expressions"]
+    return json.loads((ROOT / "docs" / "protocol.schema.json").read_text(encoding="utf-8"))["expressions"]
 
 
 def test_prompts_cover_protocol_expressions_exactly():
     assert sorted(EXPRESSION_PROMPTS) == sorted(protocol_expressions())
     assert set(VARIANT_PROMPTS) == {"closed", "open", "blink"} and len(OUTFITS) == 4
+
+
+def test_prompts_name_the_character_and_match_their_variants():
+    assert "alya" in BASE_PROMPT and "alisa mikhailovna kujou" in BASE_PROMPT
+    assert EXPRESSION_PROMPTS["surprised"] == "surprised, wide eyes, raised eyebrows"
+    assert EXPRESSION_PROMPTS["sleepy"] == "sleepy, drowsy half-closed eyes"
+    assert EXPRESSION_PROMPTS["thinking"] == "thinking, looking up, pensive"
+    assert EXPRESSION_PROMPTS["curious"] == "curious, raised eyebrow, interested eyes"
+    for prompt in EXPRESSION_PROMPTS.values():  # the variant decides the mouth: no open mouth in a closed frame
+        assert "open mouth" not in prompt and "yawning" not in prompt
 
 
 def test_make_sheet_draws_a_labelled_grid(tmp_path):
@@ -104,7 +117,6 @@ def test_common_imports_without_torch_or_diffusers():
     subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parents[1])
 
 
-ROOT = Path(__file__).resolve().parents[1]
 BOX = (256, 60, 576, 420)
 
 
