@@ -4,6 +4,7 @@
  *  Loads in Node (tests) and as a plain script in the settings page. */
 
 const MODES = ["buddy", "panel", "window"];
+const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations"];
 const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
@@ -62,6 +63,13 @@ function settingPatch(key, raw) {
   return { ok: false, error: `${key} can't be changed here.` };
 }
 
+/** Options for the voice <select>: the presets, led by the current voice marked "(custom)" if it isn't one. */
+function voiceOptions(current) {
+  const presets = VOICES.map((v) => ({ value: v, label: v }));
+  if (typeof current !== "string" || !current || VOICES.includes(current)) return presets;
+  return [{ value: current, label: `${current} (custom)` }, ...presets];
+}
+
 function hotkeyText(accelerator) {
   return typeof accelerator === "string" && accelerator ? accelerator : NO_HOTKEY;
 }
@@ -109,6 +117,9 @@ class ErrorRouter {
   }
 }
 
-const api = { MODES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter };
+const api = {
+  MODES, VOICES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
+  episodeText, dueText, memoryLists, ErrorRouter,
+};
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaSettings = api;
