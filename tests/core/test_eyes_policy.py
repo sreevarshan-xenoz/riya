@@ -88,7 +88,7 @@ def test_unicode_and_emoji_titles():
     assert denied(info(title="パスワード 🔑 password"), (), ())
     assert denied(info(title="Привет 🙂 секрет"), ["секрет"], ())  # extra pattern in another script
     assert denied(info(title="ÜBERWEISUNG BANK 🏦"), (), ())
-    assert not denied(info(title="lone � surrogate"), (), ())
+    assert not denied(info(title="lone \ud800 surrogate"), (), ())
 
 
 # ---- allowed: every reason ---------------------------------------------------------------------------------------
@@ -143,7 +143,7 @@ def test_custom_min_gap():
     assert p.allowed(**ok()) is None
 
 
-def test_force_bypasses_only_min_gap():
+def test_force_bypasses_min_gap_and_backoff_only():
     p, _ = make(cap=1)
     p.record(info(), FLAT)
     assert p.allowed(**ok()) == "daily cap"
@@ -156,6 +156,18 @@ def test_force_bypasses_only_min_gap():
                        (dict(presence="gaming"), "presence gaming"), (dict(online_ok=False), "online model unavailable"),
                        (dict(info=info(minimized=True)), "minimized"), (dict(info=info(process="")), "unknown process")]:
         assert p2.allowed(**ok(**kw), force=True) == reason
+    p2.backoff(1800)  # under an active backoff, forced still lets every other reason win
+    assert p2.allowed(**ok(), force=True) is None
+    for kw, reason in [(dict(dont_look=True), "don't look"), (dict(eyes_enabled=False), "eyes off"),
+                       (dict(info=info(title="password")), "denylisted"), (dict(info=info(is_riya=True)), "riya window"),
+                       (dict(presence="away"), "presence away"), (dict(online_ok=False), "online model unavailable"),
+                       (dict(info=info(minimized=True)), "minimized"), (dict(info=info(process="")), "unknown process"),
+                       (dict(info=None), "no window")]:
+        assert p2.allowed(**ok(**kw), force=True) == reason
+    p3, _ = make(cap=1)
+    p3.record(info(), FLAT)
+    p3.backoff(1800)
+    assert p3.allowed(**ok(), force=True) == "daily cap"
 
 
 def test_privacy_checks_come_before_cap_and_gap():
@@ -361,13 +373,26 @@ def test_clock_jump_back_across_midnight_keeps_count():
 
 # ---- backoff -----------------------------------------------------------------------------------------------------
 
-def test_backoff_blocks_then_releases_and_even_when_forced():
+def test_backoff_blocks_then_releases_and_forced_gets_through():
     p, clock = make()
     p.backoff(1800)
     clock.advance(1799)
     assert p.allowed(**ok()) == "backoff"
-    assert p.allowed(**ok(), force=True) == "backoff"
+    assert p.allowed(**ok(), force=True) is None
     clock.advance(2)
+    assert p.allowed(**ok()) is None
+
+
+def test_forced_attempt_during_backoff_then_failure_rearms_it():
+    p, clock = make()
+    p.backoff(1800)
+    clock.advance(100)
+    assert p.allowed(**ok(), force=True) is None
+    p.backoff(1800)  # the forced attempt failed
+    assert p.allowed(**ok()) == "backoff"
+    clock.advance(1700)
+    assert p.allowed(**ok()) == "backoff"  # re-armed from the later failure
+    clock.advance(201)
     assert p.allowed(**ok()) is None
 
 
