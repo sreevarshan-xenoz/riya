@@ -1,7 +1,7 @@
 """Colab log watcher (spec §4.3): tails the user's synced run logs and reports running/done/fail/lost/stalled.
 
-Each log file is one run named "<entry name>:<file stem>". Only appended bytes are read; offsets and run state live
-in KV under `agents.logwatch.<path>` so a restart carries on without re-reporting. `poll()` never raises.
+Each log file is one run named "<entry name>:<parent folder>/<file stem>". Only appended bytes are read; offsets and run
+state live in KV under `agents.logwatch.<path>` so a restart carries on without re-reporting. `poll()` never raises.
 """
 import glob
 import logging
@@ -10,9 +10,12 @@ import re
 
 log = logging.getLogger("riya.logwatch")
 
+POLL_KEY = "agents.logwatch.#poll"
 STALL_S = 30 * 60        # a running log with no growth this long is stalled
 MAX_READ = 1 << 20       # bytes read per file per poll
 LINE_MAX = 120
+SLEEP_GAP_S = 5 * 60     # a longer gap between polls means the machine slept: no stall verdict on that poll
+TAIL_PROBE = 64 * 1024   # how far back from EOF to look for the last newline of a pre-existing file
 DEFAULT_ENTRIES = [{
     "name": "colab",
     "glob": "G:/My Drive/jarvis/runs/**/*.out",
@@ -32,39 +35,66 @@ def _root(pattern: str) -> str:
 class LogWatch:
     def __init__(self, entries, kv, clock):
         self.entries, self.kv, self.clock = list(entries), kv, clock
+        self._rebase = False
 
     def poll(self) -> list[tuple[str, str, str]]:
-        out = []
+        out, now = [], self.clock.now()
+        try:
+            prev = self.kv.get(POLL_KEY)
+            self._rebase = isinstance(prev, (int, float)) and now - prev > SLEEP_GAP_S
+        except Exception:
+            self._rebase = False
         for entry in self.entries:
             try:
-                out += self._poll_entry(entry)
+                self._poll_entry(entry, out)
             except Exception:
                 log.exception("logwatch entry %r failed", entry.get("name") if isinstance(entry, dict) else entry)
+        try:
+            self.kv.set(POLL_KEY, now)
+        except Exception:
+            log.exception("logwatch could not save its poll time")
         return out
 
-    def _poll_entry(self, entry) -> list[tuple[str, str, str]]:
+    def _poll_entry(self, entry, out) -> None:
+        """Appends to `out` as it goes, so an error part-way never discards events already found."""
         name, pattern = entry["name"], entry["glob"]
         res = {k: re.compile(entry[k]) if entry.get(k) else None for k in ("lost_re", "fail_re", "done_re")}
         seen_key = f"agents.logwatch.#seen.{name}"
-        seen = bool(self.kv.get(seen_key))
-        out = []
+        seen_at = self.kv.get(seen_key)     # when this entry was first polled: older files are history
         for path in sorted(glob.glob(pattern, recursive=True)):
             try:
-                out += self._poll_file(f"{name}:{os.path.splitext(os.path.basename(path))[0]}",
-                                       path.replace("\\", "/"), seen, res)
+                path = path.replace("\\", "/")
+                parent = os.path.basename(os.path.dirname(path))
+                stem = os.path.splitext(os.path.basename(path))[0]
+                out += self._poll_file(f"{name}:{parent}/{stem}" if parent else f"{name}:{stem}", path, seen_at, res)
             except Exception:
                 log.exception("logwatch file %s failed", path)
-        if not seen and os.path.isdir(_root(pattern)):
-            self.kv.set(seen_key, True)  # a missing root (Drive not mounted) is not "polled": old logs never replay
-        return out
+        if seen_at is None and os.path.isdir(_root(pattern)):
+            self.kv.set(seen_key, self.clock.now())  # a missing root (Drive not mounted) is not "polled"
 
-    def _poll_file(self, run, path, seen, res) -> list[tuple[str, str, str]]:
+    @staticmethod
+    def _baseline(path, size) -> int:
+        """Where a pre-existing file starts: just after its last newline, so a half-written tail is read whole later."""
+        n = min(size, TAIL_PROBE)
+        with open(path, "rb") as f:
+            f.seek(size - n)
+            i = f.read(n).rfind(b"\n")
+        return size - n + i + 1 if i >= 0 else (0 if size <= TAIL_PROBE else size)
+
+    def _poll_file(self, run, path, seen_at, res) -> list[tuple[str, str, str]]:
         key, now = f"agents.logwatch.{path}", self.clock.now()
         size = os.path.getsize(path)
         old = self.kv.get(key)
-        st = dict(old) if old else {"off": 0 if seen else size, "size": 0 if seen else size, "running": False,
-                                    "ended": False, "stalled": False, "last": now}
+        if old:
+            st = dict(old)
+        else:
+            # Pre-existing (before the entry's first poll, even if that poll failed on this file) = history: baseline.
+            # Anything modified after that first poll is a new run and is read from the start.
+            history = seen_at is None or os.path.getmtime(path) <= seen_at
+            st = {"off": self._baseline(path, size) if history else 0, "size": size if history else 0,
+                  "running": False, "ended": False, "stalled": False, "last": now}
         out, grew = [], False
+        # Size-only detection: a rewrite that ends up at least as large as before is not noticed.
         if size < st["size"] or size < st["off"]:   # rewritten or truncated: jump to the new EOF, report nothing
             st.update(off=size, size=size, running=False, ended=False, stalled=False, last=now)
         else:
@@ -80,6 +110,7 @@ class LogWatch:
                     st["off"] += end
                     grew = True
                     for line in data[:end].decode("utf-8", errors="replace").split("\n"):
+                        line = line.rstrip("\r").rsplit("\r", 1)[-1]   # CRLF, and progress bars: the last redraw counts
                         for kind in ("lost", "fail", "done"):
                             rx = res[f"{kind}_re"]
                             if rx and rx.search(line):
@@ -88,10 +119,10 @@ class LogWatch:
             grew = grew or size > st["size"]
             st["size"] = size
             if grew:
-                revived = st["stalled"]
+                back = st["stalled"] or st["ended"]    # growth after stalled/done/fail/lost: running again
                 st["last"], st["stalled"] = now, False
-                if (not st["running"] or revived) and not st["ended"]:
-                    st["running"] = True
+                if not st["running"] or back:
+                    st["running"], st["ended"] = True, False
                     out.append((run, "running", ""))
             for kind in ("lost", "fail", "done"):
                 if kind in hits:
@@ -99,9 +130,12 @@ class LogWatch:
                     st["ended"] = True
             if st["ended"]:
                 st["running"] = st["stalled"] = False
-            elif st["running"] and not st["stalled"] and not grew and now - st["last"] >= STALL_S:
-                st["stalled"] = True
-                out.append((run, "stalled", ""))
+            elif st["running"] and not st["stalled"] and not grew:
+                if self._rebase:
+                    st["last"] = now                   # we slept through the gap: judge stalls from now on
+                elif now - st["last"] >= STALL_S:
+                    st["stalled"] = True
+                    out.append((run, "stalled", ""))
         if st != old:
             self.kv.set(key, st)
         return out
