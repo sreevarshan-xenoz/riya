@@ -1,0 +1,147 @@
+import http.server
+import os
+import threading
+
+import pytest
+
+from riya.core.models import ModelUnavailable, OpenAICompatModel, load_online_from_env
+from riya.core.router import Router, needs_thinking
+from tests.fakes import FakeModel
+
+MSGS = [{"role": "user", "content": "x"}]
+
+
+def test_needs_thinking_rules():
+    for t in ["can you debug this traceback?", "explain how attention works", "write a python function to dedupe",
+              "think hard: sqlite or postgres", "```py\nprint(1)\n```"]:
+        assert needs_thinking(t), t
+    for t in ["hiii", "I missed you too", "my day was rough", "good night riya", "haha you're cute"]:
+        assert not needs_thinking(t), t
+
+
+def test_small_talk_goes_local():
+    local, online = FakeModel("local", ["hey you~"]), FakeModel("online", ["X"])
+    r = Router(local, online)
+    assert "".join(r.stream(MSGS, "hi riya")) == "hey you~" and r.last_source == "local" and online.calls == []
+
+
+def test_code_question_goes_online():
+    r = Router(FakeModel("local", ["L"]), FakeModel("online", ["Use a set."]))
+    assert "".join(r.stream(MSGS, "write a function to dedupe a list")) == "Use a set." and r.last_source == "online"
+
+
+def test_online_failure_falls_back_to_local():
+    r = Router(FakeModel("local", ["Local answer."]), FakeModel("online", fail=ModelUnavailable("429")))
+    assert "".join(r.stream(MSGS, "explain recursion")) == "Local answer." and r.last_source == "local"
+
+
+def test_online_missing_or_disabled_uses_local():
+    local = FakeModel("local", ["L."])
+    assert Router(local, None).route("explain recursion") == "local"
+    assert Router(local, FakeModel("online"), online_enabled=False).route("explain recursion") == "local"
+
+
+def test_online_refusal_falls_back_to_local():
+    r = Router(FakeModel("local", ["Sure, here."]), FakeModel("online", ["I'm sorry, but I can't help with that."]))
+    assert "".join(r.stream(MSGS, "explain this")) == "Sure, here." and r.last_source == "local"
+
+
+def test_online_drop_mid_stream_keeps_partial_without_raising():
+    r = Router(FakeModel("local", ["L."]), FakeModel("online", ["First sentence here. Second one"], fail_after=3))
+    assert "".join(r.stream(MSGS, "explain this")) == "First sentence here. " and r.last_source == "online"
+
+
+def test_online_drop_before_first_sentence_falls_back_to_local():
+    r = Router(FakeModel("local", ["Local."]), FakeModel("online", ["No end in sight yet"], fail_after=2))
+    assert "".join(r.stream(MSGS, "explain this")) == "Local." and r.last_source == "local"
+
+
+def test_online_buffer_flushes_at_160_chars_without_sentence_end():
+    long = " ".join(["word"] * 60)
+    r = Router(FakeModel("local", ["L."]), FakeModel("online", [long]))
+    assert "".join(r.stream(MSGS, "explain this")) == long and r.last_source == "online"
+
+
+def _serve(handler_cls):
+    srv = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_port}"
+
+
+def test_openai_compat_streams_sse():
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for piece in ["Hel", "lo"]:
+                self.wfile.write(f'data: {{"choices":[{{"delta":{{"content":"{piece}"}}}}]}}\n\n'.encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+        def log_message(self, *a):
+            pass
+
+    srv, url = _serve(H)
+    assert "".join(OpenAICompatModel("t", url).stream(MSGS)) == "Hello"
+    srv.shutdown()
+
+
+def test_openai_compat_429_is_unavailable():
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(429)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv, url = _serve(H)
+    with pytest.raises(ModelUnavailable):
+        list(OpenAICompatModel("t", url).stream(MSGS))
+    srv.shutdown()
+
+
+def test_openai_compat_sends_body_and_auth_and_times_out_before_first_token():
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["auth"], seen["path"] = self.headers.get("Authorization"), self.path
+            seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+            threading.Event().wait(1.0)
+
+        def log_message(self, *a):
+            pass
+
+    srv, url = _serve(H)
+    with pytest.raises(ModelUnavailable):
+        list(OpenAICompatModel("t", url, api_key="k", model="m", first_token_timeout_s=0.3).stream(MSGS))
+    srv.shutdown()
+    assert seen["auth"] == "Bearer k" and seen["path"] == "/chat/completions"
+    assert b'"model": "m"' in seen["body"] and b'"stream": true' in seen["body"]
+
+
+def test_connection_refused_is_unavailable():
+    with pytest.raises(ModelUnavailable):
+        list(OpenAICompatModel("t", "http://127.0.0.1:1").stream(MSGS))
+
+
+def test_load_online_from_env():
+    assert load_online_from_env({}) is None
+    m = load_online_from_env({"RIYA_ONLINE_API_KEY": "k"})
+    assert m.base_url == "https://generativelanguage.googleapis.com/v1beta/openai" and m.model == "gemini-2.5-flash"
+
+
+def test_load_dotenv_parses_and_does_not_override(tmp_path, monkeypatch):
+    from riya.core.models import load_dotenv
+    p = tmp_path / ".env"
+    p.write_text('# comment\nRIYA_T_A=1\n\nRIYA_T_B="two words"\nRIYA_T_C=from_file\nbad line\n', encoding="utf-8")
+    monkeypatch.setenv("RIYA_T_C", "already")
+    for k in ("RIYA_T_A", "RIYA_T_B"):
+        monkeypatch.setenv(k, "x")
+        monkeypatch.delenv(k)
+    got = load_dotenv(str(p))
+    assert got == {"RIYA_T_A": "1", "RIYA_T_B": "two words", "RIYA_T_C": "from_file"}
+    assert os.environ["RIYA_T_A"] == "1" and os.environ["RIYA_T_C"] == "already"
+    assert load_dotenv(str(tmp_path / "missing.env")) == {}
