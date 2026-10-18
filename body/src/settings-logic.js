@@ -3,6 +3,8 @@
  *  the core's HH:MM-HH:MM), and routing a core error to the control that caused it.
  *  Loads in Node (tests) and as a plain script in the settings page. */
 
+const Agents = typeof require === "function" ? require("./agents-logic") : globalThis.RiyaAgents;
+
 const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
@@ -11,7 +13,7 @@ const PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
 const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
 const MAX_PATTERNS = 100; // the core's limits
 const MAX_PATTERN_LEN = 300;
-const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS];
+const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS, "agent_logs"];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const QUIET_ERROR = "Use HH:MM-HH:MM (24-hour), like 23:30-08:00, or leave it empty to turn quiet hours off.";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -100,6 +102,10 @@ function settingPatch(key, raw) {
   if (PATTERN_KEYS.includes(key)) {
     const r = parsePatternLines(raw);
     return r.ok ? { ok: true, patch: { [key]: r.patterns } } : r;
+  }
+  if (key === "agent_logs") {
+    const r = Agents.validateAgentLogs(raw);
+    return r.ok ? { ok: true, patch: { agent_logs: r.logs } } : r;
   }
   return { ok: false, error: `${key} can't be changed here.` };
 }
@@ -198,6 +204,7 @@ class ErrorRouter {
     const text = typeof message === "string" ? message : "";
     const named = /(?:setting|pattern in) '(\w+)'/.exec(text);
     let target = named && SETTING_KEYS.includes(named[1]) ? `setting:${named[1]}` : null;
+    if (!target && /\bagent_logs\b/.test(text)) target = "setting:agent_logs";
     if (!target && /autostart/i.test(text)) target = "setting:autostart";
     if (!target && this.pending.length) target = this.pending[this.pending.length - 1];
     this.pending = [];

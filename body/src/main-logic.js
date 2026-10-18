@@ -3,7 +3,7 @@
 const { boundsFor } = require("./geometry");
 
 const MODES = ["buddy", "panel", "window"];
-const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes"];
+const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents"];
 const DONT_LOOK_HOTKEYS = ["Control+Alt+H", "Control+Alt+F10"]; // first one that registers wins
 const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core"]; // never queued for replay after a reconnect
 const QUIT_FLUSH_MS = 300; // the tray's Quit: time for quit_core to reach the core before the body exits
