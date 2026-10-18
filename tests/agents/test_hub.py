@@ -120,7 +120,7 @@ def test_only_a_stop_failure_carries_an_error_type(hub):
     assert len(out[0].error) <= 40
     for i in range(3):
         out = hub.on_claude_event(ev("PostToolUseFailure", sid="s-tool-aaaa", tool_name="Bash", error="rate_limit"))
-    assert [(e.kind, e.error) for e in out] == [("failed", None)]
+    assert out == []                                          # tool errors are never an event (final review I3)
     assert [e.error for e in hub.on_claude_event(ev("Stop", sid="s-stop-aaaa"))] == [None]
     assert [e.error for e in hub.on_colab("w3", "fail", "rate_limit")] == [None]
 
@@ -138,17 +138,53 @@ def test_idle_prompt_does_not_hide_failure_or_wait(hub):
     assert state(hub)["status"] == "failed"
 
 
-def test_three_tool_failures_in_a_turn_fail(hub):
+def test_three_tool_failures_in_a_row_stay_busy_and_are_never_an_event(hub):
     hub.on_claude_event(ev("UserPromptSubmit"))
     assert hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e1")) == []
     assert state(hub)["status"] == "busy"
     assert hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e2")) == []
-    out = hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e3"))
-    assert [e.kind for e in out] == ["failed"] and "3 tool failures" in out[0].text
+    assert hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e3")) == []
     s = state(hub)
-    assert s["status"] == "failed" and s["needs_attention"]
+    assert s["status"] == "busy" and not s["needs_attention"] and s["detail"] == "3 tool errors in a row"
     assert hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e4")) == []
-    assert state(hub)["status"] == "failed"
+    assert state(hub)["status"] == "busy"
+
+
+def test_a_successful_tool_resets_the_tool_error_count(hub):
+    hub.on_claude_event(ev("UserPromptSubmit"))
+    for _ in range(2):
+        hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e"))
+    assert hub.on_claude_event(ev("PostToolUse", tool_name="Edit")) == []
+    for _ in range(2):
+        hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e"))
+    assert "in a row" not in state(hub)["detail"]
+    hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="e"))
+    assert state(hub)["detail"] == "3 tool errors in a row" and state(hub)["status"] == "busy"
+
+
+def test_failed_comes_only_from_stop_failure(hub):
+    hub.on_claude_event(ev("UserPromptSubmit"))
+    for _ in range(10):
+        assert hub.on_claude_event(ev("PostToolUseFailure", tool_name="Bash", error="exit 1")) == []
+    assert state(hub)["status"] == "busy"
+    assert [e.kind for e in hub.on_claude_event(ev("StopFailure", error="server_error"))] == ["failed"]
+
+
+def test_approval_moves_waiting_to_busy(hub):
+    hub.on_claude_event(ev("UserPromptSubmit", prompt="run the tests"))
+    hub.on_claude_event(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "npm test"}))
+    assert state(hub)["status"] == "waiting" and state(hub)["needs_attention"]
+    assert hub.on_claude_event(ev("PostToolUse", tool_name="Bash", tool_input={"command": "npm test"})) == []
+    s = state(hub)
+    assert s["status"] == "busy" and not s["needs_attention"] and s["detail"] == ""
+
+
+def test_post_tool_use_proves_an_unseen_session_is_busy_and_never_ends_finished(hub):
+    hub.on_claude_event(ev("PostToolUse", sid="new-session", tool_name="Read"))
+    assert state(hub, "new-session")["status"] == "busy"
+    hub.on_claude_event(ev("Stop", last_assistant_message="done"))
+    hub.on_claude_event(ev("PostToolUse", tool_name="Read"))
+    assert state(hub)["status"] == "finished"
 
 
 def test_new_turn_resets_tool_failure_count(hub):
@@ -190,12 +226,25 @@ def test_events_keep_busy_fresh_and_sleep_gap_is_never_failed(hub, clock):
     assert state(hub)["status"] == "unknown"
 
 
-def test_staleness_only_touches_busy(hub, clock):
+def test_staleness_touches_busy_and_waiting_only(hub, clock):
     hub.on_claude_event(ev("Stop", last_assistant_message="ok"))
+    hub.on_claude_event(ev("StopFailure", sid="f1", error="boom"))
     hub.on_claude_event(ev("PermissionRequest", sid="w1", tool_name="Bash"))
     clock.advance(3 * 3600)
+    assert hub.tick() == []
+    assert state(hub)["status"] == "finished" and state(hub, "f1")["status"] == "failed"
+    assert state(hub, "w1")["status"] == "unknown"
+
+
+def test_waiting_goes_unknown_after_30_min_without_events(hub, clock):
+    hub.on_claude_event(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "rm -rf build"}))
+    clock.advance(30 * 60 - 1)
     hub.tick()
-    assert state(hub)["status"] == "finished" and state(hub, "w1")["status"] == "waiting"
+    assert state(hub)["status"] == "waiting" and state(hub)["needs_attention"]
+    clock.advance(1)
+    assert hub.tick() == []
+    s = state(hub)
+    assert s["status"] == "unknown" and not s["needs_attention"]   # a deny or Esc fires nothing: never forever lit
 
 
 def test_unknown_agent_revives_on_new_prompt(hub, clock):

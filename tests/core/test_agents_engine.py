@@ -340,10 +340,30 @@ def test_an_odd_stop_failure_type_is_restricted_to_safe_characters():
 
 def test_a_failure_whose_text_looks_like_an_error_type_is_still_quoted():
     core, emitted, src, local, clock = focused(local_replies=("Oh no.",))
-    for i in range(3):
-        core.agent_inbox.put(hook("PostToolUseFailure", tool_name="Bash", error="boom"))
+    core.agent_inbox.put(failure(error={"message": "rate_limit"}))   # not a string: no error type, the text quoted
     run_ticks(core, clock, 1)
-    assert 'riya abc123 failed ("3 tool failures, last Bash: boom")' in situation(local)
+    assert """riya abc123 failed ("{'message':'rate_limit'}")""" in situation(local)
+
+
+def test_tool_errors_in_a_row_are_never_reported():
+    core, emitted, src, local, clock = focused(local_replies=("Oh no.",))
+    core.agent_inbox.put(hook("UserPromptSubmit", prompt="fix it"))
+    for i in range(5):
+        core.agent_inbox.put(hook("PostToolUseFailure", tool_name="Bash", error="exit 1"))
+    assert run_ticks(core, clock, 30) == [] and reports(emitted) == [] and core._reports == {}
+    [item] = core._agents_sent.items
+    assert item.status == "busy" and item.detail == "5 tool errors in a row" and not item.needs_attention
+
+
+def test_an_approval_clears_waiting_in_the_agents_list():
+    core, emitted, src, local, clock = focused()
+    core.agent_inbox.put(ask())
+    run_ticks(core, clock, 1)
+    assert core._agents_sent.items[0].status == "waiting"
+    core.agent_inbox.put(hook("PostToolUse", tool_name="Bash", tool_input={"command": "npm test"}))
+    run_ticks(core, clock, 1)
+    [item] = core._agents_sent.items
+    assert item.status == "busy" and not item.needs_attention
 
 
 # --- the prompt line -------------------------------------------------------------------------------------------------

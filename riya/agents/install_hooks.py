@@ -30,6 +30,7 @@ EVENTS = [
     ("Notification", "permission_prompt|idle_prompt"),
     ("Stop", None),
     ("StopFailure", None),
+    ("PostToolUse", "*"),
     ("PostToolUseFailure", "*"),
     ("SubagentStop", "*"),
     ("SessionStart", None),

@@ -7,10 +7,10 @@ from riya.agents import install_hooks as ih
 
 HANDLER = {"type": "http", "url": "http://127.0.0.1:8766/hook", "timeout": 3,
            "headers": {"X-Riya-Token": "$RIYA_HOOK_TOKEN"}, "allowedEnvVars": ["RIYA_HOOK_TOKEN"]}
-MATCHERS = {"Notification": "permission_prompt|idle_prompt", "PostToolUseFailure": "*",
+MATCHERS = {"Notification": "permission_prompt|idle_prompt", "PostToolUseFailure": "*", "PostToolUse": "*",
             "PermissionRequest": "*", "SubagentStop": "*"}
 EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure",
-          "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd"}
+          "PostToolUse", "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd"}
 MINE = {"type": "command", "command": "echo hi"}
 
 
