@@ -18,13 +18,14 @@ from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
-from riya.core.prompt import bid_situation, build_messages, greeting_situation
+from riya.core.prompt import bid_situation, build_messages, greeting_situation, remember_situation
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
                                 Hello, MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings,
                                 SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
-from riya.core.shaping import BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, limit_emoji, turn_kind
+from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, limit_emoji, strip_label,
+                               turn_kind)
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -103,24 +104,30 @@ class RiyaCore:
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
         with self._lock:
+            saved = None
             try:
-                self._take_user_turn(text)
+                saved = self._take_user_turn(text)
             except Exception:
                 log.exception("couldn't record the user's turn")
-            yield from self._speak("reply", user_text=text, query=text, situation=None, spoken=True)
+            yield from self._speak("reply", user_text=text, query=text, spoken=True,
+                                   situation=remember_situation(saved) if saved else None)
 
-    def _take_user_turn(self, text: str) -> None:
+    def _take_user_turn(self, text: str) -> str | None:
+        """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away)."""
         now = self.clock.now()
         answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
         if answered_bid and self._bid_thread is not None:
             self.memory.mark_thread(self._bid_thread, status="followed_up")
         self.last_turn_at, self.pending_bid_at, self._bid_thread = now, None, None
         self.memory.append_transcript("user", text)
+        saved = None
         if (said := remember_intent(text)) is not None:
-            self.memory.add_fact(f"The user said: {said}", source="user_said")
+            saved = f"The user said: {said}"
+            self.memory.add_fact(saved, source="user_said")
         self.feelings.on_user_text(text)
         self.presence.note_turn()
         self._sync_expression()
+        return saved
 
     def speak_first(self, action: Action) -> Iterator[str]:
         with self._lock:
@@ -173,7 +180,8 @@ class RiyaCore:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
             whole = outcome == "done" and done["stream"]  # the model finished on its own: keep its own spacing
-            text = (limit_emoji("".join(parts).strip()) if whole else " ".join(said)) if outcome != "failed" else None
+            text = None if outcome == "failed" else (
+                limit_emoji(strip_label("".join(parts)).strip()) if whole else " ".join(said))
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
@@ -201,12 +209,14 @@ class RiyaCore:
     @staticmethod
     def _sentences(stream: Iterator[str], parts: list[str], done: dict) -> Iterator[str]:
         """The model's pieces as whole sentences, each with only the reply's first emoji (an emoji-only sentence
-        vanishes). Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
-        buf, used = "", 0
+        vanishes) and the first without a leading "Riya:" label. Closing this closes the model stream; done["stream"]
+        is set once the model ended by itself."""
+        buf, used, first = "", 0, True
 
         def tidy(sentence: str) -> str:
-            nonlocal used
-            sentence = sentence.strip()
+            nonlocal used, first
+            sentence = strip_label(sentence).strip() if first else sentence.strip()
+            first = first and not sentence
             kept = limit_emoji(sentence, max(0, 1 - used))  # never touches fenced code
             used += count_emoji(CODE_BLOCK.sub("", kept))
             return kept if kept == sentence or any(c.isalnum() for c in kept) else ""  # an emoji's leftovers vanish
@@ -255,7 +265,8 @@ class RiyaCore:
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(action.reason, action.thread),
                                       now=self.clock.now())
-            line = limit_emoji("".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE)).strip())
+            line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
+            line = limit_emoji(strip_label(line).strip())
         except Exception:
             log.exception("model failed during a bid")
             return

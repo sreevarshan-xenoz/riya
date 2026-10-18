@@ -23,6 +23,7 @@ _PARENS = re.compile(r"\(([^()]*)\)")  # (laughs)
 STAGE_WORDS = frozenset("""laughs laughing giggles giggling sighs sighing blushes blushing smiles smiling grins grinning
 pouts pouting winks whispers whispering nods huffs teasing hehe hmph yawns yawning stretches""".split())
 _SPACE_BEFORE_PUNCT = re.compile(r" +([.,!?…;:])")
+_LABEL = re.compile(r"^\s*\**riya\**\s*(?::|[-\u2013\u2014](?=\s))\**\s*", re.I)  # "Riya:", "**Riya:**", "Riya -"
 FENCE = "```"
 CODE_SAID = "here's the code"
 
@@ -53,6 +54,11 @@ def cap_sentences(sentences: Iterator[str], n: int) -> Iterator[str]:
     finally:
         if close:
             close()
+
+
+def strip_label(text: str) -> str:
+    """Drop a leading "Riya:" / "Riya -" speaker label: the small model sometimes copies the style examples' format."""
+    return _LABEL.sub("", text, count=1)
 
 
 def count_emoji(text: str) -> int:

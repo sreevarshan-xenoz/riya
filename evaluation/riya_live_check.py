@@ -16,7 +16,7 @@ from pathlib import Path
 from riya.core.clock import FakeClock
 from riya.core.embed import Embedder, HashEmbedder
 from riya.core.engine import RiyaCore
-from riya.core.models import ModelUnavailable, OpenAICompatModel
+from riya.core.models import ModelUnavailable, OpenAICompatModel, local_model
 from riya.core.presence import FakeIdleSource
 from riya.core.store import open_db
 
@@ -105,7 +105,7 @@ PROBES: list[tuple[str, Callable[..., tuple[bool, str]]]] = [
 
 def run(local_url: str, embedder: str = "bge") -> list[dict]:
     emb, used = make_embedder(embedder)
-    model = OpenAICompatModel("local", f"{local_url.rstrip('/')}/v1", first_token_timeout_s=60.0)
+    model = local_model(local_url, first_token_timeout_s=60.0)
     results = []
     try:
         "".join(model.stream([{"role": "user", "content": "hi"}], max_tokens=1))

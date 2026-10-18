@@ -613,3 +613,27 @@ def test_the_engine_lock_is_free_after_a_cap_close_and_after_a_barge_in():
     next(it)
     it.close()                                        # barge-in
     assert free()
+
+
+def test_a_leading_riya_label_is_stripped_from_what_she_says_and_records():
+    core, emitted, _, _ = make_core(local_replies=["Riya: Hey there. How are you?"])
+    said = list(core.reply("hey riya"))
+    assert said == ["Hey there.", "How are you?"]
+    assert [m.text for m in emitted if isinstance(m, Say)] == said
+    assert core.turns[-1] == {"role": "assistant", "content": "Hey there. How are you?"}
+
+
+def test_a_bid_drops_a_leading_riya_label():
+    core, emitted, _, _ = make_core(local_replies=["Riya - water break?"])
+    core._bid(Action("bid", False, None, "test"))
+    assert [m.text for m in emitted if isinstance(m, Say)] == ["water break?"]
+
+
+def test_a_remember_that_turn_tells_her_what_she_just_saved():
+    core, _, _, local = make_core(local_replies=["Got it~"])
+    list(core.reply("remember that my favourite colour is teal"))
+    system = local.calls[-1][0]["content"]
+    assert ('[Situation] You just saved this to memory: "The user said: my favourite colour is teal". '
+            "Confirm in one short sentence that you'll remember it.") in system
+    list(core.reply("what's up?"))
+    assert "[Situation]" not in local.calls[-1][0]["content"]

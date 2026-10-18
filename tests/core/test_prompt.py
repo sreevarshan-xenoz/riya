@@ -4,8 +4,8 @@ import pytest
 
 from riya.core.memory import Episode, Fact, Retrieved, Thread
 from riya.core.persona import STYLE_HEADER, load_traits_file, persona_prompt, style_examples
-from riya.core.prompt import (HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE, NO_MEMORY_LINE,
-                              SPEAK_FIRST_TURN, build_messages, greeting_situation, reply_rule)
+from riya.core.prompt import (HARD_RULES as HARD, HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE,
+                              NO_MEMORY_LINE, SPEAK_FIRST_TURN, build_messages, greeting_situation, reply_rule)
 
 NOW = 1_800_000_000.0
 EXAM = Fact(1, "The user has an exam on Thursday", "user.exam", "user_said", 0.9, NOW, None, "active", None)
@@ -156,10 +156,12 @@ def test_style_examples_never_sit_inside_the_memory_block():
 
 
 @pytest.mark.parametrize("kind, rule", [
-    ("small", "### Reply rules: Reply in at most 3 sentences."),
-    ("explain", "### Reply rules: Explain clearly in at most 8 sentences."),
-    ("about_me", "### Reply rules: List what's in the memory block, nothing else.")])
+    ("small", "### Reply rules: Reply in at most 3 sentences. " + HARD),
+    ("explain", "### Reply rules: Explain clearly in at most 8 sentences. No ~ in explanations. " + HARD),
+    ("about_me", "### Reply rules: List what's in the memory block, nothing else. " + HARD)])
 def test_reply_rules_line_per_turn_kind(kind, rule):
+    assert HARD == ("You're an AI and say so if asked. Only the memory block is true about them; if something "
+                    "isn't there, say you don't know.")
     assert reply_rule(kind) == rule
     assert _system(Retrieved([], [], []), kind=kind).endswith(rule)
 
@@ -190,3 +192,14 @@ def test_local_route_gets_local_persona_and_online_route_gets_the_full_one():
     assert local_sys.startswith(persona_prompt("local")) and online_sys.startswith(persona_prompt("online"))
     assert style_examples() in local_sys and style_examples() in online_sys
     assert local_sys.endswith(reply_rule("small")) and online_sys.endswith(reply_rule("explain"))
+
+
+def test_no_memory_line_is_neutral():
+    assert NO_MEMORY_LINE == "(nothing stored about this yet)"
+
+
+def test_remember_situation_quotes_the_saved_fact():
+    from riya.core.prompt import remember_situation
+    assert remember_situation("The user said: I hate cilantro") == (
+        'You just saved this to memory: "The user said: I hate cilantro". '
+        "Confirm in one short sentence that you'll remember it.")

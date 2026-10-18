@@ -10,6 +10,7 @@ from typing import Iterator, Protocol
 ONLINE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 ONLINE_MODEL = "gemini-2.5-flash"
 READ_TIMEOUT_S = 120.0
+LOCAL_STOP = ("\nUser:", "User:")  # she must never write the user's next turn (the style examples' format)
 LOCAL_TEMPERATURE = 0.6  # her voice on the small local model (tuned live in v0.2); online keeps the 0.8 default
 log = logging.getLogger("riya.models")
 
@@ -26,14 +27,16 @@ class ChatModel(Protocol):
 
 class OpenAICompatModel:
     def __init__(self, name: str, base_url: str, api_key: str | None = None, model: str | None = None,
-                 first_token_timeout_s: float = 8.0):
+                 first_token_timeout_s: float = 8.0, stop: list[str] | None = None):
         self.name, self.base_url, self.api_key, self.model = name, base_url.rstrip("/"), api_key, model
-        self.first_token_timeout_s = first_token_timeout_s
+        self.first_token_timeout_s, self.stop = first_token_timeout_s, stop
 
     def stream(self, messages, max_tokens=300, temperature=0.8) -> Iterator[str]:
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": True}
         if self.model is not None:
             body["model"] = self.model
+        if self.stop:
+            body["stop"] = self.stop
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -57,6 +60,11 @@ class OpenAICompatModel:
             raise ModelUnavailable(f"{self.name}: {e}") from e
         except ValueError as e:  # a malformed event
             raise ModelUnavailable(f"{self.name}: bad stream event: {e}") from e
+
+
+def local_model(server_url: str, **kw) -> OpenAICompatModel:
+    """Her own llama-server (the base URL, without /v1), with the stop sequences."""
+    return OpenAICompatModel("local", f"{server_url.rstrip('/')}/v1", stop=list(LOCAL_STOP), **kw)
 
 
 def _sse_piece(data: str) -> str | None:

@@ -18,7 +18,7 @@ from evaluation.style_metrics import score
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
-from riya.core.models import ModelUnavailable, OpenAICompatModel, load_dotenv, load_online_from_env
+from riya.core.models import ModelUnavailable, load_dotenv, load_online_from_env, local_model
 from riya.core.presence import FakeIdleSource
 from riya.core.protocol import ErrorMsg
 from riya.core.store import open_db
@@ -102,7 +102,7 @@ def run_probes(probes: dict, local, online, repeat: int = 1) -> list[dict]:
 def run(local_url: str, online_wanted: bool = False, repeat: int = 1) -> tuple[list[dict], dict, str | None]:
     """(transcript, score, problem). problem is set when the local server couldn't be reached (nothing is run)."""
     probes = load_probes()
-    local = OpenAICompatModel("local", f"{local_url.rstrip('/')}/v1", first_token_timeout_s=60.0)
+    local = local_model(local_url, first_token_timeout_s=60.0)
     try:
         "".join(local.stream([{"role": "user", "content": "hi"}], max_tokens=1))
     except ModelUnavailable as e:

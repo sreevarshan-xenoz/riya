@@ -1,6 +1,7 @@
 import pytest
 
-from riya.core.shaping import BUDGETS, CAPS, cap_sentences, count_emoji, limit_emoji, tts_text, turn_kind
+from riya.core.shaping import (BUDGETS, CAPS, cap_sentences, count_emoji, limit_emoji, strip_label, tts_text,
+                                turn_kind)
 
 
 @pytest.mark.parametrize("about_me, thinking, expected", [
@@ -112,3 +113,11 @@ def test_tts_text_replaces_a_fenced_block_and_leaves_it_alone():
 def test_limit_emoji_never_touches_a_fenced_block():
     code = "```py\nprint('\U0001F600')   \U0001F44D\n```"
     assert limit_emoji(f"Hi \U0001F600 {code} bye \U0001F44D", 1) == f"Hi \U0001F600 {code} bye"
+
+
+@pytest.mark.parametrize("text, want", [
+    ("Riya: Hey you.", "Hey you."), ("riya - hi there", "hi there"), ("**Riya:** Hmph.", "Hmph."),
+    ("  Riya:Got it~", "Got it~"), ("Riya — fine.", "fine."), ("Riya: ", ""),
+    ("Riya is cute.", "Riya is cute."), ("Riya, listen.", "Riya, listen."), ("Hey Riya: hi", "Hey Riya: hi")])
+def test_strip_label_drops_only_a_leading_speaker_label(text, want):
+    assert strip_label(text) == want
