@@ -25,7 +25,9 @@ QUESTION = "what does this say?"
 VISION_TIMEOUT_S = 20.0  # same as the engine's vision model (riya/core/__main__.py)
 ANSWER_MAX_TOKENS = 400  # flash models may spend tokens thinking
 FIND_TIMEOUT_S = 10.0
+PAINT_S = 1.0  # let the window paint before the grab
 SKIP = "skipped (no online key)"
+WINDOWS = sys.platform == "win32"
 
 
 def passed(answer: str) -> bool:
@@ -102,40 +104,60 @@ def _user32():
     return u
 
 
-def close_window(user32, hwnd: int, wait_s: float = 3.0) -> None:
-    """Ask the window to close (WM_CLOSE); kill its process if it's still there after wait_s."""
-    import ctypes
-    from ctypes import wintypes
-
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+def close_window(user32, hwnd: int, wait_s: float = 3.0) -> bool:
+    """Ask the window to close (WM_CLOSE: Notepad asks to save if there's anything unsaved). Never kills a process.
+    True when it closed; otherwise prints a note and leaves it open."""
     user32.PostMessageW(hwnd, 0x0010, 0, 0)
     end = time.monotonic() + wait_s
     while user32.IsWindow(hwnd) and time.monotonic() < end:
         time.sleep(0.1)
-    if user32.IsWindow(hwnd) and pid.value:
-        subprocess.run(["taskkill", "/PID", str(pid.value), "/F"], capture_output=True, check=False)
+    if user32.IsWindow(hwnd):
+        print("note: the Notepad window is still open (a save prompt?): left as it is, close it yourself")
+        return False
+    return True
 
 
-def live(model: ChatModel) -> bool:
-    """Open Notepad on a temp .txt, look at it, ask. True on PASS. Cleans up Notepad and the file whatever happens."""
-    set_dpi_awareness()
-    user32, source = _user32(), make_window_source()
+def cleanup(user32, hwnd: int | None, tmp: Path, close=close_window) -> None:
+    """Close our Notepad window (only one that wasn't open before: hwnd is None otherwise) and delete the temp dir.
+    Each step is guarded, so nothing here raises."""
+    if hwnd:
+        try:
+            close(user32, hwnd)
+        except Exception as e:
+            print(f"note: couldn't close Notepad ({type(e).__name__}: {e})")
+    for _ in range(10):  # Notepad can hold the file for a moment
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if not tmp.exists():
+                return
+            time.sleep(0.3)
+        except Exception:
+            return
+
+
+def live(model: ChatModel, popen=subprocess.Popen) -> bool:
+    """Open Notepad on a temp .txt, look at it, ask. True on PASS. Closes the Notepad window it opened (never a window
+    that was open before, never by killing a process) and deletes the temp file whatever happens."""
     tmp = Path(tempfile.mkdtemp(prefix="riya_eyes_"))
-    proc = hwnd = None
+    user32 = hwnd = None
     ok = False
     try:
+        set_dpi_awareness()
+        user32, source = _user32(), make_window_source()
         path = tmp / f"riya_eyes_check_{os.getpid()}.txt"
         path.write_text(TEXT, encoding="utf-8")
         before = {h for h, _ in top_windows(user32)}
-        proc = subprocess.Popen(["notepad.exe", str(path)])
+        popen(["notepad.exe", str(path)])
         info = wait_for_window(source, user32, path.stem)
         if info is None:
             print(f"FAIL: no window titled {path.name} came to the front within {FIND_TIMEOUT_S:.0f} s")
-            hwnd = next((h for h, t in top_windows(user32) if path.stem.lower() in t.lower()), None)
+            hwnd = next((h for h, t in top_windows(user32) if path.stem.lower() in t.lower() and h not in before), None)
             return False
-        hwnd = info.hwnd if info.hwnd not in before else None  # a tab in an already open Notepad: leave that window
-        time.sleep(1.0)  # let it paint
+        if info.hwnd in before:  # a tab in an already open Notepad: that window is the user's, leave it
+            print("note: the file opened in an already open Notepad window, which will be left open")
+        else:
+            hwnd = info.hwnd
+        time.sleep(PAINT_S)
         info = source.window(info.hwnd) or info
         jpeg = grab_jpeg(info)
         if not jpeg:
@@ -147,33 +169,28 @@ def live(model: ChatModel) -> bool:
     except Exception as e:
         print(f"FAIL: {type(e).__name__}: {e}")
     finally:
-        if hwnd:
-            close_window(user32, hwnd)
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-        for _ in range(10):  # Notepad can hold the file for a moment
-            shutil.rmtree(tmp, ignore_errors=True)
-            if not tmp.exists():
-                break
-            time.sleep(0.3)
+        cleanup(user32, hwnd, tmp)
     return ok
 
 
 def main(argv: list[str] | None = None, env=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m evaluation.eyes_check", description=__doc__.splitlines()[0])
     ap.parse_args(argv)
-    if hasattr(sys.stdout, "reconfigure"):  # window titles and notes can hold characters the console can't encode
-        sys.stdout.reconfigure(errors="replace")
-    if env is None:
-        load_dotenv()
-        env = os.environ
-    model = load_online_from_env(env, name="vision", first_token_timeout_s=VISION_TIMEOUT_S)
-    if model is None:
-        print(SKIP)
-    elif sys.platform != "win32":
-        print("skipped (Windows only)")
-    else:
-        live(model)
+    try:
+        if hasattr(sys.stdout, "reconfigure"):  # titles and notes can hold characters the console can't encode
+            sys.stdout.reconfigure(errors="replace")
+        if env is None:
+            load_dotenv()
+            env = os.environ
+        model = load_online_from_env(env, name="vision", first_token_timeout_s=VISION_TIMEOUT_S)
+        if model is None:
+            print(SKIP)
+        elif not WINDOWS:
+            print("skipped (Windows only)")
+        else:
+            live(model)
+    except Exception as e:  # a check script: report, never fail the caller
+        print(f"FAIL: {type(e).__name__}: {e}")
     return 0
 
 
