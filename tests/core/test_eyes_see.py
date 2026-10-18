@@ -71,7 +71,8 @@ def test_parse_note_rejects_bad_input(text):
     "what's wrong with this", "can you see this error", "what am I looking at", "read this", "look at my screen",
     "What’s wrong with this?", "can you see my screen", "why is this error happening", "what's this error",
     "what's going on here", "what does this say", "help me with this code", "what's the error here",
-    "is this code right?", "explain this error", "summarize this page", "what does this error mean", "check my screen",
+    "is this code right?", "look at this", "look at this!", "check this out", "can you see this?",
+    "hey look at this lol", "check this out riya", "Look at this, please", "explain this error", "summarize this page", "what does this error mean", "check my screen",
     "is there anything on screen", "tell me what's on my screen", "do you see this?"])
 def test_screen_questions(text):
     assert is_screen_question(text), text
@@ -83,7 +84,8 @@ def test_screen_questions(text):
     "I see that you're tired",
     "what does that mean", "what does it say", "explain this concept", "look at that sunset", "check this out tomorrow",
     "read this book to me later", "fix this problem for me", "what's wrong with this world", "help with this?",
-    "look at this", "check this out", "explain this", "can you see that sunset"])
+    "explain this", "can you see that sunset", "look at this tonight", "look at this later", "check this out sometime",
+    "look at this photo of my dog", "look at this picture of my room", "check this out, video later"])
 def test_not_screen_questions(text):
     assert not is_screen_question(text), text
 
