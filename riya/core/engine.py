@@ -718,10 +718,10 @@ class RiyaCore:
 
     def _see_stream(self, messages: list[dict], seeing: SimpleNamespace, fallback: Callable[[str], list[dict]],
                     local_budget: int, budget: int) -> Iterator[str]:
-        """The vision model's answer about the screen; its first piece counts the look. If her eyes closed since the
-        grab, the image is never sent; if the model fails before saying anything, the request still counts and
-        glances back off (30 min, or for empty replies in a row 5, 15, 30, then 60 min). Either way the local model
-        answers from fallback(why) instead (text only, no image)."""
+        """The vision model's answer about the screen; its first piece counts the look and ends a run of unusable
+        replies. If her eyes closed since the grab, the image is never sent; if the model fails before saying
+        anything, the request still counts and glances back off (30 min, or for empty replies in a row 5, 15, 30,
+        then 60 min). Either way the local model answers from fallback(why) instead (text only, no image)."""
         if not self._may_look(seeing.gen):
             seeing.fell_back = True
             yield from self.local.stream(fallback("don't look" if self._eyes_on else "eyes off"), local_budget,
@@ -734,6 +734,7 @@ class RiyaCore:
                     said = True
                     with self._eyes_lock:
                         self._record(seeing.info, seeing.thumb)
+                        self.policy.usable()  # the vision model answered: unusable replies start over
                     self._emit_eyes()
                 yield piece
             if said:
