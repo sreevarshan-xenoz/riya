@@ -108,7 +108,13 @@ function rememberForReplay(cache, msg) {
   cache.set(msg.type, msg);
 }
 
+/** On a core disconnect: drop what would replay as live but isn't (the core sends a fresh look and agents on hello). */
+const FORGET_ON_DISCONNECT = ["look", "agents"];
+function forgetOnDisconnect(cache) {
+  for (const type of FORGET_ON_DISCONNECT) cache.delete(type);
+}
+
 module.exports = {
   MODES, REPLAY_TYPES, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
-  quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
+  quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter,
 };
