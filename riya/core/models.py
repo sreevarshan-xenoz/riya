@@ -1,5 +1,7 @@
 """Chat-model adapters: any OpenAI-compatible server (local llama-server or an online free tier) behind one stream()."""
+import codecs
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -8,6 +10,7 @@ from typing import Iterator, Protocol
 ONLINE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 ONLINE_MODEL = "gemini-2.5-flash"
 READ_TIMEOUT_S = 120.0
+log = logging.getLogger("riya.models")
 
 
 class ModelUnavailable(Exception):
@@ -41,8 +44,7 @@ class OpenAICompatModel:
                     line = raw.decode("utf-8", "ignore").strip()
                     if not line.startswith("data:") or line.endswith("[DONE]"):
                         continue
-                    choices = json.loads(line[5:]).get("choices") or [{}]
-                    piece = choices[0].get("delta", {}).get("content")
+                    piece = _sse_piece(line[5:])
                     if piece:
                         if not started:
                             started = True
@@ -52,6 +54,23 @@ class OpenAICompatModel:
             raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
         except (urllib.error.URLError, OSError) as e:  # URLError, socket timeout, connection reset
             raise ModelUnavailable(f"{self.name}: {e}") from e
+        except ValueError as e:  # a malformed event
+            raise ModelUnavailable(f"{self.name}: bad stream event: {e}") from e
+
+
+def _sse_piece(data: str) -> str | None:
+    """The content of one streamed chunk; ValueError when the event isn't the OpenAI chunk shape."""
+    event = json.loads(data)
+    if not isinstance(event, dict) or "error" in event:
+        raise ValueError(f"not a chunk: {data[:80]!r}")
+    choices = event.get("choices")
+    if not choices:  # e.g. a usage-only chunk
+        return None
+    delta = choices[0].get("delta") if isinstance(choices, list) and isinstance(choices[0], dict) else None
+    if not isinstance(delta, dict):
+        raise ValueError(f"no delta in {data[:80]!r}")
+    piece = delta.get("content")
+    return piece if isinstance(piece, str) else None
 
 
 def _set_read_timeout(resp, seconds: float) -> None:
@@ -65,12 +84,25 @@ def complete(model: ChatModel, messages: list[dict], max_tokens: int = 300) -> s
     return "".join(model.stream(messages, max_tokens))
 
 
+def _read_text(path: str) -> str:
+    """UTF-8, with or without a BOM, or UTF-16 with its BOM (Notepad's "Unicode")."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig")
+
+
 def load_dotenv(path: str = ".env") -> dict[str, str]:
-    """Parse KEY=VALUE lines and export them without overriding variables that are already set."""
+    """Parse KEY=VALUE lines and export them without overriding variables that are already set. Never raises: an
+    unreadable file is logged and ignored."""
     found: dict[str, str] = {}
     try:
-        lines = open(path, encoding="utf-8").read().splitlines()
+        lines = _read_text(path).splitlines()
     except OSError:
+        return found
+    except UnicodeDecodeError as e:
+        log.warning("ignoring %s: it isn't UTF-8 or UTF-16 text (%s)", path, e)
         return found
     for line in lines:
         line = line.strip()
