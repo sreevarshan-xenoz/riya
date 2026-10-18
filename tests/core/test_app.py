@@ -192,15 +192,16 @@ def test_speaker_drains_typed_replies_until_the_voice_loop_is_ready():
 
 def test_websocket_from_a_web_page_origin_is_rejected_without_hello():
     with client() as c:
-        with pytest.raises(WebSocketDisconnect) as e:
-            with c.websocket_connect("/ws", headers={"origin": "https://evil.example"}) as ws:
-                ws.receive_json()
-        assert e.value.code == 1008
+        for origin in ("https://evil.example", "null"):  # "null": a sandboxed iframe on any web page
+            with pytest.raises(WebSocketDisconnect) as e:
+                with c.websocket_connect("/ws", headers={"origin": origin}) as ws:
+                    ws.receive_json()
+            assert e.value.code == 1008, origin
 
 
 def test_websocket_without_origin_or_from_a_file_page_is_accepted():
     with client() as c:
-        for headers in ({}, {"origin": "file://"}, {"origin": "null"}):
+        for headers in ({}, {"origin": "file://"}):
             with c.websocket_connect("/ws", headers=headers) as ws:
                 assert ws.receive_json()["type"] == "hello"
 

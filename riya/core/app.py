@@ -12,7 +12,9 @@ from riya.core.engine import RiyaCore
 from riya.core.protocol import ErrorMsg, ProtocolError, UserText, dump, parse_body_message
 
 log = logging.getLogger("riya.app")
-BODY_ORIGINS = ("null", "file://")  # Electron loadFile pages; Node and Electron-main clients send no Origin
+# Electron loadFile pages send "file://"; Node and Electron-main clients send no Origin. Never "null": any sandboxed
+# iframe on any web page sends it.
+BODY_ORIGINS = ("file://",)
 
 
 class Hub:
