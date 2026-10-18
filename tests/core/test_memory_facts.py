@@ -209,3 +209,47 @@ def test_embeddings_from_another_embedder_dim_never_match_or_raise(mem):
     mem.add_fact("The user likes tea", source="user_said")
     other = Memory(mem.db, HashEmbedder(dim=64), mem.clock)
     assert other.add_fact("The user likes coffee", source="inferred") is not None
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+class _SameVector:
+    """Every text embeds to one vector, like bge scoring "exam on Thursday" vs "...Friday" at 0.92."""
+    dim, strong_sim, weak_sim = 2, 0.8, 0.6
+
+    def embed(self, texts):
+        return np.tile(np.array([1.0, 0.0], dtype=np.float32), (len(texts), 1))
+
+
+def test_a_correction_is_never_a_duplicate():
+    hashed = Memory(open_db(":memory:"), HashEmbedder(), FakeClock(), dup_sim=0.3)  # the pair scores 0.33
+    for mem in (hashed, Memory(open_db(":memory:"), _SameVector(), FakeClock())):
+        assert mem.add_fact("The user's exam is on Thursday", source="user_said") is not None
+        assert mem.add_fact("The user's exam is on Friday", source="user_said") is not None
+        assert mem.add_fact("the user's exam is on friday!", source="inferred") is None   # same words: a duplicate
+        assert len(mem.list_facts()) == 2
+
+
+def test_a_delete_during_consolidation_is_never_undone(mem):
+    import threading
+    text = "The user's old project is called Nova"
+    f = mem.add_fact(text, source="inferred")
+    checked, deleted, real = threading.Event(), threading.Event(), mem._max_sim
+    adder = []
+
+    def max_sim(vec, rows):  # the consolidator pauses right after its forgotten check
+        out = real(vec, rows)
+        if threading.current_thread() is adder[0] and not checked.is_set():
+            checked.set()
+            deleted.wait(1.0)
+        return out
+    mem._max_sim = max_sim
+    adder.append(threading.Thread(target=lambda: mem.add_fact(text, source="inferred", check_forgotten=True)))
+    deleter = threading.Thread(target=lambda: mem.delete_fact(f.id))
+    adder[0].start()
+    assert checked.wait(2)
+    deleter.start()
+    deleter.join(0.3)
+    deleted.set()
+    adder[0].join(2); deleter.join(2)
+    assert mem.list_facts() == []

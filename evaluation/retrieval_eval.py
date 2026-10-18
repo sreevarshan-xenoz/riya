@@ -21,14 +21,17 @@ DAY = 86400.0
 
 
 def recall_at_5(memory_factory: Callable[[], Memory], data: dict) -> dict:
-    """recall@5 over questions with an expected fact; never_said_empty over those that expect nothing.
+    """recall@5 over questions with an expected fact or episode; never_said_empty over those that expect nothing.
 
-    Also returns the score distribution behind those numbers: max_never_top1_sim (the highest cosine any never-said
-    question reaches against a stored fact) and min_hit_sim (the lowest cosine between a question and its expected fact);
-    a threshold separates the two when max_never_top1_sim < min_hit_sim.
+    episode_recall and about_me_recall are the same hit rate over just the "episode" ("what did we talk about last
+    time?") and "about_me" ("what do you remember about me?") questions. Also returns the score distribution behind
+    those numbers: max_never_top1_sim (the highest cosine any never-said question reaches against a stored fact) and
+    min_hit_sim (the lowest cosine between a similarity question and its expected fact); a threshold separates the two
+    when max_never_top1_sim < min_hit_sim.
 
     Facts are seeded a day apart on the memory's clock (it must be a FakeClock); a dataset fact id maps to the stored id,
     so a correction (same key, newer user_said) is expected by its newer id and the superseded one is never retrievable.
+    Episodes are then seeded days_ago before the clock's final time.
     """
     memory = memory_factory()
     stored: dict[int, str] = {}
@@ -37,22 +40,35 @@ def recall_at_5(memory_factory: Callable[[], Memory], data: dict) -> dict:
         if added is not None:
             stored[added.id] = fact["id"]
         memory.clock.advance(DAY)
+    episodes: dict[int, str] = {}
+    for ep in data.get("episodes", []):
+        at = memory.clock.now() - ep["days_ago"] * DAY
+        episodes[memory.add_episode(at - 1800, at, ep["summary"]).id] = ep["id"]
     vecs = {stored[r["id"]]: np.frombuffer(r["embedding"], dtype=np.float32)  # live facts, by dataset id
             for r in memory.db.execute("select id, embedding from facts where status in ('active','conflict')")}
     hits = asked = silent = never = 0
+    by_kind: dict[str, list[int]] = {"episode": [0, 0], "about_me": [0, 0]}
     never_top1, hit_sims = [], []
     for q in data["questions"]:
-        got = {stored.get(f.id) for f in memory.retrieve(q["q"], k_facts=5).facts}
+        r = memory.retrieve(q["q"], k_facts=5)
+        got, got_eps = {stored.get(f.id) for f in r.facts}, {episodes.get(e.id) for e in r.episodes}
         qv = memory.embedder.embed([q["q"]])[0]
-        if q["expect"]:
+        if q["expect"] or q.get("expect_episodes"):
+            hit = all(e in got for e in q["expect"]) and all(e in got_eps for e in q.get("expect_episodes", []))
             asked += 1
-            hits += all(e in got for e in q["expect"])
-            hit_sims += [float(np.dot(qv, vecs[e])) for e in q["expect"] if e in vecs]
+            hits += hit
+            if q["kind"] in by_kind:
+                by_kind[q["kind"]][0] += hit
+                by_kind[q["kind"]][1] += 1
+            elif q["expect"]:
+                hit_sims += [float(np.dot(qv, vecs[e])) for e in q["expect"] if e in vecs]
         else:
             never += 1
             silent += not got
             never_top1.append(max((float(np.dot(qv, v)) for v in vecs.values()), default=0.0))
+    rate = {k: n / m if m else 1.0 for k, (n, m) in by_kind.items()}
     return {"recall@5": hits / asked if asked else 0.0, "never_said_empty": silent / never if never else 1.0,
+            "episode_recall": rate["episode"], "about_me_recall": rate["about_me"],
             "max_never_top1_sim": round(max(never_top1, default=0.0), 4),
             "min_hit_sim": round(min(hit_sims, default=0.0), 4)}
 

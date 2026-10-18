@@ -97,7 +97,7 @@ def test_retrieve_includes_episodes_and_due_threads(mem, clock):
     mem.add_episode(clock.now(), clock.now(), "Played a word game about animals")
     t = mem.add_thread("Ask how the exam went", due_at=clock.now() - 1)
     r = mem.retrieve("calculus exam", k_episodes=2)
-    assert [e.id for e in r.episodes] == [ep.id]
+    assert ep.id in [e.id for e in r.episodes]
     assert [x.id for x in r.threads] == [t.id]
 
 
@@ -193,3 +193,42 @@ def test_explicit_min_sim_overrides_both_thresholds(clock):
     texts = [f.text for f in _dense_mem(clock, min_sim=0.45).retrieve("cats?").facts]
     assert len(texts) == 4
     assert _dense_mem(clock, min_sim=0.95).retrieve("cats?").facts == []
+
+
+# --- final review: recent episodes and "what do you remember about me?" ---------------------------------------------
+
+DAY = 86400
+
+
+def test_retrieve_always_includes_the_latest_episodes(mem, clock):
+    now = clock.now()
+    mem.add_episode(now - 30 * DAY, now - 30 * DAY, "Played a word game about animals")
+    calc = mem.add_episode(now - 20 * DAY, now - 20 * DAY, "We discussed the calculus exam preparation")
+    prev = mem.add_episode(now - 3 * DAY, now - 3 * DAY, "Planned the weekend trip to Goa")
+    last = mem.add_episode(now - DAY, now - DAY, "Chose a new mechanical keyboard")
+    assert {e.id for e in mem.retrieve("what did we talk about last time?").episodes} == {last.id, prev.id}
+    assert {e.id for e in mem.retrieve("calculus exam").episodes} == {last.id, prev.id, calc.id}
+    assert len(mem.retrieve("calculus exam keyboard Goa", k_episodes=3).episodes) == 3
+
+
+def test_the_second_latest_episode_only_when_it_is_recent(mem, clock):
+    now = clock.now()
+    mem.add_episode(now - 9 * DAY, now - 9 * DAY, "Planned the weekend trip to Goa")
+    last = mem.add_episode(now - 8 * DAY, now - 8 * DAY, "Chose a new mechanical keyboard")
+    assert [e.id for e in mem.retrieve("hello").episodes] == [last.id]
+
+
+@pytest.mark.parametrize("q", ["What do you remember about me?", "what do you know about me", "Tell me everything you "
+                               "remember", "what have I told you so far?"])
+def test_about_me_returns_the_best_facts_without_a_similarity_gate(mem, clock, q):
+    for i in range(10):
+        mem.add_fact(f"The user fact number {i} is about topic{i}", source="inferred" if i % 2 else "user_said")
+        clock.advance(DAY)
+    got = [f.text for f in mem.retrieve(q).facts]
+    assert len(got) == 8
+    assert got[0] == "The user fact number 8 is about topic8"      # newest of the trusted ones
+    assert "The user fact number 9 is about topic9" in got
+
+
+def test_about_me_with_nothing_stored_is_empty(mem):
+    assert mem.retrieve("what do you remember about me?").facts == []

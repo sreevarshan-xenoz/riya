@@ -77,3 +77,8 @@ def test_bid_situation_is_short_and_playful():
     from riya.core.prompt import bid_situation
     s = bid_situation("long work session", THREAD)
     assert "playful" in s and "exam" in s and "No lecture" in s
+
+
+def test_honesty_line_says_to_admit_what_is_not_listed():
+    assert HONESTY_LINE.startswith("Only mention memories listed here.")
+    assert "If what they ask about isn't listed, say you don't remember." in HONESTY_LINE

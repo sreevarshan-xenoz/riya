@@ -1,6 +1,7 @@
 """SQLite store: schema migrations, connection setup and a JSON key-value table."""
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -37,13 +38,17 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
 
 class KV:
-    def __init__(self, conn: sqlite3.Connection):
-        self.conn = conn
+    """lock: share the memory's lock, so a commit here never lands in the middle of a memory transaction."""
+
+    def __init__(self, conn: sqlite3.Connection, lock=None):
+        self.conn, self.lock = conn, lock or threading.RLock()
 
     def get(self, key: str, default=None):
-        row = self.conn.execute("select value from kv where key=?", (key,)).fetchone()
+        with self.lock:
+            row = self.conn.execute("select value from kv where key=?", (key,)).fetchone()
         return json.loads(row[0]) if row else default
 
     def set(self, key: str, value) -> None:
-        self.conn.execute("insert or replace into kv(key, value) values(?, ?)", (key, json.dumps(value)))
-        self.conn.commit()
+        with self.lock:
+            self.conn.execute("insert or replace into kv(key, value) values(?, ?)", (key, json.dumps(value)))
+            self.conn.commit()

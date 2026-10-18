@@ -418,6 +418,64 @@
    "q": "Which city did the user grow up in?",
    "expect": [],
    "kind": "hard_negative"
+  },
+  {
+   "q": "What did we talk about last time?",
+   "expect": [],
+   "expect_episodes": [
+    "e3"
+   ],
+   "kind": "episode"
+  },
+  {
+   "q": "What were we chatting about the other day?",
+   "expect": [],
+   "expect_episodes": [
+    "e3"
+   ],
+   "kind": "episode"
+  },
+  {
+   "q": "Remember when we brainstormed hackathon team names?",
+   "expect": [],
+   "expect_episodes": [
+    "e1"
+   ],
+   "kind": "episode"
+  },
+  {
+   "q": "What do you remember about me?",
+   "expect": [
+    "f25",
+    "f24"
+   ],
+   "kind": "about_me"
+  },
+  {
+   "q": "Tell me everything you know about me",
+   "expect": [
+    "f25",
+    "f24",
+    "f22"
+   ],
+   "kind": "about_me"
+  }
+ ],
+ "episodes": [
+  {
+   "id": "e1",
+   "summary": "The user and Riya brainstormed team names for the January hackathon",
+   "days_ago": 20
+  },
+  {
+   "id": "e2",
+   "summary": "Riya helped the user debug a memory leak in the audio dataset converter",
+   "days_ago": 12
+  },
+  {
+   "id": "e3",
+   "summary": "The user was stressed about the calculus exam and Riya helped make a study plan",
+   "days_ago": 2
   }
  ]
 }

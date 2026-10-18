@@ -64,8 +64,8 @@ class RiyaCore:
                  emit: Callable[[BaseModel], None], persona: str | None = None):
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
         self.persona = persona if persona is not None else persona_prompt()
-        self.kv = KV(db)
         self.memory = Memory(db, embedder, clock)
+        self.kv = KV(db, self.memory.lock)
         traits, saved = load_traits(), self.kv.get("feelings")
         self.feelings = Feelings.from_dict(saved, clock, traits) if saved else Feelings(clock, traits)
         self.presence = Presence(idle_source, clock, self.kv)

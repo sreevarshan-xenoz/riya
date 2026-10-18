@@ -8,6 +8,7 @@ from riya.core.clock import FakeClock
 from riya.core.models import ModelUnavailable
 from riya.core.protocol import (ErrorMsg, ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings,
                                 StateMsg)
+from riya.core.prompt import NO_MEMORY_LINE
 from tests.fakes import make_core
 
 CONSOLIDATION = json.dumps({
@@ -325,3 +326,31 @@ def test_hands_free_conversation_is_neither_a_break_nor_away():
             states.add(core.presence.state)
     assert states <= {"talking", "focused"}
     assert not any(isinstance(m, Say) and m.kind == "bid" for m in emitted)
+
+
+def test_what_do_you_remember_about_me_lists_her_memories():
+    core, _, _, local = make_core()
+    core.memory.add_fact("The user likes biryani", source="user_said")
+    core.memory.add_episode(core.clock.now() - 3600, core.clock.now() - 600, "Talked about weekend plans")
+    list(core.reply("what do you remember about me?"))
+    system = local.calls[-1][0]["content"]
+    assert "The user likes biryani" in system and "Talked about weekend plans" in system
+    assert NO_MEMORY_LINE not in system
+
+
+def test_settings_writes_wait_for_a_memory_transaction_on_another_thread():
+    core, *_ = make_core()
+    held, wrote = threading.Event(), threading.Event()
+
+    def hold():
+        with core.memory.lock:
+            held.set()
+            wrote.wait(0.3)
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(1)
+    writer = threading.Thread(target=lambda: (core.handle(SetSettings(patch={"volume": 0.5})), wrote.set()))
+    writer.start()
+    assert not wrote.wait(0.1)          # blocked behind the memory's lock
+    t.join(); writer.join(1)
+    assert wrote.is_set() and core.settings.volume == 0.5

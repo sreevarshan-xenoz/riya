@@ -1,7 +1,10 @@
 """Riya's long-term memory: facts, episodes, follow-up threads and transcripts, with hybrid retrieval."""
+import functools
 import json
 import math
+import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,18 @@ QUALITY = {"user_said": 1.0, "looked_up": 0.7, "inferred": 0.5}
 LIVE = "('active','conflict')"
 EPISODE_FORGET_SIM = 0.6
 DAY = 86400.0
+ABOUT_ME_FACTS = 8
+MAX_EPISODES = 3
+RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it's this fresh
+ABOUT_ME_RE = re.compile(
+    r"\bwhat (?:do|did) you (?:remember|know) about me\b|\beverything you (?:remember|know) about me\b"
+    r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)\b|\bwhat have i (?:told|said to) you\b",
+    re.IGNORECASE)
+
+
+def about_me(query: str) -> bool:
+    """What do you remember about me? and the like: answered from her best facts, not by similarity."""
+    return ABOUT_ME_RE.search(query) is not None
 
 
 @dataclass
@@ -77,12 +92,22 @@ def _vec(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
 
 
+def _locked(method):
+    """Every public method holds the memory's RLock, so the socket, tick and reply threads never interleave."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Memory:
     def __init__(self, db: sqlite3.Connection, embedder: Embedder, clock,
                  dup_sim: float = 0.92, forgotten_sim: float = 0.85, min_sim: float | None = None):
         """min_sim, when given, overrides the embedder's strong/weak retrieval thresholds."""
         self.db, self.embedder, self.clock = db, embedder, clock
         self.dup_sim, self.forgotten_sim, self.min_sim = dup_sim, forgotten_sim, min_sim
+        self.lock = threading.RLock()
 
     def eligible(self, sim: float, query_tokens: set[str], text: str) -> bool:
         """Strongly similar, or weakly similar and sharing at least one content word with the query."""
@@ -107,6 +132,7 @@ class Memory:
 
     # --- facts ---
 
+    @_locked
     def add_fact(self, text: str, source: str, confidence: float = 0.9, key: str | None = None,
                  episode_id: int | None = None, *, check_forgotten: bool | None = None) -> Fact | None:
         """check_forgotten: None checks forgotten markers unless the source is user_said, True always checks."""
@@ -121,7 +147,7 @@ class Memory:
             if self._max_sim(vec, forgotten) >= self.forgotten_sim:
                 return None
         live = self.db.execute(f"select text, embedding from facts where status in {LIVE}").fetchall()
-        if any(r["text"] == text for r in live) or self._max_sim(vec, live) >= self.dup_sim:
+        if any(r["text"] == text or self._duplicate(vec, text, r) for r in live):
             return None
         now = self.clock.now()
         status, supersedes_id = "active", None
@@ -141,10 +167,17 @@ class Memory:
                 (text, key, source, confidence, now, status, supersedes_id, episode_id, vec.tobytes(), now))
         return self.get_fact(cur.lastrowid)
 
+    @_locked
+    def _duplicate(self, vec: np.ndarray, text: str, row) -> bool:
+        """Close in meaning and made of the same words: "exam on Thursday" vs "...Friday" is a correction, kept."""
+        return self._max_sim(vec, [row]) >= self.dup_sim and content_tokens(text) == content_tokens(row["text"])
+
+    @_locked
     def get_fact(self, fact_id: int) -> Fact | None:
         row = self.db.execute(f"select {_FACT_COLS} from facts where id=?", (fact_id,)).fetchone()
         return _fact(row) if row else None
 
+    @_locked
     def correct(self, fact_id: int, new_text: str) -> Fact:
         """An explicit user statement: skips the forgotten check and supersedes every live fact on the key."""
         old = self.get_fact(fact_id)
@@ -182,6 +215,7 @@ class Memory:
             seen.update(r[0] for r in self.db.execute("select id from facts where key=? and status='superseded'", (k,)))
         return sorted(seen)
 
+    @_locked
     def delete_fact(self, fact_id: int, delete_episodes: bool = False) -> None:
         if self.get_fact(fact_id) is None:
             return
@@ -203,10 +237,12 @@ class Memory:
                         doomed.add(ep["id"])
                 self.db.executemany("delete from episodes where id=?", [(i,) for i in doomed])
 
+    @_locked
     def list_facts(self, include_superseded: bool = False) -> list[Fact]:
         where = "" if include_superseded else "where status != 'superseded'"
         return [_fact(r) for r in self.db.execute(f"select {_FACT_COLS} from facts {where} order by id")]
 
+    @_locked
     def history(self, fact_id: int) -> list[Fact]:
         out, seen, cur = [], set(), self.get_fact(fact_id)
         while cur is not None and cur.id not in seen:
@@ -217,6 +253,7 @@ class Memory:
 
     # --- episodes and threads ---
 
+    @_locked
     def add_episode(self, started_at: float, ended_at: float, summary: str, user_mood: str | None = None,
                     outcome: str | None = None) -> Episode:
         with self.db:
@@ -225,10 +262,12 @@ class Memory:
                 (started_at, ended_at, summary, user_mood, outcome, self._embed(summary).tobytes()))
         return _episode(self.db.execute(f"select {_EPISODE_COLS} from episodes where id=?", (cur.lastrowid,)).fetchone())
 
+    @_locked
     def recent_episodes(self, n: int = 3) -> list[Episode]:
         rows = self.db.execute(f"select {_EPISODE_COLS} from episodes order by ended_at desc, id desc limit ?", (n,))
         return [_episode(r) for r in rows]
 
+    @_locked
     def add_thread(self, text: str, due_at: float, episode_id: int | None = None) -> Thread:
         with self.db:
             cur = self.db.execute(
@@ -236,12 +275,14 @@ class Memory:
                 (text, due_at, "open", self.clock.now(), episode_id))
         return _thread(self.db.execute(f"select {_THREAD_COLS} from threads where id=?", (cur.lastrowid,)).fetchone())
 
+    @_locked
     def due_threads(self) -> list[Thread]:
         rows = self.db.execute(
             f"select {_THREAD_COLS} from threads where status='open' and due_at<=? order by due_at desc, id desc",
             (self.clock.now(),))
         return [_thread(r) for r in rows]
 
+    @_locked
     def mark_thread(self, thread_id: int, status: str | None = None, raised_at: float | None = None) -> None:
         with self.db:
             self.db.execute("update threads set status=coalesce(?, status), last_raised_at=coalesce(?, last_raised_at)"
@@ -249,20 +290,24 @@ class Memory:
 
     # --- transcripts ---
 
+    @_locked
     def append_transcript(self, role: str, text: str) -> int:
         with self.db:
             cur = self.db.execute("insert into transcripts(at, role, text) values(?,?,?)",
                                   (self.clock.now(), role, text))
         return cur.lastrowid
 
+    @_locked
     def unconsolidated(self) -> list[dict]:
         rows = self.db.execute("select id, at, role, text from transcripts where consolidated=0 order by id")
         return [dict(r) for r in rows]
 
+    @_locked
     def mark_consolidated(self, ids: list[int]) -> None:
         with self.db:
             self.db.executemany("update transcripts set consolidated=1 where id=?", [(i,) for i in ids])
 
+    @_locked
     def purge_transcripts(self, max_age_s: float = 30 * DAY) -> int:
         with self.db:
             return self.db.execute("delete from transcripts where at < ?", (self.clock.now() - max_age_s,)).rowcount
@@ -271,9 +316,11 @@ class Memory:
     def _day(at: float) -> str:
         return datetime.fromtimestamp(at).strftime("%Y-%m-%d")
 
+    @_locked
     def transcript_days(self) -> list[str]:
         return sorted({self._day(r["at"]) for r in self.db.execute("select at from transcripts")})
 
+    @_locked
     def delete_transcript_day(self, day: str) -> int:
         ids = [(r["id"],) for r in self.db.execute("select id, at from transcripts") if self._day(r["at"]) == day]
         with self.db:
@@ -286,12 +333,19 @@ class Memory:
     def _score(sim: float, age_s: float, quality: float) -> float:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
+    @_locked
     def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2) -> Retrieved:
+        """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
+        it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets her
+        best facts by trust and recency instead of by similarity."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
+        mine = about_me(query)
         facts, episodes = [], []
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
-            if self.eligible(sim, qtokens, r["text"]):
+            if mine:
+                facts.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            elif self.eligible(sim, qtokens, r["text"]):
                 facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
@@ -299,10 +353,16 @@ class Memory:
                 episodes.append((self._score(sim, now - r["ended_at"], QUALITY["inferred"]), _episode(r)))
         facts.sort(key=lambda p: p[0], reverse=True)
         episodes.sort(key=lambda p: p[0], reverse=True)
-        return Retrieved([f for _, f in facts[:k_facts]], [e for _, e in episodes[:k_episodes]], self.due_threads())
+        latest = self.recent_episodes(2)
+        picked = latest[:1] + [e for _, e in episodes[:k_episodes]] + [
+            e for e in latest[1:] if now - e.ended_at <= RECENT_EPISODE_S]
+        unique = list({e.id: e for e in reversed(picked)}.values())[::-1]  # first occurrence wins
+        chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
+        return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen, self.due_threads())
 
     # --- legacy import ---
 
+    @_locked
     def import_legacy_json(self, path: str | Path) -> Episode | None:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
