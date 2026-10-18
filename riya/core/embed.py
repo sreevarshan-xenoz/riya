@@ -1,6 +1,8 @@
 """Text embedders: a dependency-free hashing embedder and a lazy fastembed wrapper."""
+import os
 import unicodedata
 import zlib
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -56,14 +58,21 @@ class HashEmbedder:
         return out / np.where(norms == 0, 1.0, norms)
 
 
+def model_dir() -> Path:
+    """Where Riya keeps downloaded models: RIYA_MODEL_DIR, else %LOCALAPPDATA%/Riya/models (not the temp folder)."""
+    if override := os.environ.get("RIYA_MODEL_DIR"):
+        return Path(override)
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "models"
+
+
 class FastEmbedder:
     # bge-small cosines are high for anything on the same topic: unrelated text scores 0.5-0.7, real hits 0.7+
     strong_sim, weak_sim = 0.80, 0.60
 
-    def __init__(self, model: str = "BAAI/bge-small-en-v1.5"):
+    def __init__(self, model: str = "BAAI/bge-small-en-v1.5", cache_dir: str | Path | None = None):
         from fastembed import TextEmbedding
 
-        self._model = TextEmbedding(model)
+        self._model = TextEmbedding(model, cache_dir=str(cache_dir or model_dir()))
         self.dim = len(next(iter(self._model.embed(["dim probe"]))))
 
     def embed(self, texts: list[str]) -> np.ndarray:

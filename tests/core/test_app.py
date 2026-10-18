@@ -209,3 +209,65 @@ def test_deliver_never_opens_the_mic_for_a_silent_utterance_while_gaming():
     loop, silent = FakeVoiceLoop(), Utterance(iter(["psst"]), spoken=False)
     runner.deliver(silent, loop, gaming=True)
     assert loop.calls == [] and list(silent) == [] and not loop.gate.is_open()
+
+
+# --- final review: startup never depends on the network or the working directory ------------------------------------
+
+def core_args(tmp_path, **kw):
+    return argparse.Namespace(**{"db": str(tmp_path / "d" / "riya.db"), "local_url": "http://127.0.0.1:1",
+                                 "hash_embed": False, "legacy_memory": "riya_memory.json", **kw})
+
+
+def test_build_core_falls_back_to_the_hash_embedder_when_bge_cannot_load(tmp_path, monkeypatch, caplog):
+    from riya.core import embed
+    from riya.core.embed import HashEmbedder
+
+    class Offline:
+        def __init__(self, *a, **kw):
+            raise OSError("no network and no cached model")
+    monkeypatch.setattr(embed, "FastEmbedder", Offline)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    monkeypatch.chdir(tmp_path)
+    with caplog.at_level("WARNING"):
+        core = runner.build_core(core_args(tmp_path), lambda m: None)
+    assert isinstance(core.memory.embedder, HashEmbedder)
+    assert any("embedder" in r.getMessage() for r in caplog.records)
+
+
+def test_fast_embedder_keeps_its_model_in_riya_model_dir(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from riya.core import embed
+    seen = {}
+
+    class TextEmbedding:
+        def __init__(self, model, cache_dir=None):
+            seen["cache_dir"] = cache_dir
+
+        def embed(self, texts):
+            return iter([[1.0, 0.0]] * len(texts))
+    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=TextEmbedding))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.delenv("RIYA_MODEL_DIR", raising=False)
+    embed.FastEmbedder()
+    assert seen["cache_dir"] == str(tmp_path / "local" / "Riya" / "models")
+    monkeypatch.setenv("RIYA_MODEL_DIR", str(tmp_path / "mine"))
+    embed.FastEmbedder()
+    assert seen["cache_dir"] == str(tmp_path / "mine")
+
+
+def test_legacy_memory_is_found_from_the_repo_root_and_only_marked_once_imported(tmp_path, monkeypatch):
+    repo, elsewhere = tmp_path / "repo", tmp_path / "elsewhere"
+    repo.mkdir(); elsewhere.mkdir()
+    monkeypatch.setattr(runner, "REPO_ROOT", repo)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    monkeypatch.chdir(elsewhere)
+    args = core_args(tmp_path, hash_embed=True)
+    core = runner.build_core(args, lambda m: None)
+    assert core.memory.recent_episodes() == [] and not core.kv.get("legacy_imported")
+    core.kv.conn.close()
+    (repo / "riya_memory.json").write_text('{"summary": "We talked about cats."}', encoding="utf-8")
+    again = runner.build_core(args, lambda m: None)
+    assert [e.summary for e in again.memory.recent_episodes()] == ["We talked about cats."]
+    assert again.kv.get("legacy_imported") is True

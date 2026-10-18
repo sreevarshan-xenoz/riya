@@ -22,6 +22,7 @@ from riya.core.store import open_db
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
 
 
@@ -32,21 +33,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--no-voice", action="store_true", help="don't speak; drain spoken sentences silently")
     ap.add_argument("--hash-embed", action="store_true", help="use the dependency-free hash embedder")
-    ap.add_argument("--legacy-memory", default="riya_memory.json", help="legacy memory file, imported on first run")
+    ap.add_argument("--legacy-memory", default="riya_memory.json",
+                    help="legacy memory file, imported on first run (relative paths start at the repo root)")
     return ap.parse_args(argv)
+
+
+def make_embedder(hash_embed: bool):
+    """bge-small, or the hash embedder when asked or when bge can't load (offline before its first download)."""
+    if hash_embed:
+        return HashEmbedder()
+    try:
+        from riya.core import embed
+        return embed.FastEmbedder()
+    except Exception as e:
+        log.warning("the bge embedder couldn't load (%s); using the hash embedder, so memories saved with bge "
+                    "won't be found until it loads again", e)
+        return HashEmbedder()
 
 
 def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None]) -> RiyaCore:
     load_dotenv()
-    if args.hash_embed:
-        embedder = HashEmbedder()
-    else:
-        from riya.core.embed import FastEmbedder
-        embedder = FastEmbedder()
-    core = RiyaCore(db=open_db(args.db), embedder=embedder, clock=SystemClock(), idle_source=make_idle_source(),
-                    local=OpenAICompatModel("local", f"{args.local_url}/v1"), online=load_online_from_env(), emit=emit)
-    if not core.kv.get("legacy_imported"):
-        core.memory.import_legacy_json(args.legacy_memory)
+    core = RiyaCore(db=open_db(args.db), embedder=make_embedder(args.hash_embed), clock=SystemClock(),
+                    idle_source=make_idle_source(), local=OpenAICompatModel("local", f"{args.local_url}/v1"),
+                    online=load_online_from_env(), emit=emit)
+    legacy = Path(args.legacy_memory)
+    legacy = legacy if legacy.is_absolute() else REPO_ROOT / legacy
+    if not core.kv.get("legacy_imported") and legacy.is_file():
+        core.memory.import_legacy_json(legacy)
         core.kv.set("legacy_imported", True)
     return core
 
