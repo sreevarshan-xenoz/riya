@@ -97,7 +97,7 @@ class StatusLine {
 /** Settings errors belong to the settings window: they name a setting (or autostart). */
 function isSettingsError(message) {
   const text = typeof message === "string" ? message : "";
-  return /\bsetting '\w+'/.test(text) || /\bautostart\b/i.test(text);
+  return /\b(?:setting|pattern in) '\w+'/.test(text) || /\bautostart\b/i.test(text);
 }
 
 /** Breathing, blink and lean run only while she is visible and the user isn't gaming; mouth frames always run. */

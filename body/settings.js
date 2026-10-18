@@ -5,7 +5,7 @@
 (() => {
   const {
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
-    DeferWhileFocused,
+    DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
@@ -52,8 +52,12 @@
     act(target, { type: "set_settings", patch: result.patch });
   }
 
-  for (const key of ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations"]) {
-    $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
+  const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
+    "eyes_enabled"];
+  for (const key of CHECK_KEYS) $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
+  for (const key of ["glance_daily_cap", "glance_min_gap_s"]) $(key).addEventListener("change", (e) => changeSetting(key, e.target.value));
+  for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
+    $(save).addEventListener("click", () => changeSetting(key, $(key).value));
   }
   $("mode").addEventListener("change", (e) => changeSetting("mode", e.target.value));
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
@@ -95,8 +99,10 @@
       set("volume", "value", String(s.volume));
       $("volume-out").textContent = `${Math.round(s.volume * 100)}%`;
     }
-    for (const key of ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations"]) {
-      if (typeof s[key] === "boolean") $(key).checked = s[key];
+    for (const key of CHECK_KEYS) if (typeof s[key] === "boolean") $(key).checked = s[key];
+    for (const key of ["glance_daily_cap", "glance_min_gap_s"]) if (Number.isFinite(s[key])) set(key, "value", String(s[key]));
+    for (const key of ["eyes_deny_titles", "eyes_deny_processes"]) {
+      if (Array.isArray(s[key])) set(key, "value", s[key].filter((p) => typeof p === "string").join("\n"));
     }
     if (s.quiet_hours === null || typeof s.quiet_hours === "string") set("quiet_hours", "value", s.quiet_hours || "");
   }
@@ -209,6 +215,22 @@
     $(emptyId).hidden = rows.length > 0;
   }
 
+  async function deleteGlance(glance) {
+    const r = await confirmDialog({
+      title: "Delete this note?",
+      body: glance.text,
+      okLabel: "Delete",
+    });
+    if (r.ok) act(`glance:${glance.id}`, { type: "glance_delete", id: glance.id });
+  }
+
+  function renderEyes(eyes) {
+    $("eyes-count").textContent = eyesCountText(eyes);
+    const status = eyesStatusText(eyes);
+    $("eyes-status").textContent = status;
+    $("eyes-status").hidden = !status;
+  }
+
   function renderMemories(msg) {
     for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:")) errorEls.delete(target);
     const { facts, episodes, threads, days } = memoryLists(msg);
@@ -221,6 +243,11 @@
       });
       return parts.li;
     }));
+
+    fill("glances", "glances-empty", glanceRows(msg).map((glance) => item(`glance:${glance.id}`, glance.text, {
+      meta: glance.meta,
+      actions: [button("Delete", () => deleteGlance(glance))],
+    }).li));
 
     fill("threads", "threads-empty", threads.map((thread) => item(`thread:${thread.id}`, String(thread.text), {
       meta: dueText(thread),
@@ -250,6 +277,8 @@
     if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
       router.settle();
       applySettings(msg.settings);
+    } else if (msg.type === "eyes") {
+      renderEyes(msg);
     } else if (msg.type === "memories") {
       router.settle();
       renderMemories(msg);
@@ -259,6 +288,8 @@
   });
 
   showVoice(null);
+  window.riya.dontLookHotkey().then((accelerator) => { $("dontlook-hotkey").textContent = hotkeyText(accelerator); },
+    () => { $("dontlook-hotkey").textContent = hotkeyText(null); });
   window.riya.hotkey().then((accelerator) => { $("hotkey").textContent = hotkeyText(accelerator); },
     () => { $("hotkey").textContent = hotkeyText(null); });
   send({ type: "get_memories" });

@@ -109,3 +109,74 @@ test("DeferWhileFocused applies at once when unfocused, and holds only the lates
   assert.deepEqual(d.offer("marius", false), { value: "marius" });
   assert.equal(d.take(), null, "an applied offer clears the stale pending one");
 });
+
+test("parsePatternLines splits lines, trims, drops blanks and duplicates", () => {
+  assert.deepEqual(L.parsePatternLines(" bank \r\n\n(?:secret|vault)\nbank\n  "), { ok: true, patterns: ["bank", "(?:secret|vault)"] });
+  assert.deepEqual(L.parsePatternLines(""), { ok: true, patterns: [] });
+  assert.deepEqual(L.parsePatternLines(undefined), { ok: true, patterns: [] });
+});
+
+test("parsePatternLines rejects a line that is not a JS regex and names it", () => {
+  const r = L.parsePatternLines("fine\n(unclosed\nalso fine");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /line 2/i);
+  assert.match(r.error, /\(unclosed/);
+  assert.equal(L.parsePatternLines("[a-").ok, false);
+});
+
+test("parsePatternLines enforces the core's count and length limits", () => {
+  assert.equal(L.parsePatternLines("x".repeat(301)).ok, false);
+  assert.equal(L.parsePatternLines("x".repeat(300)).ok, true);
+  const many = Array.from({ length: 101 }, (_, i) => `p${i}`).join("\n");
+  assert.equal(L.parsePatternLines(many).ok, false);
+  assert.equal(L.parsePatternLines(many.split("\n").slice(0, 100).join("\n")).ok, true);
+});
+
+test("settingPatch handles the Eyes settings", () => {
+  assert.deepEqual(L.settingPatch("eyes_enabled", false), { ok: true, patch: { eyes_enabled: false } });
+  assert.deepEqual(L.settingPatch("glance_daily_cap", "150"), { ok: true, patch: { glance_daily_cap: 150 } });
+  assert.deepEqual(L.settingPatch("glance_daily_cap", 1), { ok: true, patch: { glance_daily_cap: 1 } });
+  assert.deepEqual(L.settingPatch("glance_daily_cap", 1000), { ok: true, patch: { glance_daily_cap: 1000 } });
+  for (const bad of [0, 1001, 1.5, "", "  ", "many", NaN, null]) assert.equal(L.settingPatch("glance_daily_cap", bad).ok, false, String(bad));
+  assert.deepEqual(L.settingPatch("glance_min_gap_s", "45"), { ok: true, patch: { glance_min_gap_s: 45 } });
+  assert.deepEqual(L.settingPatch("glance_min_gap_s", 10), { ok: true, patch: { glance_min_gap_s: 10 } });
+  assert.deepEqual(L.settingPatch("glance_min_gap_s", 3600), { ok: true, patch: { glance_min_gap_s: 3600 } });
+  for (const bad of [9, 3601, 12.5, "", "slow"]) assert.equal(L.settingPatch("glance_min_gap_s", bad).ok, false, String(bad));
+  assert.deepEqual(L.settingPatch("eyes_deny_titles", "bank\n\nvault"), { ok: true, patch: { eyes_deny_titles: ["bank", "vault"] } });
+  assert.deepEqual(L.settingPatch("eyes_deny_processes", ""), { ok: true, patch: { eyes_deny_processes: [] } });
+  assert.equal(L.settingPatch("eyes_deny_titles", "(oops").ok, false);
+  assert.equal(L.settingPatch("dont_look", true).ok, false);
+});
+
+test("ErrorRouter sends a bad deny pattern to its textarea", () => {
+  const r = new L.ErrorRouter();
+  assert.equal(r.route("invalid pattern in 'eyes_deny_titles': '(x'"), "setting:eyes_deny_titles");
+  assert.equal(r.route("invalid value for setting 'glance_daily_cap': 0"), "setting:glance_daily_cap");
+});
+
+test("eyesCountText says how many looks she has used today", () => {
+  assert.equal(L.eyesCountText({ glances_today: 12, cap: 150 }), "12 of 150 today");
+  assert.equal(L.eyesCountText({ glances_today: 0, cap: 0 }), "0 of 0 today");
+  assert.equal(L.eyesCountText(null), "—");
+  assert.equal(L.eyesCountText({ glances_today: "x", cap: 150 }), "—");
+});
+
+test("eyesStatusText reflects off and dont-look", () => {
+  assert.equal(L.eyesStatusText({ enabled: true, dont_look: false }), "");
+  assert.match(L.eyesStatusText({ enabled: true, dont_look: true }), /look/i);
+  assert.match(L.eyesStatusText({ enabled: false, dont_look: false }), /off/i);
+});
+
+test("glanceRows shows time, app and activity, newest first as given, tolerating junk", () => {
+  const t = Date.UTC(2026, 9, 18, 14, 5) / 1000;
+  const msg = { type: "memories", glances: [
+    { id: 7, at: t, app: "Code.exe", title: "secret.py", activity: " fixing a bug ", details: "d", notable: null },
+    { id: 8, at: t, app: "", title: "", activity: "", details: "", notable: "x" },
+    null, { id: "nope" },
+  ] };
+  assert.deepEqual(L.glanceRows(msg, { utc: true }), [
+    { id: 7, text: "fixing a bug", meta: "18 Oct 2026, 14:05 · Code.exe" },
+    { id: 8, text: "(no description)", meta: "18 Oct 2026, 14:05 · unknown app" },
+  ]);
+  assert.deepEqual(L.glanceRows({ type: "memories" }), []);
+});
