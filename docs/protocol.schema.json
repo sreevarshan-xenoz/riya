@@ -1,0 +1,487 @@
+{
+  "body_to_core": {
+    "$defs": {
+      "BodyReady": {
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "type": {
+            "const": "body_ready",
+            "default": "body_ready",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "BodyReady",
+        "type": "object"
+      },
+      "GetMemories": {
+        "properties": {
+          "type": {
+            "const": "get_memories",
+            "default": "get_memories",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "GetMemories",
+        "type": "object"
+      },
+      "MemoryCorrect": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "memory_correct",
+            "default": "memory_correct",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "MemoryCorrect",
+        "type": "object"
+      },
+      "MemoryDelete": {
+        "properties": {
+          "delete_episodes": {
+            "default": false,
+            "title": "Delete Episodes",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "memory_delete",
+            "default": "memory_delete",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "MemoryDelete",
+        "type": "object"
+      },
+      "SetSettings": {
+        "properties": {
+          "patch": {
+            "additionalProperties": true,
+            "title": "Patch",
+            "type": "object"
+          },
+          "type": {
+            "const": "set_settings",
+            "default": "set_settings",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "patch"
+        ],
+        "title": "SetSettings",
+        "type": "object"
+      },
+      "TalkHotkey": {
+        "properties": {
+          "type": {
+            "const": "talk_hotkey",
+            "default": "talk_hotkey",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "TalkHotkey",
+        "type": "object"
+      },
+      "TranscriptDelete": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "string"
+          },
+          "type": {
+            "const": "transcript_delete",
+            "default": "transcript_delete",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "TranscriptDelete",
+        "type": "object"
+      },
+      "UserText": {
+        "properties": {
+          "text": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "user_text",
+            "default": "user_text",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "UserText",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "body_ready": "#/$defs/BodyReady",
+        "get_memories": "#/$defs/GetMemories",
+        "memory_correct": "#/$defs/MemoryCorrect",
+        "memory_delete": "#/$defs/MemoryDelete",
+        "set_settings": "#/$defs/SetSettings",
+        "talk_hotkey": "#/$defs/TalkHotkey",
+        "transcript_delete": "#/$defs/TranscriptDelete",
+        "user_text": "#/$defs/UserText"
+      },
+      "propertyName": "type"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/BodyReady"
+      },
+      {
+        "$ref": "#/$defs/UserText"
+      },
+      {
+        "$ref": "#/$defs/TalkHotkey"
+      },
+      {
+        "$ref": "#/$defs/GetMemories"
+      },
+      {
+        "$ref": "#/$defs/MemoryDelete"
+      },
+      {
+        "$ref": "#/$defs/MemoryCorrect"
+      },
+      {
+        "$ref": "#/$defs/TranscriptDelete"
+      },
+      {
+        "$ref": "#/$defs/SetSettings"
+      }
+    ]
+  },
+  "core_to_body": {
+    "$defs": {
+      "ErrorMsg": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "const": "error",
+            "default": "error",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "ErrorMsg",
+        "type": "object"
+      },
+      "ExpressionMsg": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "expression",
+            "default": "expression",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ExpressionMsg",
+        "type": "object"
+      },
+      "Hello": {
+        "properties": {
+          "expressions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Expressions",
+            "type": "array"
+          },
+          "type": {
+            "const": "hello",
+            "default": "hello",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "expressions"
+        ],
+        "title": "Hello",
+        "type": "object"
+      },
+      "MemoriesMsg": {
+        "properties": {
+          "facts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "transcript_days": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Transcript Days",
+            "type": "array"
+          },
+          "type": {
+            "const": "memories",
+            "default": "memories",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facts",
+          "transcript_days"
+        ],
+        "title": "MemoriesMsg",
+        "type": "object"
+      },
+      "Mouth": {
+        "properties": {
+          "level": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Level",
+            "type": "number"
+          },
+          "type": {
+            "const": "mouth",
+            "default": "mouth",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level"
+        ],
+        "title": "Mouth",
+        "type": "object"
+      },
+      "Say": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "reply",
+              "greet",
+              "bid"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "spoken": {
+            "title": "Spoken",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "say",
+            "default": "say",
+            "title": "Type",
+            "type": "string"
+          },
+          "utterance_id": {
+            "title": "Utterance Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "utterance_id",
+          "text",
+          "spoken",
+          "kind"
+        ],
+        "title": "Say",
+        "type": "object"
+      },
+      "SayEnd": {
+        "properties": {
+          "type": {
+            "const": "say_end",
+            "default": "say_end",
+            "title": "Type",
+            "type": "string"
+          },
+          "utterance_id": {
+            "title": "Utterance Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "utterance_id"
+        ],
+        "title": "SayEnd",
+        "type": "object"
+      },
+      "SettingsMsg": {
+        "properties": {
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "type": {
+            "const": "settings",
+            "default": "settings",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "title": "SettingsMsg",
+        "type": "object"
+      },
+      "StateMsg": {
+        "properties": {
+          "expression": {
+            "title": "Expression",
+            "type": "string"
+          },
+          "feelings": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Feelings",
+            "type": "object"
+          },
+          "presence": {
+            "title": "Presence",
+            "type": "string"
+          },
+          "type": {
+            "const": "state",
+            "default": "state",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "presence",
+          "expression",
+          "feelings"
+        ],
+        "title": "StateMsg",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "error": "#/$defs/ErrorMsg",
+        "expression": "#/$defs/ExpressionMsg",
+        "hello": "#/$defs/Hello",
+        "memories": "#/$defs/MemoriesMsg",
+        "mouth": "#/$defs/Mouth",
+        "say": "#/$defs/Say",
+        "say_end": "#/$defs/SayEnd",
+        "settings": "#/$defs/SettingsMsg",
+        "state": "#/$defs/StateMsg"
+      },
+      "propertyName": "type"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/Hello"
+      },
+      {
+        "$ref": "#/$defs/SettingsMsg"
+      },
+      {
+        "$ref": "#/$defs/StateMsg"
+      },
+      {
+        "$ref": "#/$defs/ExpressionMsg"
+      },
+      {
+        "$ref": "#/$defs/Say"
+      },
+      {
+        "$ref": "#/$defs/SayEnd"
+      },
+      {
+        "$ref": "#/$defs/Mouth"
+      },
+      {
+        "$ref": "#/$defs/MemoriesMsg"
+      },
+      {
+        "$ref": "#/$defs/ErrorMsg"
+      }
+    ]
+  },
+  "expressions": [
+    "neutral",
+    "happy",
+    "excited",
+    "missed_you",
+    "pouty",
+    "flustered",
+    "teasing",
+    "worried",
+    "sad",
+    "sleepy",
+    "curious",
+    "thinking",
+    "surprised",
+    "covering_eyes"
+  ],
+  "version": 1
+}
