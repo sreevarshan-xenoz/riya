@@ -569,6 +569,17 @@ class RiyaCore:
             return None
         return now
 
+    def _covered(self, info: WindowInfo) -> bool:
+        """Another window sits above info in z-order over the part a grab would take (one of hers, a minimized or a
+        cloaked one doesn't count). True as well when that can't be told."""
+        try:
+            above = self.windows.above(info.hwnd)
+        except Exception:
+            return True
+        left, top, right, bottom = clamp_rect(info.rect, info.monitor)
+        return any(max(left, w.rect[0]) < min(right, w.rect[2]) and max(top, w.rect[1]) < min(bottom, w.rect[3])
+                   for w in above if not (w.is_riya or w.minimized or w.cloaked))
+
     def _eyes_step(self, now: float) -> None:
         """Each tick: tell the body where the window is, and start a glance in a worker thread when one is allowed
         and wanted. The tick itself never waits for a capture or the vision model."""
@@ -593,7 +604,7 @@ class RiyaCore:
             self._glance_thread.start()
 
     def _glance(self, info: WindowInfo, gen: int, peek: bool) -> None:
-        """The worker: re-read the window and re-check the policy, grab, (for a peek) check the screen changed,
+        """The worker: re-read the window and re-check the policy (still in front, nothing over it), grab, (for a peek) check the screen changed,
         describe, keep the note. An outage backs off 30 min, a reply with no usable note 5 min; closing her eyes at any
         point drops the look (never sent once closed)."""
         try:
@@ -602,6 +613,9 @@ class RiyaCore:
                     return
                 fresh = self._fresh(info)
                 if fresh is None or self._why_not(fresh, self.settings) is not None:
+                    return
+                front = self.windows.foreground()  # still the window in front, with nothing over it
+                if front is None or front.hwnd != fresh.hwnd or self._covered(fresh):
                     return
             info = fresh
             jpeg = self._grab(info)
@@ -654,6 +668,8 @@ class RiyaCore:
                 why = "the window changed" if fresh is None else self._why_not(fresh, s, force=True,
                                                                                 presence=presence)
                 info = fresh or info
+            if why is None and self._covered(info):
+                why = "covered"
             if why is None and not self._may_look(gen):
                 why = "don't look" if self._eyes_on else "eyes off"
         jpeg = b""

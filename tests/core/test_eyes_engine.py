@@ -4,6 +4,7 @@ import io
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,83 @@ def test_a_background_glance_rereads_its_window_before_grabbing():
     run(core, clock, 4)
     source.window = lambda hwnd: win(title="Sign in to PayPal")   # retitled between the tick and the grab
     run(core, clock, 3)
+    assert grab.calls == [] and vision.calls == []
+
+
+# ---- covered windows (z-order) ---------------------------------------------------------------------------------
+
+VAULT = WindowInfo(20, "Bitwarden", "Bitwarden.exe", (600, 400, 1000, 800), MON, False, False)  # overlaps (0,0,800,600)
+
+
+@pytest.mark.parametrize("above,grabbed", [
+    ([VAULT], False),                                                        # a password manager over part of it
+    ([win(hwnd=21, title="Toast", process="x.exe", rect=(700, 500, 1100, 900), ex_style=0x80020)], False),
+    ([win(hwnd=22, title="Spotify", process="Spotify.exe", rect=(900, 0, 1900, 1000))], True),  # beside it
+    ([win(hwnd=23, title="Spotify", process="Spotify.exe", rect=(800, 0, 1900, 600))], True),   # touching only
+    ([replace(VAULT, cloaked=True)], True),                                  # on another virtual desktop
+    ([replace(VAULT, minimized=True)], True),
+    ([replace(RIYA, rect=(500, 300, 800, 600))], True),                      # her own window
+])
+def test_a_background_glance_never_grabs_a_covered_window(above, grabbed):
+    core, _, _, _, clock, vision, source, grab = eyes_core()
+    source.stacks[1] = above
+    run(core, clock, 10)
+    assert (len(grab.calls) == 1 and len(vision.calls) == 1) if grabbed else (grab.calls == [] and vision.calls == [])
+
+
+def test_a_covered_window_is_only_part_of_its_monitor():
+    w = win(rect=(-300, 0, 500, 600))                          # partly off the left of its monitor
+    core, _, _, _, clock, vision, source, grab = eyes_core(info=w)
+    source.stacks[1] = [win(hwnd=24, title="x", process="x.exe", rect=(-300, 0, -10, 600))]  # covers only the off part
+    run(core, clock, 10)
+    assert len(grab.calls) == 1
+
+
+def test_a_screen_question_never_grabs_a_covered_window():
+    core, _, _, local, clock, vision, source, grab = eyes_core(vision=FakeModel("vision", ["Looks fine."]))
+    source.stacks[1] = [VAULT]
+    list(core.reply("what's on my screen?"))
+    assert grab.calls == [] and vision.calls == []
+    assert "on top of" in situation(local) and "Bitwarden" not in last_system(local)
+
+
+def test_a_window_above_that_cant_be_read_means_no_look():
+    core, _, _, local, clock, vision, source, grab = eyes_core()
+    source.above = lambda hwnd: (_ for _ in ()).throw(RuntimeError("the window is gone"))
+    run(core, clock, 10)
+    list(core.reply("what's on my screen?"))
+    assert grab.calls == [] and vision.calls == []
+
+
+def test_her_own_window_over_the_window_behind_her_is_fine_but_others_are_not():
+    vision = FakeModel("vision", ["Looks fine to me.", "Fine."])
+    core, _, _, local, clock, _, source, grab = eyes_core(vision=vision)
+    core.vision = None
+    run(core, clock, 2)
+    core.vision = vision
+    source.info = RIYA
+    source.stacks[1] = [replace(RIYA, rect=(500, 300, 900, 700))]   # she sits over part of it
+    run(core, clock, 5)
+    list(core.reply("can you see this error?"))
+    assert len(grab.calls) == 1
+    source.stacks[1] = [replace(RIYA, rect=(500, 300, 900, 700)), VAULT]
+    list(core.reply("can you see this error?"))
+    assert len(grab.calls) == 1 and "on top of" in situation(core.local)
+
+
+def test_the_foreground_changing_between_tick_and_grab_means_no_grab():
+    core, _, _, _, clock, vision, source, grab = eyes_core()
+    run(core, clock, 4)
+    read = source.window
+
+    def window(hwnd):                                          # the user switches windows right as the worker starts
+        source.info = win(hwnd=2, title="notes.txt - Notepad", process="notepad.exe")
+        return read(hwnd)
+
+    source.window = window
+    clock.advance(1)
+    core.tick()
+    wait(core)
     assert grab.calls == [] and vision.calls == []
 
 

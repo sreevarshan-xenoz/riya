@@ -234,3 +234,24 @@ def test_windows_info_reads_class_and_ex_style():
     w = WindowsWindowSource().foreground()
     if w is not None:
         assert isinstance(w.cls, str) and w.cls and isinstance(w.ex_style, int) and w.ex_style >= 0
+
+
+def test_fake_window_source_stacks():
+    a, b = info(hwnd=1), info(hwnd=2)
+    src = FakeWindowSource(a, stacks={1: [b]})
+    assert src.above(1) == [b] and src.above(2) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_windows_above_walks_up_the_real_z_order():
+    """Read-only: the windows above the real foreground window and above the desktop."""
+    src = WindowsWindowSource()
+    fg = src.foreground()
+    if fg is not None:
+        above = src.above(fg.hwnd)
+        assert all(isinstance(w, WindowInfo) and w.hwnd != fg.hwnd for w in above)
+    desk = _find("Progman")
+    if desk:
+        assert len(src.above(desk)) >= 1                   # at least the taskbar sits above the desktop
+    with pytest.raises(RuntimeError):
+        src.above(0x7FFFFFF0)                              # not a window: it can't tell
