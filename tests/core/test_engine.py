@@ -747,3 +747,14 @@ def test_an_about_me_turn_with_no_facts_says_nothing_yet():
     list(core.reply("tell me everything you know about me"))
     system = local.calls[-1][0]["content"]
     assert NO_ABOUT_ME_LINE in system and "You DO remember" not in system
+
+
+def test_the_ai_clause_is_only_on_identity_turns_and_greetings_get_the_memory_clause():
+    from riya.core.prompt import AI_RULE, reply_rule
+    core, _, _, local = make_core(local_replies=["Okay."])
+    list(core.reply("do you actually have feelings?"))
+    assert AI_RULE not in local.calls[-1][0]["content"]
+    list(core.reply("are you a bot?"))
+    assert local.calls[-1][0]["content"].endswith(reply_rule("small", identity=True))
+    list(core.speak_first(Action("greet", True, None, "back")))
+    assert local.calls[-1][0]["content"].endswith(reply_rule("greeting"))
