@@ -1,10 +1,11 @@
 "use strict";
-/** Reconnecting WebSocket client for the Riya core protocol. Never throws on network trouble. */
+/** Reconnecting WebSocket client for the Riya core protocol. Never throws on network trouble.
+ *  Loads in Node (tests) and as a plain script in a renderer (the hidden core-bridge window). */
 
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 10000];
 
 class CoreClient {
-  constructor({ url, WebSocketImpl, setTimeoutFn = setTimeout }) {
+  constructor({ url, WebSocketImpl, setTimeoutFn = (fn, ms) => setTimeout(fn, ms) }) {
     this.url = url;
     this.WebSocketImpl = WebSocketImpl;
     this.setTimeoutFn = setTimeoutFn;
@@ -106,4 +107,5 @@ class CoreClient {
   }
 }
 
-module.exports = { CoreClient, BACKOFF_MS };
+if (typeof module !== "undefined" && module.exports) module.exports = { CoreClient, BACKOFF_MS };
+else globalThis.RiyaCore = { CoreClient, BACKOFF_MS };
