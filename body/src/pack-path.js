@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { validateManifest } = require("./sprite-logic");
 
 /** Absolute path of `rel` inside `packDir`, or null if it is not a plain relative path that stays inside. */
 function resolveInPack(packDir, rel) {
@@ -41,4 +42,24 @@ function resolveManifestFrames(manifest, packDir, exists = () => true) {
   return { ...manifest, expressions };
 }
 
-module.exports = { resolveInPack, packCandidates, getPackPath, resolveManifestFrames };
+/** The first candidate pack whose manifest parses, passes validateManifest and has a neutral.closed file, as
+ *  { dir, manifest } with frame file URLs, or null. Each skipped pack is reported through `log`. */
+function loadFirstPack({ spritePack, repoRoot, bodyDir, existsSync = fs.existsSync,
+  readText = (p) => fs.readFileSync(p, "utf8"), log = () => {} }) {
+  for (const dir of packCandidates({ spritePack, repoRoot, bodyDir })) {
+    const file = path.join(dir, "manifest.json");
+    if (!existsSync(file)) continue;
+    try {
+      const raw = JSON.parse(readText(file));
+      validateManifest(raw, []);
+      const manifest = resolveManifestFrames(raw, dir, existsSync);
+      if (manifest.expressions.neutral && manifest.expressions.neutral.closed) return { dir, manifest };
+      log("sprite pack has no neutral.closed file, skipping", dir);
+    } catch (e) {
+      log("sprite pack manifest invalid, skipping", dir, e.message);
+    }
+  }
+  return null;
+}
+
+module.exports = { resolveInPack, packCandidates, getPackPath, resolveManifestFrames, loadFirstPack };

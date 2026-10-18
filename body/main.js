@@ -4,13 +4,12 @@
  *  Electron 33's main process has no WebSocket (Node 20), so the single core connection runs in a hidden bridge window
  *  (bridge.html) built on the reusable CoreClient and is relayed here over IPC; this process fans it out to the stage
  *  windows over `core:message` / `core:status` and forwards their `core:send` back. */
-const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, session } = require("electron");
 const { boundsFor, clampToArea } = require("./src/geometry");
-const { getPackPath, resolveManifestFrames } = require("./src/pack-path");
+const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
-const { pickHotkey, modeToApply, repositionTarget, shouldSendToCore } = require("./src/main-logic");
+const { pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
 const OPEN_SETTINGS = process.env.RIYA_OPEN_SETTINGS === "1"; // dev/smoke: open the settings window at startup
@@ -18,7 +17,7 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const TALK_HOTKEYS = ["Control+Alt+Space", "Control+Alt+F9"]; // first one that registers wins
 const FIRST_SETTINGS_WAIT_MS = 1500;
 const DRAG_INTERVAL_MS = 1000 / 60;
-const REPLAY_TYPES = ["hello", "settings", "state", "expression"];
+const STAGE_RESPAWN_MS = 1000;
 
 const state = {
   settings: {},
@@ -125,7 +124,7 @@ function sendBodyReady() {
 
 function onCoreMessage(msg) {
   if (!msg || typeof msg.type !== "string") return;
-  if (REPLAY_TYPES.includes(msg.type)) state.cache.set(msg.type, msg);
+  rememberForReplay(state.cache, msg);
   if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
     state.settings = { ...msg.settings };
     ensureMode(state.settings.mode);
@@ -156,23 +155,9 @@ function isUiSender(sender) {
 
 // ---- sprite pack ----------------------------------------------------------------------------------------------------
 
-/** The first usable pack (settings.sprite_pack, sprites/riya-v1, placeholder-pack) with frame paths as file URLs. */
+/** The first valid pack (settings.sprite_pack, sprites/riya-v1, placeholder-pack) with frame paths as file URLs. */
 function loadPack() {
-  const skipped = new Set();
-  const existsSync = (p) => !skipped.has(path.dirname(p)) && fs.existsSync(p);
-  for (;;) {
-    const dir = getPackPath({ spritePack: state.settings.sprite_pack, repoRoot: REPO_ROOT, bodyDir: __dirname, existsSync });
-    if (!dir) return null;
-    try {
-      const raw = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
-      const manifest = resolveManifestFrames(raw, dir, fs.existsSync);
-      if (manifest && manifest.expressions.neutral && manifest.expressions.neutral.closed) return { dir, manifest };
-      log("sprite pack has no usable neutral.closed frame, skipping", dir);
-    } catch (e) {
-      log("sprite pack manifest unreadable, skipping", dir, e.message);
-    }
-    skipped.add(dir);
-  }
+  return loadFirstPack({ spritePack: state.settings.sprite_pack, repoRoot: REPO_ROOT, bodyDir: __dirname, log });
 }
 
 /** The active talk-hotkey accelerator (e.g. "Control+Alt+F9" when the preferred one was taken), or null. */
@@ -214,6 +199,7 @@ function createStageWindow(mode) {
     },
   });
   stageWindows.add(win);
+  win.removeMenu();
   state.ignoring = false;
   if (mode === "buddy") {
     win.setIgnoreMouseEvents(true, { forward: true });
@@ -240,6 +226,15 @@ function createStageWindow(mode) {
       event.preventDefault();
       win.hide();
     }
+  });
+  for (const event of ["hide", "blur"]) win.on(event, () => cancelDragOf(win));
+  win.webContents.on("render-process-gone", (_event, details) => {
+    log(`stage renderer gone (${details.reason}), recreating`);
+    cancelDragOf(win);
+    if (state.win === win) state.win = null;
+    stageWindows.delete(win);
+    if (!win.isDestroyed()) win.destroy();
+    setTimeout(() => { if (!state.quitting && !state.win) ensureMode(state.mode); }, STAGE_RESPAWN_MS);
   });
   win.on("closed", () => {
     stageWindows.delete(win);
@@ -336,6 +331,16 @@ ipcMain.on("drag-start", (event) => {
 ipcMain.on("drag-end", (event) => {
   if (state.drag && isBuddySender(event.sender)) stopDrag(true);
 });
+
+/** A drag that loses its window (hidden, blurred, crashed) ends unsaved, and buddy goes back to click-through. */
+function cancelDragOf(win) {
+  if (!state.drag || state.drag.win !== win) return;
+  stopDrag(false);
+  if (state.mode === "buddy" && state.win === win && !win.isDestroyed()) {
+    win.setIgnoreMouseEvents(true, { forward: true });
+    state.ignoring = true;
+  }
+}
 
 function stopDrag(save) {
   const drag = state.drag;

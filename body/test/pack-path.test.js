@@ -70,3 +70,67 @@ test("resolveManifestFrames tolerates a manifest without expressions", () => {
   assert.deepEqual(resolveManifestFrames({ name: "x" }, PACK).expressions, {});
   assert.equal(resolveManifestFrames(null, PACK), null);
 });
+
+const { loadFirstPack } = require("../src/pack-path");
+
+/** A fake disk: { "<dir>/manifest.json": text, "<dir>/<frame>": "" }. */
+function fakeDisk(files) {
+  const norm = (p) => path.resolve(p);
+  const map = new Map(Object.entries(files).map(([p, text]) => [norm(p), text]));
+  return {
+    existsSync: (p) => map.has(norm(p)),
+    readText: (p) => {
+      if (!map.has(norm(p))) throw new Error(`ENOENT ${p}`);
+      return map.get(norm(p));
+    },
+  };
+}
+
+const MINE = path.join(REPO, "mine");
+const SPRITES = path.join(REPO, "sprites", "riya-v1");
+const PLACEHOLDER = path.join(BODY, "placeholder-pack");
+const goodManifest = (extra = {}) => JSON.stringify({
+  name: "p", version: 1, canvas: { width: 10, height: 20 }, crops: { upper: [0, 0, 10, 10] },
+  expressions: { neutral: { closed: "n.png" } }, ...extra,
+});
+const ARGS = { spritePack: "mine", repoRoot: REPO, bodyDir: BODY };
+
+test("loadFirstPack returns the first valid pack with frame URLs", () => {
+  const disk = fakeDisk({ [path.join(MINE, "manifest.json")]: goodManifest(), [path.join(MINE, "n.png")]: "" });
+  const pack = loadFirstPack({ ...ARGS, ...disk });
+  assert.equal(pack.dir, MINE);
+  assert.equal(pack.manifest.expressions.neutral.closed, pathToFileURL(path.join(MINE, "n.png")).href);
+});
+
+test("loadFirstPack skips a manifest that fails validateManifest and falls through to the next candidate", () => {
+  const skipped = [];
+  const disk = fakeDisk({
+    [path.join(MINE, "manifest.json")]: goodManifest({ name: "" }), // invalid: no name
+    [path.join(MINE, "n.png")]: "",
+    [path.join(SPRITES, "manifest.json")]: goodManifest({ canvas: { width: 0, height: 20 } }), // invalid canvas
+    [path.join(SPRITES, "n.png")]: "",
+    [path.join(PLACEHOLDER, "manifest.json")]: goodManifest(),
+    [path.join(PLACEHOLDER, "n.png")]: "",
+  });
+  const pack = loadFirstPack({ ...ARGS, ...disk, log: (...a) => skipped.push(a.join(" ")) });
+  assert.equal(pack.dir, PLACEHOLDER);
+  assert.equal(skipped.length, 2);
+  assert.match(skipped[0], /missing name/);
+  assert.match(skipped[1], /missing canvas/);
+});
+
+test("loadFirstPack skips unparsable JSON and a pack whose neutral.closed file is missing", () => {
+  const disk = fakeDisk({
+    [path.join(MINE, "manifest.json")]: "{ not json",
+    [path.join(SPRITES, "manifest.json")]: goodManifest(), // n.png absent
+    [path.join(PLACEHOLDER, "manifest.json")]: goodManifest(),
+    [path.join(PLACEHOLDER, "n.png")]: "",
+  });
+  assert.equal(loadFirstPack({ ...ARGS, ...disk, log: () => {} }).dir, PLACEHOLDER);
+});
+
+test("loadFirstPack returns null when no candidate is usable", () => {
+  const disk = fakeDisk({ [path.join(PLACEHOLDER, "manifest.json")]: goodManifest({ crops: {} }) });
+  assert.equal(loadFirstPack({ ...ARGS, ...disk, log: () => {} }), null);
+  assert.equal(loadFirstPack({ ...ARGS, ...fakeDisk({}), log: () => {} }), null);
+});
