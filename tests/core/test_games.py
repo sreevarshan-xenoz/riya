@@ -99,20 +99,33 @@ def test_word_chain_valid_word_gets_her_word():
     assert f'"{v.word}"' in game_situation(s, v)
 
 
-def test_word_chain_takes_the_word_out_of_a_short_message():
+def test_word_chain_takes_one_word_with_punctuation():
     s = chain("apple")
-    assert play(s, "eagle, your turn").kind == "ok"
+    assert play(s, "  Eagle?! ").kind == "ok"
     assert "eagle" in s.used and s.turns == 1
 
 
-def test_word_chain_more_than_3_words_is_off_topic():
+@pytest.mark.parametrize("text", ["hang on, my agent just finished", "eagle, your turn", "ok thanks", "e4gle", "",
+                                  "it's", "42"])
+def test_word_chain_anything_but_one_alphabetic_word_is_chat(text):
     s = chain("apple")
-    v = play(s, "hang on, my agent just finished")
+    v = play(s, text)
     assert v.kind == "off" and not v.over and s.turns == 0 and s.word == "apple" and s.used == {"apple"}
 
 
-@pytest.mark.parametrize("text,reason", [("banana", "wrong letter"), ("e4gle", "not a word"), ("", "not a word"),
-                                         ("xzqrt", "not a word"), ("e", "not a word"), ("apple", "wrong letter")])
+@pytest.mark.parametrize("text", ["how's my agent doing?", "did claude finish?", "is the colab run done", "Training?",
+                                  "the build broke", "tests pass", "AGENTS"])
+def test_about_agents(text):
+    assert games.about_agents(text)
+
+
+@pytest.mark.parametrize("text", ["is it alive?", "a towel", "running water", "is it a cat", "rerun"])
+def test_not_about_agents(text):
+    assert not games.about_agents(text)
+
+
+@pytest.mark.parametrize("text,reason", [("banana", "wrong letter"), ("xzqrt", "not a word"), ("e", "not a word"),
+                                         ("apple", "wrong letter")])
 def test_word_chain_invalid_words(text, reason):
     s = chain("apple")
     v = play(s, text)

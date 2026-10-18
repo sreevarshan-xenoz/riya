@@ -89,6 +89,13 @@ def _threads(action: Action) -> list:
     return [action.thread] if action.thread else []
 
 
+def _chat_mid_game(text: str) -> bool:
+    """Never a game move, in any game: a screen question, a remember-that, an identity, about-me or feelings question,
+    or a mention of their agents ("how's my agent doing?")."""
+    return (is_screen_question(text) or remember_intent(text) is not None or is_identity_question(text)
+            or about_me(text) or is_feelings_question(text) or games.about_agents(text))
+
+
 def _thumb(jpeg: bytes) -> bytes:
     try:
         return thumb(jpeg)
@@ -229,7 +236,8 @@ class RiyaCore:
         """The game side of a user turn, judged by the engine before the model is asked: a stop phrase ends the
         active game; a start request (or a yes to a fresh offer, with no game on) starts one, and mid-game only a
         request for a different game switches; otherwise an active game plays the turn (an "off" verdict: chat, a
-        normal reply). None when no game is involved. Any turn uses up a pending offer."""
+        normal reply; _chat_mid_game turns are always off). None when no game is involved. Any turn uses up a
+        pending offer."""
         now = self.clock.now()
         offer, self._offer = self._offer, None
         offered = offer[0] if offer and now - offer[1] < BID_IGNORED_S else None
@@ -244,7 +252,7 @@ class RiyaCore:
             return g, games.opening(g)
         if g is None:
             return None
-        v = games.play(g, text)
+        v = games.off(g) if _chat_mid_game(text) else games.play(g, text)
         self._game_at = now
         if v.over:
             self.game = None
