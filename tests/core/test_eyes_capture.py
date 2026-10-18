@@ -152,3 +152,26 @@ def test_is_riya_rules():
     assert capture.is_riya_window(r"C:\x\Electron.EXE", "Riya - overlay")
     assert not capture.is_riya_window(r"C:\x\electron.exe", "VS Code")
     assert not capture.is_riya_window(r"C:\x\chrome.exe", "Riya")
+
+
+def test_clean_title_lone_surrogate_and_emoji():
+    assert capture.clean_title("a\ud83dz") == "a\ufffdz"
+    assert capture.clean_title("Riya \U0001F600 \u65e5\u672c") == "Riya \U0001F600 \u65e5\u672c"
+    capture.clean_title("a\ud83dz").encode("utf-8")
+
+
+def test_thumb_of_empty_bytes_is_empty():
+    assert thumb(b"") == b""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+@pytest.mark.parametrize("window_first", [True, False])
+def test_window_and_idle_sources_do_not_clobber_each_other(window_first):
+    from riya.core.presence import WindowsIdleSource
+
+    if window_first:
+        w, idle = WindowsWindowSource(), WindowsIdleSource()
+    else:
+        idle, w = WindowsIdleSource(), WindowsWindowSource()
+    assert w.foreground() is not None
+    assert isinstance(idle.fullscreen(), bool)
