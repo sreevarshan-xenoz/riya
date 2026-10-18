@@ -16,3 +16,7 @@ data/
 # Riya's private runtime state
 riya_memory.json
 riya_slots/
+
+# brainstorm/sdd scratch and private character art
+.superpowers/
+riya images/
