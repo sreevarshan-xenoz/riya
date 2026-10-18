@@ -3,6 +3,9 @@
  *  Loads in Node (tests) and as a plain script in a renderer (the hidden core-bridge window). */
 
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 10000];
+/** Every core -> body message type (docs/protocol.schema.json core_to_body; a test keeps them equal). */
+const CORE_TYPES = ["hello", "settings", "state", "expression", "say", "say_end", "mouth", "memories", "error", "look",
+  "eyes"];
 
 class CoreClient {
   constructor({ url, WebSocketImpl, setTimeoutFn = (fn, ms) => setTimeout(fn, ms) }) {
@@ -107,5 +110,5 @@ class CoreClient {
   }
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { CoreClient, BACKOFF_MS };
-else globalThis.RiyaCore = { CoreClient, BACKOFF_MS };
+if (typeof module !== "undefined" && module.exports) module.exports = { CoreClient, BACKOFF_MS, CORE_TYPES };
+else globalThis.RiyaCore = { CoreClient, BACKOFF_MS, CORE_TYPES };

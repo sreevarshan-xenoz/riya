@@ -5,8 +5,13 @@
 
 const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
-const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations"];
-const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS];
+const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
+  "eyes_enabled"];
+const PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
+const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
+const MAX_PATTERNS = 100; // the core's limits
+const MAX_PATTERN_LEN = 300;
+const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const QUIET_ERROR = "Use HH:MM-HH:MM (24-hour), like 23:30-08:00, or leave it empty to turn quiet hours off.";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -43,6 +48,33 @@ function validateQuietHours(raw) {
   return QUIET_RE.test(text) ? { ok: true, value: text } : { ok: false, error: QUIET_ERROR };
 }
 
+/** { ok: true, patterns } from textarea text, one regex per line (blanks and repeats dropped), each checked as a JS
+ *  regex (the core re-validates), or { ok: false, error } naming the first bad line. */
+function parsePatternLines(raw) {
+  const patterns = [];
+  const lines = typeof raw === "string" ? raw.split(/\r?\n/) : [];
+  for (let i = 0; i < lines.length; i++) {
+    const pattern = lines[i].trim();
+    if (!pattern || patterns.includes(pattern)) continue;
+    if (pattern.length > MAX_PATTERN_LEN) return { ok: false, error: `Line ${i + 1} is longer than ${MAX_PATTERN_LEN} characters.` };
+    try {
+      new RegExp(pattern);
+    } catch (e) {
+      return { ok: false, error: `Line ${i + 1} is not a valid regular expression: ${pattern}` };
+    }
+    patterns.push(pattern);
+  }
+  if (patterns.length > MAX_PATTERNS) return { ok: false, error: `Use at most ${MAX_PATTERNS} patterns.` };
+  return { ok: true, patterns };
+}
+
+/** A whole number within the range of `key`, from a number or numeric text; null if it isn't one. */
+function rangedInt(key, raw) {
+  const [lo, hi] = INT_RANGES[key];
+  const n = typeof raw === "string" ? (raw.trim() ? Number(raw) : NaN) : typeof raw === "number" ? raw : NaN;
+  return Number.isInteger(n) && n >= lo && n <= hi ? n : null;
+}
+
 /** A validated one-key `set_settings` patch for a control: { ok: true, patch } or { ok: false, error }. */
 function settingPatch(key, raw) {
   if (BOOL_KEYS.includes(key)) return { ok: true, patch: { [key]: Boolean(raw) } };
@@ -59,6 +91,15 @@ function settingPatch(key, raw) {
   if (key === "quiet_hours") {
     const r = validateQuietHours(raw);
     return r.ok ? { ok: true, patch: { quiet_hours: r.value } } : r;
+  }
+  if (key in INT_RANGES) {
+    const n = rangedInt(key, raw);
+    const [lo, hi] = INT_RANGES[key];
+    return n === null ? { ok: false, error: `Enter a whole number from ${lo} to ${hi}.` } : { ok: true, patch: { [key]: n } };
+  }
+  if (PATTERN_KEYS.includes(key)) {
+    const r = parsePatternLines(raw);
+    return r.ok ? { ok: true, patch: { [key]: r.patterns } } : r;
   }
   return { ok: false, error: `${key} can't be changed here.` };
 }
@@ -91,6 +132,30 @@ class DeferWhileFocused {
     this.pending = null;
     return pending;
   }
+}
+
+/** "12 of 150 today" from an `eyes` message, or a dash before the core has said. */
+function eyesCountText(eyes) {
+  if (!eyes || !Number.isFinite(eyes.glances_today) || !Number.isFinite(eyes.cap)) return "—";
+  return `${eyes.glances_today} of ${eyes.cap} today`;
+}
+
+/** One line about why she isn't looking, from an `eyes` message ("" when she is free to). */
+function eyesStatusText(eyes) {
+  if (!eyes) return "";
+  if (!eyes.enabled) return "Her eyes are off.";
+  return eyes.dont_look ? "Don't look is on: she is covering her eyes." : "";
+}
+
+/** The glance notes as { id, text, meta } rows (time, app, activity); entries without a numeric id are skipped. */
+function glanceRows(msg, opts) {
+  const list = msg && Array.isArray(msg.glances) ? msg.glances : [];
+  const str = (v) => (typeof v === "string" ? v.trim() : "");
+  return list.filter((g) => g && Number.isInteger(g.id)).map((g) => ({
+    id: g.id,
+    text: str(g.activity) || "(no description)",
+    meta: `${formatWhen(g.at, opts)} · ${str(g.app) || "unknown app"}`,
+  }));
 }
 
 function hotkeyText(accelerator) {
@@ -131,7 +196,7 @@ class ErrorRouter {
   /** The target for an error message ("global" if nothing fits); consumes the pending actions. */
   route(message) {
     const text = typeof message === "string" ? message : "";
-    const named = /setting '(\w+)'/.exec(text);
+    const named = /(?:setting|pattern in) '(\w+)'/.exec(text);
     let target = named && SETTING_KEYS.includes(named[1]) ? `setting:${named[1]}` : null;
     if (!target && /autostart/i.test(text)) target = "setting:autostart";
     if (!target && this.pending.length) target = this.pending[this.pending.length - 1];
@@ -142,7 +207,7 @@ class ErrorRouter {
 
 const api = {
   MODES, VOICES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
-  episodeText, dueText, memoryLists, ErrorRouter, DeferWhileFocused,
+  episodeText, dueText, memoryLists, ErrorRouter, DeferWhileFocused, parsePatternLines, eyesCountText, eyesStatusText, glanceRows,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaSettings = api;

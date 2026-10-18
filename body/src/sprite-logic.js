@@ -73,7 +73,13 @@ function breathing(tMs) {
   return { scale: 1 + 0.012 * phase, dy: 0 - 3 * phase };
 }
 
-function leanFor({ presence, curiosity } = {}) {
+const LEAN_SIDES = { left: { rotateDeg: -6, dx: -12 }, right: { rotateDeg: 6, dx: 12 } };
+
+/** Lean toward the side of the window she is watching; else (center, none) the old curious lean. Never while gaming. */
+function leanFor({ presence, curiosity, look } = {}) {
+  if (presence === 'gaming') return { rotateDeg: 0, dx: 0 };
+  const side = look && look.watching === true ? look.side : null;
+  if (side === 'left' || side === 'right') return { ...LEAN_SIDES[side] };
   return presence === 'focused' && curiosity > 0.6 ? { rotateDeg: -6, dx: -12 } : { rotateDeg: 0, dx: 0 };
 }
 

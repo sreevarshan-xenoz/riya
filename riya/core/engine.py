@@ -13,21 +13,25 @@ from pydantic import BaseModel
 
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
+from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
+from riya.core.eyes.policy import GlancePolicy, window_refusal
+from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
-from riya.core.prompt import (IDENTITY_SITUATION, bid_situation, build_messages, greeting_situation,
-                              remember_situation)
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, ErrorMsg, ExpressionMsg, GetMemories,
-                                Hello, MemoriesMsg, MemoryCorrect, MemoryDelete, Say, SayEnd, SetSettings,
-                                SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
+from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, bid_situation, build_messages,
+                              cant_see_situation, eyes_block, greeting_situation, remember_situation)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
+                                EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
+                                MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey,
+                                ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
-                               is_identity_question, limit_emoji, strip_label, turn_kind)
+                               is_feelings_question, is_identity_question, limit_emoji, strip_label, turn_kind)
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -42,6 +46,18 @@ PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
+GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
+GLANCE_WAIT_S = 30  # a screen question waits this long for a glance in flight to finish
+TODAY_KEY = "eyes.today"  # {"day", "count"}: the daily cap survives a restart
+PEEK_EVERY_S = 30  # same window past the refresh time: a local-only thumbnail check, at most this often
+LAST_WINDOW_S = 300  # a screen question typed into her own window looks at the window they were just in
+BID_NOTE_S = 1800  # a note this fresh may be a bid's reason
+SEE_TOKENS = 400  # a screen answer's online budget, at least (flash models may spend tokens thinking)
+BUDDY_HALF_W = 150  # the buddy window is 300 px wide; buddy_position is its top-left corner
+CENTER_BAND = 0.1  # the window's centre within 10% of its monitor's width of hers: "center"
+TITLE_CHARS = 200
+COULDNT_SEE = "you tried to look but couldn't see it (your eyes didn't answer)"
+_EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
 
@@ -56,6 +72,17 @@ def _query(action: Action) -> str:
 
 def _threads(action: Action) -> list:
     return [action.thread] if action.thread else []
+
+
+def _thumb(jpeg: bytes) -> bytes:
+    try:
+        return thumb(jpeg)
+    except Exception:  # an image PIL can't read: "unknown", so the refresh check never fires on it
+        return b""
+
+
+def _key(info: WindowInfo) -> tuple[int, str]:
+    return info.hwnd, info.title
 
 
 class Utterance:
@@ -76,8 +103,15 @@ class Utterance:
 
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
-                 emit: Callable[[BaseModel], None], persona: str | None = None):
+                 emit: Callable[[BaseModel], None], persona: str | None = None, vision: ChatModel | None = None,
+                 window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
+                 body_present: Callable[[], bool] = lambda: True):
+        """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
+        window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
+        body is connected (her eyes stay shut without one)."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
+        self.body_present, self.quit_requested = body_present, threading.Event()  # quit_requested: the tray's Quit
+        self.vision, self.windows, self._grab = vision, window_source or FakeWindowSource(None), grab
         # the small local model gets the short persona, the online one the full sheet; persona= overrides both
         self.personas = {k: persona if persona is not None else persona_prompt(k) for k in ("local", "online")}
         self.examples = style_examples()
@@ -102,8 +136,22 @@ class RiyaCore:
         self._last_purge: float | None = None
         self._last_consolidation: float | None = None
         self._away_s = 0.0  # absence behind the greeting that speak_first is about to make
-        self._expression = self.feelings.expression()
         self._acks = 0  # remember-that acks said so far, which picks the next one
+        s = self.settings
+        self.policy = GlancePolicy(clock, cap=s.glance_daily_cap, min_gap_s=s.glance_min_gap_s)
+        if isinstance(today := self.kv.get(TODAY_KEY), dict):
+            self.policy.restore(today.get("day"), today.get("count"))
+        self._eyes_lock = threading.RLock()  # the policy and the eyes state: tick, reply, socket and glance threads
+        self._expr_lock = threading.Lock()  # _sync_expression compares and sets under it
+        self._eyes_gen = 0  # bumped whenever she must stop looking (don't-look, eyes off...): in-flight looks discard
+        self._dont_look, self._eyes_on = s.dont_look, s.eyes_enabled
+        self._glance_thread: threading.Thread | None = None
+        self._glanced: tuple[tuple[int, str], float] | None = None  # (window, when) of her last look
+        self._peeked_at: float | None = None
+        self._behind: tuple[WindowInfo, float] | None = None  # the last foreground window that wasn't hers
+        self._look: Look | None = None
+        self._eyes_sent: EyesMsg | None = None
+        self._expression = self._face()
 
     @property
     def settings(self) -> Settings:
@@ -120,13 +168,21 @@ class RiyaCore:
                 saved = self._take_user_turn(text)
             except Exception:
                 log.exception("couldn't record the user's turn")
-            situation = " ".join(filter(None, [remember_situation(saved) if saved else None,
-                                               IDENTITY_SITUATION if is_identity_question(text) else None])) or None
+            base = [remember_situation(saved) if saved else None,
+                    IDENTITY_SITUATION if is_identity_question(text) else None,
+                    FEELINGS_SITUATION if is_feelings_question(text) else None]
+            seeing = None
+            if not saved and is_screen_question(text):
+                try:
+                    seeing = self._look_now(base)
+                except Exception:
+                    log.exception("couldn't look for a screen question")
+            situation = " ".join(filter(None, [*base, seeing.situation if seeing else None])) or None
             lead = None
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
-                                   small=bool(saved))
+                                   small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None)
 
     def _take_user_turn(self, text: str) -> str | None:
         """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away)."""
@@ -160,12 +216,15 @@ class RiyaCore:
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
-               lead: str | None = None, small: bool = False) -> Iterator[str]:
+               lead: str | None = None, small: bool = False,
+               seeing: SimpleNamespace | None = None) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
         small makes it small talk on the local model whatever the text (a remember-that turn just reacts).
-        A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not recorded."""
+        seeing (from _look_now, with an image) sends the image with her full prompt to the vision model; the same
+        shaping applies. A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not
+        recorded."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped = None, {"stream": False}, []
         try:
@@ -177,17 +236,30 @@ class RiyaCore:
                 yield lead
             route_text = "" if small else user_text or ""
             turn, budget, cap = self._shape(kind, route_text)
-            route = self.router.route(route_text)  # decided first, so the prompt carries the matching persona
-            messages = build_messages(persona=self.personas[route], examples=self.examples,
-                                      feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=self._retrieve(query, threads), turns=self.turns,
-                                      user_text=user_text, situation=situation, now=self.clock.now(), kind=turn)
+            # decided first, so the prompt carries the matching persona; a look at the screen is always online
+            route = "online" if seeing else self.router.route(route_text)
+            retrieved, eyes = self._retrieve(query, threads), self._eyes_context()
+
+            def build(persona: str, situation: str | None) -> list[dict]:
+                return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
+                                      retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
+                                      now=self.clock.now(), kind=turn, eyes=eyes)
+
+            messages = build(self.personas[route], situation)
             if route == "online":
                 thinking = True
                 self.feelings.on_event("thinking")
                 self._sync_expression()
-            stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
-            ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
+            if seeing:
+                messages[-1] = vision_messages(seeing.jpeg, user_text)[-1]
+                stream = self._see_stream(messages, seeing,
+                                          lambda why: build(self.personas["local"], seeing.fallback(why)),
+                                          budget, max(ONLINE_BUDGETS.get(turn, budget), SEE_TOKENS))
+                ran_out = lambda: getattr(self.local if seeing.fell_back else self.vision,  # noqa: E731
+                                          "finish_reason", None) == "length"
+            else:
+                stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
+                ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
             kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead)), others=bool(lead),
                                 dropped=dropped)
             sentences = cap_sentences(kept, 1 if lead else cap)
@@ -324,13 +396,22 @@ class RiyaCore:
             self._sync_expression()
         return False
 
+    def _bid_reason(self, action: Action) -> str:
+        """Without a thread, the latest fresh note may be the reason ("still on that bug?"); never a private one, and
+        not while her eyes are off or covered."""
+        s, g = self.settings, next(iter(self.memory.recent_glances(1)), None)
+        if action.thread or g is None or not s.eyes_enabled or s.dont_look or self.clock.now() - g.at > BID_NOTE_S                 or is_private(g.activity):
+            return action.reason
+        return f"{action.reason}; last you saw, they were {g.activity} in {g.app}" + (
+            f" ({g.notable})" if g.notable else "")
+
     def _bid(self, action: Action) -> None:
         try:
             messages = build_messages(persona=self.personas["local"], examples=self.examples,
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
-                                      user_text=None, situation=bid_situation(action.reason, action.thread),
-                                      now=self.clock.now())
+                                      user_text=None, situation=bid_situation(self._bid_reason(action), action.thread),
+                                      now=self.clock.now(), eyes=self._eyes_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip())
         except Exception:
@@ -374,6 +455,7 @@ class RiyaCore:
         if action is None:
             self._step("bid", self._maybe_bid)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
+        self._step("eyes", lambda: self._eyes_step(now))
         self._step("feelings", lambda: self.feelings.tick(present=self.presence.state != "away"))
         self._step("consolidation", lambda: self._maybe_consolidate(now))
         self._step("purge", lambda: self._maybe_purge(now))
@@ -432,6 +514,7 @@ class RiyaCore:
         if self._last_purge is None or now - self._last_purge >= PURGE_EVERY_S:
             self._last_purge = now
             self.memory.purge_transcripts()
+            self.memory.purge_glances()
             self.memory.resolve_stale_threads()
 
     def _maybe_save(self, now: float) -> None:
@@ -456,20 +539,280 @@ class RiyaCore:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
         return action
 
+    # ---- eyes ---------------------------------------------------------------------------------------
+    def _eyes_context(self) -> str | None:
+        """The eyes block: none with her eyes off, and no "what they're doing now" line while she isn't looking."""
+        s = self.settings
+        if not s.eyes_enabled:
+            return None
+        return eyes_block(self.memory.recent_glances(3), self.clock.now(), now_line=not s.dont_look)
+
+    def _why_not(self, info: WindowInfo | None, s: Settings, force: bool = False,
+                 presence: str | None = None) -> str | None:
+        """None when she may look at info now, else the policy's reason. Call with _eyes_lock held."""
+        if not self.body_present():
+            return "no body"
+        return self.policy.allowed(info=info, presence=presence or self.presence.state, eyes_enabled=s.eyes_enabled,
+                                   dont_look=s.dont_look, online_ok=self.vision is not None and s.online_enabled,
+                                   extra_titles=s.eyes_deny_titles, extra_processes=s.eyes_deny_processes, force=force)
+
+    def _may_look(self, gen: int) -> bool:
+        """Nothing closed her eyes since gen was read (a look in flight is dropped, never sent or kept)."""
+        return gen == self._eyes_gen and self._eyes_on and not self._dont_look
+
+    def _record(self, info: WindowInfo, small: bytes) -> None:
+        """A look happened (with _eyes_lock held); today's count is saved so the cap survives a restart."""
+        self.policy.record(info, small)
+        self._glanced = (_key(info), self.clock.now())
+        self._save_today()
+
+    def _sent(self) -> None:
+        """A vision request went out with nothing kept (with _eyes_lock held): it counts all the same."""
+        self.policy.sent()
+        self._save_today()
+
+    def _save_today(self) -> None:
+        day, count = self.policy.today()
+        self.kv.set(TODAY_KEY, {"day": day, "count": count})
+
+    def _fresh(self, info: WindowInfo) -> WindowInfo | None:
+        """info re-read by its handle right before a grab: still open, not minimized, not hers, same title and
+        process (so the handle wasn't reused), with its current rect. None otherwise."""
+        try:
+            now = self.windows.window(info.hwnd)
+        except Exception:
+            return None
+        if now is None or now.minimized or now.is_riya or (now.title, now.process) != (info.title, info.process):
+            return None
+        return now
+
+    def _covered(self, info: WindowInfo) -> bool:
+        """Another window sits above info in z-order over the part a grab would take (one of hers, a minimized or a
+        cloaked one doesn't count). True as well when that can't be told."""
+        try:
+            above = self.windows.above(info.hwnd)
+        except Exception:
+            return True
+        left, top, right, bottom = clamp_rect(info.rect, info.monitor)
+        return any(max(left, w.rect[0]) < min(right, w.rect[2]) and max(top, w.rect[1]) < min(bottom, w.rect[3])
+                   for w in above if not (w.is_riya or w.minimized or w.cloaked))
+
+    def _eyes_step(self, now: float) -> None:
+        """Each tick: tell the body where the window is, and start a glance in a worker thread when one is allowed
+        and wanted. The tick itself never waits for a capture or the vision model."""
+        s, info = self.settings, self.windows.foreground()
+        if info is not None and not info.is_riya:
+            self._behind = (info, now)
+        self._emit_look(info, s)
+        with self._eyes_lock:
+            self._emit_eyes(s)
+            if self._glance_thread is not None and self._glance_thread.is_alive():
+                return
+            wanted = self.policy.wanted(info, None)
+            peek = not wanted and info is not None and self._glanced is not None and self._glanced[0] == _key(info) \
+                and now - self._glanced[1] >= self.policy.refresh_s \
+                and (self._peeked_at is None or now - self._peeked_at >= PEEK_EVERY_S)
+            if not (wanted or peek) or self._why_not(info, s) is not None:
+                return
+            if peek:
+                self._peeked_at = now
+            self._glance_thread = threading.Thread(target=self._glance, args=(info, self._eyes_gen, peek),
+                                                   name="riya-glance", daemon=True)
+            self._glance_thread.start()
+
+    def _glance(self, info: WindowInfo, gen: int, peek: bool) -> None:
+        """The worker: re-read the window and re-check the policy (still in front, nothing over it), grab, (for a
+        peek) check the screen changed, describe, keep the note. Every request sent counts. An outage backs off 30
+        min; replies with no usable note in a row 5, 15, 30, then 60 min. Closing her eyes at any point drops the look
+        (never sent once closed)."""
+        try:
+            with self._eyes_lock:
+                if not self._may_look(gen):
+                    return
+                fresh = self._fresh(info)
+                if fresh is None or self._why_not(fresh, self.settings) is not None:
+                    return
+                front = self.windows.foreground()  # still the window in front, with nothing over it
+                if front is None or front.hwnd != fresh.hwnd or self._covered(fresh):
+                    return
+            info = fresh
+            jpeg = self._grab(info)
+            if not jpeg:
+                return
+            small = _thumb(jpeg)
+            if peek:
+                with self._eyes_lock:
+                    if not self.policy.wanted(info, small):
+                        return
+            if not self._may_look(gen):
+                return
+            note, outcome = describe(self.vision, jpeg)
+            del jpeg
+            with self._eyes_lock:
+                if not self._may_look(gen) or note is None:
+                    self._sent()
+                    self._emit_eyes()
+                    if note is not None:
+                        log.info("dropped a glance: her eyes closed while it was in flight")
+                    elif outcome == "unparseable":
+                        self.policy.unusable()
+                    else:
+                        self.policy.backoff(GLANCE_BACKOFF_S)
+                    return
+                self._record(info, small)
+                self.policy.usable()
+                title = "" if is_private(note.activity) else info.title[:TITLE_CHARS]
+                self.memory.add_glance(note.app, title, note.activity, note.details, note.notable)
+                self._emit_eyes()
+        except Exception:
+            log.exception("glance failed")
+
+    def _look_now(self, base: list[str | None]) -> SimpleNamespace:
+        """A fresh look for a screen question (force: no min gap or backoff; privacy, the cap and don't-look still
+        hold). jpeg is None when she can't look, and situation says why; otherwise situation tells her to answer from
+        the image, and fallback is what she's told if the vision model then fails."""
+        s, now = self.settings, self.clock.now()
+        info = self.windows.foreground()
+        if info is not None and info.is_riya and self._behind and now - self._behind[1] <= LAST_WINDOW_S:
+            info = self._behind[0]  # typed into her own window: the window they were just in
+        presence = "gaming" if self.presence.state == "gaming" else "talking"  # they're talking to her right now
+        # one look at a time: a glance in flight finishes first, so the cap and the vision model are never shared
+        # (and no glance can start meanwhile: the tick can't run while a reply holds the core lock)
+        busy = self._glance_thread
+        if busy is not None and busy.is_alive():
+            busy.join(GLANCE_WAIT_S)
+        with self._eyes_lock:
+            gen = self._eyes_gen
+            why = self._why_not(info, s, force=True, presence=presence)
+            if why is None and busy is not None and busy.is_alive():
+                why = "you're still busy with another look at their screen"
+            if why is None:
+                fresh = self._fresh(info)
+                why = "the window changed" if fresh is None else self._why_not(fresh, s, force=True,
+                                                                                presence=presence)
+                info = fresh or info
+            if why is None and self._covered(info):
+                why = "covered"
+            if why is None and not self._may_look(gen):
+                why = "don't look" if self._eyes_on else "eyes off"
+        jpeg = b""
+        if why is None:
+            try:
+                jpeg = self._grab(info)
+                why = None if jpeg else "no window"
+            except Exception:
+                log.exception("screen capture failed")
+                why = "the screen capture didn't work"
+        if why is None and not self._may_look(gen):
+            why = "don't look"
+        guess = None
+        if window_refusal(info, s.eyes_deny_titles, s.eyes_deny_processes) is None:
+            guess = f'"{info.title}" ({info.process})'
+        if why is not None:
+            return SimpleNamespace(jpeg=None, situation=cant_see_situation(
+                why, guess if why == "online model unavailable" else None))
+        return SimpleNamespace(jpeg=jpeg, info=info, thumb=_thumb(jpeg), gen=gen, fell_back=False,
+                               situation=SEEING_SITUATION.format(window=guess),
+                               fallback=lambda why: " ".join(filter(None, [*base, cant_see_situation(
+                                   why, guess if why == COULDNT_SEE else None)])))
+
+    def _see_stream(self, messages: list[dict], seeing: SimpleNamespace, fallback: Callable[[str], list[dict]],
+                    local_budget: int, budget: int) -> Iterator[str]:
+        """The vision model's answer about the screen; its first piece counts the look and ends a run of unusable
+        replies. If her eyes closed since the grab, the image is never sent; if the model fails before saying
+        anything, the request still counts and glances back off (30 min, or for empty replies in a row 5, 15, 30,
+        then 60 min). Either way the local model answers from fallback(why) instead (text only, no image)."""
+        if not self._may_look(seeing.gen):
+            seeing.fell_back = True
+            yield from self.local.stream(fallback("don't look" if self._eyes_on else "eyes off"), local_budget,
+                                         LOCAL_TEMPERATURE)
+            return
+        stream, said, failed = self.vision.stream(messages, budget), False, False
+        try:
+            for piece in stream:
+                if not said:
+                    said = True
+                    with self._eyes_lock:
+                        self._record(seeing.info, seeing.thumb)
+                        self.policy.usable()  # the vision model answered: unusable replies start over
+                    self._emit_eyes()
+                yield piece
+            if said:
+                return
+        except Exception as e:
+            if said:
+                log.warning("the vision stream ended early: %s", e)
+                return
+            log.warning("couldn't see for a screen question: %s", e)
+            failed = True
+        finally:
+            stream.close()
+        with self._eyes_lock:
+            self._sent()
+            if failed:
+                self.policy.backoff(GLANCE_BACKOFF_S)
+            else:
+                self.policy.unusable()
+        self._emit_eyes()
+        seeing.fell_back = True
+        yield from self.local.stream(fallback(COULDNT_SEE), local_budget, LOCAL_TEMPERATURE)
+
+    @staticmethod
+    def _side(info: WindowInfo, s: Settings) -> str:
+        """Where the window's centre is from her: her buddy centre when known, else its monitor's centre."""
+        left, _, right, _ = clamp_rect(info.rect, info.monitor)
+        if right <= left:
+            left, _, right, _ = info.rect
+        mon_left, _, mon_right, _ = info.monitor
+        pos = s.buddy_position if s.mode == "buddy" else None
+        ref = pos[0] + BUDDY_HALF_W if pos else (mon_left + mon_right) / 2
+        dx = (left + right) / 2 - ref
+        return "center" if abs(dx) <= CENTER_BAND * (mon_right - mon_left) else "left" if dx < 0 else "right"
+
+    def _emit_look(self, info: WindowInfo | None, s: Settings) -> None:
+        """look, only when it changed: the side of her the window is on, and whether she's watching it."""
+        why = window_refusal(info, s.eyes_deny_titles, s.eyes_deny_processes)
+        side = None if why in ("no window", "minimized", "riya window") else self._side(info, s)
+        watching = (why is None and s.eyes_enabled and not s.dont_look
+                    and self.presence.state in ("focused", "talking"))
+        look = Look(side=side, watching=watching)
+        if look != self._look:
+            self._look = look
+            self.emit(look)
+
+    def _eyes_msg(self, s: Settings | None = None) -> EyesMsg:
+        s = s or self.settings
+        with self._eyes_lock:
+            return EyesMsg(enabled=s.eyes_enabled, dont_look=s.dont_look, glances_today=self.policy.glances_today(),
+                           cap=s.glance_daily_cap)
+
+    def _emit_eyes(self, s: Settings | None = None) -> None:
+        """eyes, only when it changed."""
+        with self._eyes_lock:
+            msg = self._eyes_msg(s)
+            if msg != self._eyes_sent:
+                self._eyes_sent = msg
+                self.emit(msg)
+
     # ---- state out ----------------------------------------------------------------------------------
     def _save_feelings(self) -> None:
         self._last_save = self.clock.now()
         self.kv.set("feelings", self.feelings.to_dict())
 
+    def _face(self) -> str:
+        """Her expression: covering her eyes while don't-look is on, otherwise what she feels."""
+        return "covering_eyes" if self._dont_look else self.feelings.expression()
+
     def _sync_expression(self) -> None:
-        name = self.feelings.expression()
-        if name != self._expression:
-            self._expression = name
-            self.emit(ExpressionMsg(name=name))
+        with self._expr_lock:  # computed and sent together, so a stale face can't land after a newer one
+            name = self._face()
+            if name != self._expression:
+                self._expression = name
+                self.emit(ExpressionMsg(name=name))
 
     def _state_msg(self) -> StateMsg:
         state = asdict(self.feelings.state)
-        return StateMsg(presence=self.presence.state, expression=self.feelings.expression(),
+        return StateMsg(presence=self.presence.state, expression=self._face(),
                         feelings={k: float(v) for k, v in state.items() if isinstance(v, (int, float))})
 
     def voice_state(self) -> tuple[SimpleNamespace, float]:
@@ -478,7 +821,8 @@ class RiyaCore:
 
     def hello_messages(self) -> list[BaseModel]:
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
-                SettingsMsg(settings=asdict(self.settings)), self._state_msg()]
+                SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._eyes_msg(),
+                *([self._look] if self._look else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
     def handle(self, msg: BaseModel) -> None:
@@ -495,11 +839,19 @@ class RiyaCore:
                 self.memory.delete_episode(msg.id)
             elif isinstance(msg, ThreadResolve):
                 self.memory.mark_thread(msg.id, status="resolved")
+            elif isinstance(msg, GlanceDelete):
+                self.memory.delete_glance(msg.id)
             elif isinstance(msg, SetSettings):
                 self._set_settings(msg.patch)
                 return
+            elif isinstance(msg, DontLook):
+                self._set_settings({"dont_look": msg.on})
+                return
             elif isinstance(msg, TalkHotkey):
                 self.talk_requested = True
+                return
+            elif isinstance(msg, QuitCore):
+                self.quit_requested.set()
                 return
             else:  # BodyReady (the socket sends hello on connect) and UserText (goes through reply)
                 return
@@ -513,7 +865,8 @@ class RiyaCore:
         return MemoriesMsg(facts=[asdict(f) for f in mem.list_facts()], transcript_days=mem.transcript_days(),
                            episodes=[{"id": e.id, "started_at": e.started_at, "ended_at": e.ended_at,
                                       "summary": e.summary} for e in mem.list_episodes()],
-                           threads=[{"id": t.id, "text": t.text, "due_at": t.due_at} for t in mem.open_threads()])
+                           threads=[{"id": t.id, "text": t.text, "due_at": t.due_at} for t in mem.open_threads()],
+                           glances=[GlanceInfo(**asdict(g)) for g in mem.list_glances()])
 
     def _set_settings(self, patch: dict) -> None:
         old = self.settings
@@ -524,6 +877,11 @@ class RiyaCore:
             return
         save_settings(self.kv, new)
         self.router.online_enabled = new.online_enabled
+        with self._eyes_lock:
+            self.policy.cap, self.policy.min_gap_s = new.glance_daily_cap, new.glance_min_gap_s
+            if any(getattr(old, k) != getattr(new, k) for k in _EYES_KEYS):
+                self._eyes_gen += 1  # a look in flight was allowed under the old settings: drop it
+            self._dont_look, self._eyes_on = new.dont_look, new.eyes_enabled
         if new.autostart != old.autostart:
             try:
                 set_autostart(new.autostart, LAUNCHER)
@@ -531,3 +889,5 @@ class RiyaCore:
                 log.warning("autostart change failed: %s", e)
                 self.emit(ErrorMsg(message=f"couldn't change autostart: {e}"))
         self.emit(SettingsMsg(settings=asdict(new)))
+        self._emit_eyes(new)
+        self._sync_expression()

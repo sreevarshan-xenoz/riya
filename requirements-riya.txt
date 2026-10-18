@@ -9,3 +9,4 @@ pocket-tts
 moonshine-voice
 jsonschema
 pillow
+mss

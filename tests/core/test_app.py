@@ -65,7 +65,7 @@ def test_typed_replies_go_through_the_speaker():
 
 def test_other_messages_do_not_wait_behind_a_slow_reply():
     with client(replies=("One two three four five.",), delay=0.1) as c, c.websocket_connect("/ws") as ws:
-        receive_until(ws, "state")
+        receive_until(ws, "eyes")  # the end of hello
         ws.send_json({"type": "user_text", "text": "tell me something"})
         ws.send_json({"type": "get_memories"})
         seen = receive_until(ws, "say_end")
@@ -74,7 +74,7 @@ def test_other_messages_do_not_wait_behind_a_slow_reply():
 
 def test_typed_replies_on_one_socket_keep_their_order():
     with client(replies=("First.", "Second."), delay=0.05) as c, c.websocket_connect("/ws") as ws:
-        receive_until(ws, "state")
+        receive_until(ws, "eyes")  # the end of hello
         ws.send_json({"type": "user_text", "text": "one"})
         ws.send_json({"type": "user_text", "text": "two"})
         receive_until(ws, "say_end")
@@ -89,7 +89,7 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "state") == ["hello", "settings", "state"]
+        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "eyes"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
@@ -100,7 +100,7 @@ def test_every_connection_gets_hub_broadcasts_and_disconnect_is_cleaned_up():
         hub = c.app.state.hub
         with c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
             for ws in (a, b):
-                receive_until(ws, "state")
+                receive_until(ws, "eyes")  # the end of hello
             hub.publish(ExpressionMsg(name="happy"))
             assert receive_until(a, "expression") == ["expression"]
             assert receive_until(b, "expression") == ["expression"]
@@ -272,3 +272,65 @@ def test_legacy_memory_is_found_from_the_repo_root_and_only_marked_once_imported
     again = runner.build_core(args, lambda m: None)
     assert [e.summary for e in again.memory.recent_episodes()] == ["We talked about cats."]
     assert again.kv.get("legacy_imported") is True
+
+
+def test_quit_core_from_the_body_reaches_the_core():
+    with client() as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "eyes")
+        ws.send_json({"type": "quit_core"})
+        ws.send_json({"type": "get_memories"})                # handled in order: quit_core went first
+        receive_until(ws, "memories")
+        assert c.app.state.core.quit_requested.is_set()
+
+
+def test_run_ticks_stops_when_the_body_asks_the_core_to_quit():
+    from riya.core.protocol import QuitCore
+    core, *_ = make_core()
+    ticks, waits = [], []
+    core.tick = lambda: ticks.append(1)
+
+    def wait(seconds):
+        waits.append(seconds)
+        if len(waits) == 3:
+            core.handle(QuitCore())
+        return core.quit_requested.is_set()
+
+    runner.run_ticks(core, runner.Speaker(), alive=lambda: True, wait=wait)
+    assert len(ticks) == 3 and waits == [1.0, 1.0, 1.0]
+
+
+def test_run_ticks_stops_when_the_server_stops():
+    core, *_ = make_core()
+    alive = iter([True, True, False])
+    runner.run_ticks(core, runner.Speaker(), alive=lambda: next(alive), wait=lambda s: False)
+    assert not core.quit_requested.is_set()
+
+
+def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monkeypatch):
+    """The whole runner with a stand-in server: quit_core ends it normally (exit code 0), and the core's
+    body_present is the hub's connection count."""
+    import uvicorn
+
+    from riya.core.protocol import QuitCore
+    made = {}
+
+    def build_core(args, emit, body_present):
+        core, *_ = make_core()
+        made["core"], made["body_present"] = core, body_present
+        core.handle(QuitCore())                                # the body chose Quit before the first tick
+        return core
+
+    class Server:
+        def __init__(self, config):
+            self.config, self.should_exit = config, False
+            made["server"] = self
+
+        def run(self):
+            with TestClient(self.config.app):
+                while not self.should_exit:
+                    threading.Event().wait(0.01)
+
+    monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    assert runner.main(["--no-voice", "--hash-embed"]) is None
+    assert made["server"].should_exit and made["body_present"]() is False

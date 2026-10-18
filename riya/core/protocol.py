@@ -70,12 +70,39 @@ class ThreadInfo(BaseModel):
     due_at: float
 
 
+class GlanceInfo(BaseModel):
+    """A note from one look at the screen (the screenshot itself is never kept)."""
+    id: int
+    at: float
+    app: str
+    title: str
+    activity: str
+    details: str
+    notable: str | None
+
+
 class MemoriesMsg(BaseModel):
     type: Literal["memories"] = "memories"
     facts: list[dict]
     transcript_days: list[str]
     episodes: list[EpisodeInfo] = Field(default_factory=list)  # newest first
     threads: list[ThreadInfo] = Field(default_factory=list)  # open follow-ups, soonest due first
+    glances: list[GlanceInfo] = Field(default_factory=list)  # newest first, kept 7 days
+
+
+class Look(BaseModel):
+    """The side of her the active window is on (null: none, or her own) and whether she's watching it."""
+    type: Literal["look"] = "look"
+    side: Literal["left", "right", "center"] | None
+    watching: bool
+
+
+class EyesMsg(BaseModel):
+    type: Literal["eyes"] = "eyes"
+    enabled: bool
+    dont_look: bool
+    glances_today: int
+    cap: int
 
 
 class ErrorMsg(BaseModel):
@@ -130,15 +157,32 @@ class ThreadResolve(BaseModel):
     id: int
 
 
+class DontLook(BaseModel):
+    type: Literal["dont_look"] = "dont_look"
+    on: bool = Field(strict=True)  # "yes" or 1 is a body bug, not a choice
+
+
+class GlanceDelete(BaseModel):
+    type: Literal["glance_delete"] = "glance_delete"
+    id: int
+
+
+class QuitCore(BaseModel):
+    """The user chose Quit in the tray: the core stops too."""
+    type: Literal["quit_core"] = "quit_core"
+
+
 class SetSettings(BaseModel):
     type: Literal["set_settings"] = "set_settings"
     patch: dict
 
 
-CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg],
-                        Field(discriminator="type")]
+CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
+                              Look, EyesMsg], Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
-                              TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings], Field(discriminator="type")]
+                              TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
+                              QuitCore],
+                        Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)
 

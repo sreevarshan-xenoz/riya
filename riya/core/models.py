@@ -20,6 +20,8 @@ class ModelUnavailable(Exception):
 
 
 class ChatModel(Protocol):
+    """messages are OpenAI chat dicts; a `content` may be a list of parts (text + image_url) for the online model,
+    and is sent as-is (the local model is never sent images)."""
     name: str
 
     def stream(self, messages: list[dict], max_tokens: int = 300, temperature: float = 0.8) -> Iterator[str]: ...
@@ -131,9 +133,10 @@ def load_dotenv(path: str = ".env") -> dict[str, str]:
     return found
 
 
-def load_online_from_env(env=os.environ) -> OpenAICompatModel | None:
+def load_online_from_env(env=os.environ, name: str = "online", **kw) -> OpenAICompatModel | None:
+    """The online model from RIYA_ONLINE_*; kw (e.g. first_token_timeout_s) go to OpenAICompatModel."""
     key = (env.get("RIYA_ONLINE_API_KEY") or "").strip()
     if not key:
         return None
-    return OpenAICompatModel("online", env.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL, key,
-                             env.get("RIYA_ONLINE_MODEL") or ONLINE_MODEL)
+    return OpenAICompatModel(name, env.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL, key,
+                             env.get("RIYA_ONLINE_MODEL") or ONLINE_MODEL, **kw)
