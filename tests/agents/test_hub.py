@@ -341,3 +341,54 @@ def test_agent_count_is_bounded(hub, clock):
         clock.advance(1)
     assert len(hub._agents) == 200
     assert "s499" in hub._agents and "s0" not in hub._agents
+
+
+# --- redaction (final review M3) -----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,secret", [
+    ("curl -u sk-live-4f9aB2cD3eF4gH5iJ6kL https://x", "sk-live-4f9aB2cD3eF4gH5iJ6kL"),
+    ("key sk-ant-api03-AbCdEf123456_-xyz used", "sk-ant-api03-AbCdEf123456_-xyz"),
+    ("git push https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("GH gho_16C7e42F292c6912E7710c838347Ae178B4a here", "gho_16C7e42F292c6912E7710c838347Ae178B4a"),
+    ("export T=github_pat_11ABCDEFG0123456789_abcdefXYZ", "github_pat_11ABCDEFG0123456789_abcdefXYZ"),
+    ("slack xoxb-123456789012-1234567890123-AbCdEfGhIjKl", "xoxb-123456789012-1234567890123-AbCdEfGhIjKl"),
+    ("slack xoxp-1-2-3-abc and xoxa-9-zz", "xoxp-1-2-3-abc"),
+    ("aws AKIAIOSFODNN7EXAMPLE configure", "AKIAIOSFODNN7EXAMPLE"),
+    ('curl -H "Authorization: Bearer abc.def-ghi_jkl" x', "abc.def-ghi_jkl"),
+    ("curl -H 'Authorization: Basic dXNlcjpwYXNz' x", "dXNlcjpwYXNz"),
+    ("Authorization: hunter2xyz", "hunter2xyz"),
+    ("bearer eyJhbGciOiJIUzI1NiJ9.e30.x", "eyJhbGciOiJIUzI1NiJ9.e30.x"),
+    ("mysql --user root password=Sup3rS3cret!", "Sup3rS3cret!"),
+    ("PASSWD: 'correct horse'", "correct horse"),
+    ("pwd=abc123 next", "abc123"),
+    ("GITHUB_TOKEN=tok_9f8e7d next", "tok_9f8e7d"),
+    ('{"secret": "s3cr3t-value"}', "s3cr3t-value"),
+    ("api_key=AIzaSyA-1234567890", "AIzaSyA-1234567890"),
+    ("apikey: zzz-999", "zzz-999"),
+    ("api-key=qqq111", "qqq111"),
+    ("mytool --password hunter22 --verbose", "hunter22"),
+    ("mytool --token=abcd1234 run", "abcd1234"),
+    ("mytool --token abcd1234 run", "abcd1234"),
+])
+def test_summarize_redacts_secret_shapes(text, secret):
+    out = summarize(text)
+    assert secret not in out and "***" in out
+
+
+def test_redaction_happens_before_truncation_and_keeps_ordinary_text():
+    long_secret = "sk-" + "A" * 120
+    out = summarize(f"run {long_secret} done", 80)
+    assert "AAAA" not in out and out == "run *** done"
+    assert summarize("pytest -q tests/agents (3 failed), see the token docs") == \
+        "pytest -q tests/agents (3 failed), see the token docs"
+    assert summarize("max_tokens=300 skip-this ask-me") == "max_tokens=300 skip-this ask-me"
+
+
+def test_waiting_detail_and_colab_lines_are_redacted(hub):
+    hub.on_claude_event(ev("PermissionRequest", tool_name="Bash",
+                           tool_input={"command": 'curl -H "Authorization: Bearer sk-live-abcdef123456" api'}))
+    assert "sk-live" not in state(hub)["detail"] and "abcdef123456" not in state(hub)["detail"]
+    [e] = hub.on_colab("w3", "fail", "Traceback: HF_TOKEN=hf_abcdefghijklmnop rejected")
+    assert "hf_abcdefghijklmnop" not in e.text and "***" in e.text
+    [e] = hub.on_claude_event(ev("Stop", last_assistant_message="Set password: hunter2 in .env"))
+    assert "hunter2" not in e.text

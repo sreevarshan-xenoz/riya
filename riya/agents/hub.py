@@ -1,5 +1,6 @@
 """Pure state machine for the user's Claude Code sessions and Colab runs (spec §4.2)."""
 import json
+import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import PureWindowsPath
@@ -16,8 +17,28 @@ CLAUDE_EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop"
 _COLAB = {"running": "running", "done": "finished", "fail": "failed", "lost": "lost", "stalled": "stalled"}
 
 
+_VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"'&;,]+)"""
+_SECRETS = [  # (pattern, replacement): a secret-looking value becomes ***, its label stays
+    (re.compile(r"\b(?:sk-(?:ant-)?|gh[opusr]_|github_pat_|xox[abpr]-)[A-Za-z0-9_\-]{8,}"), "***"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
+    (re.compile(r"(?i)\b(authorization\s*:\s*)(?:(?:bearer|basic|token)\s+)?" + _VALUE), r"\1***"),
+    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=\-]+"), r"\1***"),
+    (re.compile(r"(?i)(password|passwd|pwd|token|secret|api[_-]?key)([\"']?\s*[=:]\s*)" + _VALUE), r"\1\2***"),
+    (re.compile(r"(?i)(--(?:password|token)(?:\s+|=))" + _VALUE), r"\1***"),
+]
+
+
+def redact(text: str) -> str:
+    """Secret-looking values (API keys and tokens, Bearer/Authorization values, password=/token=/--password ...)
+    replaced with ***."""
+    for pattern, repl in _SECRETS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def summarize(text, n: int = 80) -> str:
-    """One clean line of at most n chars: control chars stripped, whitespace collapsed, ellipsis on a cut."""
+    """One clean line of at most n chars: control chars stripped, whitespace collapsed, secrets redacted (before the
+    cut), ellipsis on a cut."""
     if n <= 0:
         return ""
     s = text if isinstance(text, str) else str(text)
@@ -28,7 +49,7 @@ def summarize(text, n: int = 80) -> str:
             out.append(" ")
         elif cat[0] != "C":
             out.append(ch)
-    s = " ".join("".join(out).split())
+    s = redact(" ".join("".join(out).split()))
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
