@@ -1,0 +1,188 @@
+import json
+import threading
+
+from riya.core.clock import FakeClock
+from riya.core.models import ModelUnavailable
+from riya.core.protocol import ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings, ErrorMsg
+from tests.fakes import make_core
+
+CONSOLIDATION = json.dumps({
+    "facts": [{"text": "The user has a calculus exam on Thursday", "key": "user.exam", "confidence": 0.9,
+               "source": "user_said"}],
+    "episode_summary": "The user is nervous about the calculus exam.", "user_mood": "nervous",
+    "threads": [{"text": "Ask how the calculus exam went", "due_in_hours": 20}]})
+
+
+def run_ticks(core, clock, seconds, step=1):
+    spoken = []
+    for _ in range(int(seconds / step)):
+        clock.advance(step)
+        it = core.tick()
+        if it:
+            spoken.append(list(it))
+    return spoken
+
+
+def test_reply_streams_sentences_and_records_transcript():
+    core, emitted, _, _ = make_core(local_replies=["Hey you. I was waiting~"])
+    assert list(core.reply("hi riya")) == ["Hey you.", "I was waiting~"]
+    assert [t["role"] for t in core.memory.unconsolidated()] == ["user", "assistant"]
+    assert [m.kind for m in emitted if isinstance(m, Say)] == ["reply", "reply"]
+
+
+def test_remember_intent_saves_fact_immediately():
+    core, *_ = make_core()
+    list(core.reply("remember that I hate mornings"))
+    assert any("I hate mornings" in f.text for f in core.memory.list_facts())
+
+
+def test_coming_home_scenario():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=[
+        "Aww, you'll do great.", CONSOLIDATION, "You're back!! I missed you. How did the calculus exam go?"])
+    list(core.reply("I have my calculus exam on Thursday and I'm nervous"))
+    run_ticks(core, clock, 660, step=60)          # 11 quiet minutes -> consolidation
+    assert core.memory.list_facts()[0].key == "user.exam"
+    src.idle = 950
+    run_ticks(core, clock, 60, step=60)           # goes away
+    clock.advance(2 * 86400)
+    src.idle = 0
+    spoken = run_ticks(core, clock, 1)
+    assert spoken and "missed you" in " ".join(spoken[0])
+    prompt = local.calls[-1][0]["content"]
+    assert "2 days" in prompt and "calculus exam" in prompt and "missed" in prompt
+    assert any(isinstance(m, ExpressionMsg) and m.name == "missed_you" for m in emitted)
+    assert any(isinstance(m, Say) and m.kind == "greet" and m.spoken for m in emitted)
+    assert core.memory.due_threads() == []        # thread followed up, not raised twice
+
+
+def test_no_greeting_after_short_absence():
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock)
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    clock.advance(3600)
+    src.idle = 0
+    assert run_ticks(core, clock, 1) == []
+
+
+def test_bid_is_a_silent_bubble_and_ignoring_it_makes_her_pout():
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock, local_replies=["Hey... water break? you've been at it forever~"])
+    run_ticks(core, clock, 2 * 3600 + 600, step=300)   # long focused stretch
+    src.idle = 150
+    assert run_ticks(core, clock, 150, step=150) == []  # nothing spoken aloud
+    bids = [m for m in emitted if isinstance(m, Say) and m.kind == "bid"]
+    assert len(bids) == 1 and bids[0].spoken is False
+    src.idle = 0
+    run_ticks(core, clock, 301, step=1)
+    assert core.feelings.expression() == "pouty"
+
+
+def test_concurrent_replies_do_not_interleave():
+    core, *_ = make_core(local_replies=["One. Two. Three."])
+    threads = [threading.Thread(target=lambda: list(core.reply("hey"))) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert [t["role"] for t in core.memory.unconsolidated()] == ["user", "assistant", "user", "assistant"]
+
+
+def test_feelings_survive_restart(tmp_path):
+    clock = FakeClock()
+    core, _, src, _ = make_core(clock, tmp_path=tmp_path)
+    core.feelings.on_return(2 * 86400)
+    run_ticks(core, clock, 31)
+    again, *_ = make_core(clock, tmp_path=tmp_path)
+    assert abs(again.feelings.state.missing - core.feelings.state.missing) < 0.05
+
+
+def test_handle_memory_and_settings_messages():
+    core, emitted, _, _ = make_core()
+    f = core.memory.add_fact("The user likes biryani", source="user_said")
+    core.handle(GetMemories())
+    assert isinstance(emitted[-1], MemoriesMsg) and emitted[-1].facts[0]["id"] == f.id
+    core.handle(SetSettings(patch={"mode": "fullscreen"}))
+    assert isinstance(emitted[-1], ErrorMsg)
+
+
+# --- controller rulings ---------------------------------------------------------------------------------------------
+
+def away_then_back_into_a_game(core, clock, src, hours=3):
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    clock.advance(hours * 3600)
+    src.idle, src.is_fullscreen = 0, True
+
+
+def test_greeting_waits_until_the_game_ends():
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock, local_replies=["Welcome back! I missed you."])
+    away_then_back_into_a_game(core, clock, src, hours=30)
+    assert run_ticks(core, clock, 600, step=60) == []
+    assert not any(isinstance(m, Say) for m in emitted)
+    src.is_fullscreen = False
+    spoken = run_ticks(core, clock, 1)
+    assert spoken == [["Welcome back!", "I missed you."]]
+    assert any(isinstance(m, ExpressionMsg) and m.name == "missed_you" for m in emitted)
+
+
+def test_greeting_is_dropped_after_half_an_hour_of_gaming():
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock, local_replies=["Welcome back!"])
+    away_then_back_into_a_game(core, clock, src)
+    assert run_ticks(core, clock, 1860, step=60) == []
+    src.is_fullscreen = False
+    assert run_ticks(core, clock, 60) == []
+    assert not any(isinstance(m, Say) for m in emitted)
+
+
+def test_model_down_during_reply_reports_error_and_records_no_answer():
+    core, emitted, _, local = make_core()
+    local.fail = ModelUnavailable("llama-server is down")
+    assert list(core.reply("hi riya")) == []
+    assert any(isinstance(m, ErrorMsg) and m.message == "Riya's local model isn't responding" for m in emitted)
+    assert sum(isinstance(m, SayEnd) for m in emitted) == 1
+    assert [t["role"] for t in core.memory.unconsolidated()] == ["user"]
+    local.fail = None
+    assert list(core.reply("are you back?")) == ["Okay."]   # the lock was released
+
+
+def test_model_dropping_mid_reply_keeps_what_was_said():
+    core, emitted, _, local = make_core(local_replies=["First bit. Second bit. Third bit."])
+    local.fail_after = 3
+    assert list(core.reply("hi")) == ["First bit."]
+    says = [m for m in emitted if isinstance(m, Say)]
+    ends = [m for m in emitted if isinstance(m, SayEnd)]
+    assert len(ends) == 1 and ends[0].utterance_id == says[0].utterance_id
+    assert any(isinstance(m, ErrorMsg) for m in emitted)
+    assert [t["role"] for t in core.memory.unconsolidated()] == ["user"]
+
+
+def test_greeting_with_model_down_does_not_raise():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock)
+    local.fail = RuntimeError("boom")
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    clock.advance(3 * 3600)
+    src.idle = 0
+    assert run_ticks(core, clock, 1) == [[]]
+    assert any(isinstance(m, ErrorMsg) for m in emitted)
+
+
+def test_online_route_shows_thinking_until_the_first_sentence():
+    from tests.fakes import FakeModel
+    online = FakeModel("online", ["Recursion is a function calling itself. Neat, right?"])
+    core, emitted, _, _ = make_core(online=online)
+    list(core.reply("explain recursion to me"))
+    seq = [m.name if isinstance(m, ExpressionMsg) else "SAY" for m in emitted if isinstance(m, (ExpressionMsg, Say))]
+    first_say = seq.index("SAY")
+    assert seq[0] == "thinking" and first_say == 2 and seq[1] != "thinking"   # thinking ends at the first sentence
+    assert core.feelings.expression() != "thinking"
+
+
+def test_turns_keep_the_last_24_messages():
+    core, *_ = make_core()
+    for i in range(15):
+        list(core.reply(f"message {i}"))
+    assert len(core.turns) == 24 and core.turns[-2]["content"] == "message 14"
