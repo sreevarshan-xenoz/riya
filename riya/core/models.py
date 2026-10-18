@@ -20,6 +20,8 @@ class ModelUnavailable(Exception):
 
 
 class ChatModel(Protocol):
+    """messages are OpenAI chat dicts; a `content` may be a list of parts (text + image_url) for the online model,
+    and is sent as-is (the local model is never sent images)."""
     name: str
 
     def stream(self, messages: list[dict], max_tokens: int = 300, temperature: float = 0.8) -> Iterator[str]: ...
