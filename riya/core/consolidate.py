@@ -62,6 +62,21 @@ def parse_proposals(text: str) -> Proposals:
     return _parse(text) or Proposals.empty()
 
 
+_PERSON = {"my": "their", "mine": "theirs", "i": "they", "me": "them", "i'm": "they're", "i've": "they've",
+           "i'll": "they'll", "i'd": "they'd", "myself": "themselves"}
+_FIRST_PERSON = re.compile(r"(?<![\w'\u2019])(?:i['\u2019](?:m|ve|ll|d)|myself|mine|my|me|i)(?![\w'\u2019])", re.I)
+
+
+def third_person(text: str) -> str:
+    """The user's words about themselves, rewritten for her memory: "my favourite colour" -> "their favourite colour".
+    "My" stays capitalised; "I" becomes a plain "they", as the text follows the "The user said:" prefix."""
+    def swap(m: re.Match) -> str:
+        word = m.group().replace("\u2019", "'").lower()
+        out = _PERSON[word]
+        return out.capitalize() if m.group()[0].isupper() and not word.startswith("i") else out
+    return _FIRST_PERSON.sub(swap, text)
+
+
 def remember_intent(text: str) -> str | None:
     if text.rstrip().endswith("?"):
         return None

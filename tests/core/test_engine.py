@@ -39,7 +39,7 @@ def test_reply_streams_sentences_and_records_transcript():
 def test_remember_intent_saves_fact_immediately():
     core, *_ = make_core()
     list(core.reply("remember that I hate mornings"))
-    assert any("I hate mornings" in f.text for f in core.memory.list_facts())
+    assert any(f.text == "The user said: they hate mornings" for f in core.memory.list_facts())
 
 
 def coming_home(tmp_path, absence="no_tick"):
@@ -633,7 +633,7 @@ def test_a_remember_that_turn_tells_her_what_she_just_saved():
     core, _, _, local = make_core(local_replies=["Got it~"])
     list(core.reply("remember that my favourite colour is teal"))
     system = local.calls[-1][0]["content"]
-    assert ('[Situation] You just saved this to memory: "The user said: my favourite colour is teal". '
+    assert ('[Situation] You just saved this to memory: "The user said: their favourite colour is teal". '
             "Confirm in one short sentence that you'll remember it.") in system
     list(core.reply("what's up?"))
     assert "[Situation]" not in local.calls[-1][0]["content"]

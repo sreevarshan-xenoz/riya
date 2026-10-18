@@ -82,9 +82,10 @@ def test_bid_situation_is_short_and_playful():
     assert "playful" in s and "exam" in s and "No lecture" in s
 
 
-def test_honesty_line_says_to_admit_what_is_not_listed():
-    assert HONESTY_LINE.startswith("Only mention memories listed here.")
-    assert "If what they ask about isn't listed, say you don't remember." in HONESTY_LINE
+def test_honesty_line_says_to_admit_what_is_not_listed_about_their_life_only():
+    assert HONESTY_LINE == ("Only mention memories listed here. Never invent memories or facts about them. "
+                            "If they ask about something in their life that isn't listed, say you don't know.")
+    assert "remember" not in HONESTY_LINE  # "are you human?" isn't a memory question
 
 
 # ---- v0.2 task 3: persona layers, delimited memory block, reply rules ----
