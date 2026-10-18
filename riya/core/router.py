@@ -5,7 +5,7 @@ from typing import Iterator
 
 from riya.bench import REFUSAL_PATTERNS
 from riya.core.appraise import SENTENCE_END
-from riya.core.models import ChatModel
+from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 
 log = logging.getLogger("riya.router")
 BUFFER_CHARS = 160
@@ -31,7 +31,7 @@ class Router:
             yield from self._online(messages, max_tokens)
         else:
             self.last_source = "local"
-            yield from self.local.stream(messages, max_tokens)
+            yield from self.local.stream(messages, max_tokens, LOCAL_TEMPERATURE)
 
     def _online(self, messages, max_tokens) -> Iterator[str]:
         buf, started = "", False
@@ -60,4 +60,4 @@ class Router:
                 return
             log.warning("online model failed, falling back to local: %s", e)
         self.last_source = "local"
-        yield from self.local.stream(messages, max_tokens)
+        yield from self.local.stream(messages, max_tokens, LOCAL_TEMPERATURE)

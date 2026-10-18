@@ -15,7 +15,7 @@ from riya.core.consolidate import Consolidator, remember_intent
 from riya.core.feelings import Feelings
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
-from riya.core.models import ChatModel
+from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import bid_situation, build_messages, greeting_situation
@@ -255,7 +255,7 @@ class RiyaCore:
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(action.reason, action.thread),
                                       now=self.clock.now())
-            line = limit_emoji("".join(self.local.stream(messages, max_tokens=BUDGETS["bid"])).strip())
+            line = limit_emoji("".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE)).strip())
         except Exception:
             log.exception("model failed during a bid")
             return

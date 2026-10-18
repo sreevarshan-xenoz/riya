@@ -279,3 +279,21 @@ def test_unreachable_server_prints_a_message_and_exits_zero(capsys, tmp_path, mo
     out = capsys.readouterr().out
     assert "No model server answered at http://127.0.0.1:9" in out and "Start llama-server" in out
     assert not (tmp_path / "scratch_runs").exists()  # nothing was written
+
+
+def test_repeat_runs_every_probe_n_times_and_tags_later_passes():
+    from evaluation.persona_eval import run_probes
+    from tests.fakes import FakeModel
+    probes = {"conversations": [{"id": "c", "facts": [], "turns": [{"id": "a", "kind": "small", "text": "hey"},
+                                                                  {"id": "b", "kind": "ai", "text": "are you human?"}]}]}
+    rows = run_probes(probes, FakeModel("local", ["Hmph, you're back~ I'm an AI."]), None, repeat=2)
+    assert [r["probe_id"] for r in rows] == ["c.a", "c.b", "c.a#2", "c.b#2"]
+    assert [r["pass"] for r in rows] == [1, 1, 2, 2]
+    assert rows[2]["known_texts"] == ["hey"]  # every pass starts a fresh conversation
+
+
+def test_repeat_flag_is_parsed(monkeypatch, tmp_path, capsys):
+    from evaluation import persona_eval
+    seen = {}
+    monkeypatch.setattr(persona_eval, "run", lambda url, online, repeat: seen.update(repeat=repeat) or ([], {}, "down"))
+    assert persona_eval.main(["--repeat", "3"]) == 0 and seen == {"repeat": 3}

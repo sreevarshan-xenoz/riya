@@ -25,6 +25,14 @@ def test_small_talk_goes_local():
     assert "".join(r.stream(MSGS, "hi riya")) == "hey you~" and r.last_source == "local" and online.calls == []
 
 
+def test_local_streams_use_the_local_temperature_and_online_keeps_its_default():
+    from riya.core.models import LOCAL_TEMPERATURE
+    local, online = FakeModel("local", ["L."]), FakeModel("online", fail=ModelUnavailable("429"))
+    r = Router(local, online)
+    list(r.stream(MSGS, "hi riya")), list(r.stream(MSGS, "explain recursion"))  # the second falls back to local
+    assert local.temperatures == [LOCAL_TEMPERATURE] * 2 and online.temperatures == [0.8]
+
+
 def test_code_question_goes_online():
     r = Router(FakeModel("local", ["L"]), FakeModel("online", ["Use a set."]))
     assert "".join(r.stream(MSGS, "write a function to dedupe a list")) == "Use a set." and r.last_source == "online"

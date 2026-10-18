@@ -12,10 +12,11 @@ class FakeModel:
     def __init__(self, name="fake", replies=("Okay.",), fail=None, fail_after=None, delay=0.0):
         self.name, self.replies, self.fail, self.fail_after = name, list(replies), fail, fail_after
         self.delay = delay  # seconds to wait before each token, to make a reply slow
-        self.calls = []
+        self.calls, self.temperatures = [], []
 
     def stream(self, messages, max_tokens=300, temperature=0.8):
         self.calls.append(messages)
+        self.temperatures.append(temperature)
         if self.fail:
             raise self.fail
         text = self.replies[min(len(self.calls) - 1, len(self.replies) - 1)]

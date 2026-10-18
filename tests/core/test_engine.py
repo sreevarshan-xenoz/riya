@@ -491,12 +491,13 @@ def test_memories_list_episodes_and_open_threads_and_both_can_be_removed():
 # --- v0.2 reply shaping ---------------------------------------------------------------------------------------------
 
 def spy(local):
-    """Record each stream call's max_tokens and how many tokens were pulled from the model."""
-    seen = {"max_tokens": [], "pulled": 0}
+    """Record each stream call's max_tokens and temperature and how many tokens were pulled from the model."""
+    seen = {"max_tokens": [], "temperature": [], "pulled": 0}
     stream = local.stream
 
     def wrapped(messages, max_tokens=300, temperature=0.8):
         seen["max_tokens"].append(max_tokens)
+        seen["temperature"].append(temperature)
         for tok in stream(messages, max_tokens, temperature):
             seen["pulled"] += 1
             yield tok
@@ -559,6 +560,15 @@ def test_greeting_uses_its_own_budget_and_cap():
     spoken = list(core.speak_first(Action("greet", True, None, "back")))
     assert spoken == ["One here.", "Two here.", "Three here."] and seen["max_tokens"] == [90]
     assert [m.kind for m in emitted if isinstance(m, Say)] == ["greet"] * 3
+
+
+def test_local_replies_and_bids_sample_at_the_local_temperature():
+    from riya.core.models import LOCAL_TEMPERATURE
+    core, _, _, local = make_core(local_replies=["Hey you~"])
+    seen = spy(local)
+    list(core.reply("hey riya"))
+    core._bid(Action("bid", False, None, "test"))
+    assert 0.6 <= LOCAL_TEMPERATURE <= 0.9 and seen["temperature"] == [LOCAL_TEMPERATURE] * 2
 
 
 def test_bid_keeps_its_40_token_budget_and_one_emoji():

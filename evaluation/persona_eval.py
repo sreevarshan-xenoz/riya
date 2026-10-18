@@ -1,6 +1,6 @@
 """Live persona scorecard: scripted probes through the real RiyaCore against the real local model. Always exits 0.
 
-  python -m evaluation.persona_eval --local-url http://127.0.0.1:8090 [--online] [--label baseline]
+  python -m evaluation.persona_eval --local-url http://127.0.0.1:8090 [--online] [--label baseline] [--repeat 2]
 
 Starts nothing itself (run `python -m riya.server --model <gguf>` first). Writes
 scratch_runs/persona_eval/<timestamp>_<label>.json and prints a table with pass/fail per target. It's a measurement,
@@ -57,7 +57,7 @@ def style_phrases(probes: dict) -> list[str]:
     return out
 
 
-def run_conversation(conv: dict, local, online, tmp: str) -> list[dict]:
+def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list[dict]:
     """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed).
     known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user."""
     clock, emitted = FakeClock(), []
@@ -78,16 +78,28 @@ def run_conversation(conv: dict, local, online, tmp: str) -> list[dict]:
                     first = time.perf_counter() - t0
                 sentences.append(s)
             err = next((m.message for m in emitted if isinstance(m, ErrorMsg)), None)
-            rows.append({"conversation": conv["id"], "probe_id": f"{conv['id']}.{turn['id']}", "kind": turn["kind"],
-                         "text": turn["text"], "reply": " ".join(sentences), "first_sentence_s": first,
-                         "known_texts": list(known), "error": err})
+            rows.append({"conversation": conv["id"], "probe_id": f"{conv['id']}.{turn['id']}{tag}",
+                         "kind": turn["kind"], "text": turn["text"], "reply": " ".join(sentences),
+                         "first_sentence_s": first, "known_texts": list(known), "error": err})
             clock.advance(TURN_GAP_S)
         return rows
     finally:
         db.close()
 
 
-def run(local_url: str, online_wanted: bool = False) -> tuple[list[dict], dict, str | None]:
+def run_probes(probes: dict, local, online, repeat: int = 1) -> list[dict]:
+    """Every conversation, fresh each time, `repeat` passes over the probes (sampling is noisy: score them together).
+    Rows carry their pass number; probe ids after the first pass get a "#n" suffix."""
+    transcript = []
+    for n in range(1, repeat + 1):
+        for conv in probes["conversations"]:
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                rows = run_conversation(conv, local, online, tmp, "" if n == 1 else f"#{n}")
+            transcript += [r | {"pass": n} for r in rows]
+    return transcript
+
+
+def run(local_url: str, online_wanted: bool = False, repeat: int = 1) -> tuple[list[dict], dict, str | None]:
     """(transcript, score, problem). problem is set when the local server couldn't be reached (nothing is run)."""
     probes = load_probes()
     local = OpenAICompatModel("local", f"{local_url.rstrip('/')}/v1", first_token_timeout_s=60.0)
@@ -101,10 +113,7 @@ def run(local_url: str, online_wanted: bool = False) -> tuple[list[dict], dict, 
         online = load_online_from_env()
         if online is None:
             print("Note: --online given but no RIYA_ONLINE_API_KEY is set; running local only.")
-    transcript = []
-    for conv in probes["conversations"]:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            transcript += run_conversation(conv, local, online, tmp)
+    transcript = run_probes(probes, local, online, repeat)
     answered = [r for r in transcript if not r["error"]]
     s = score(answered, style_phrases(probes))
     return transcript, s | {"failed_turns": len(transcript) - len(answered), "online": online is not None}, None
@@ -129,8 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--local-url", default="http://127.0.0.1:8090", help="llama-server base URL")
     ap.add_argument("--label", default="run", help="name for this scorecard (used in the file name)")
     ap.add_argument("--online", action="store_true", help="also give the core the online model (needs the API key)")
+    ap.add_argument("--repeat", type=int, default=1, help="passes over the probes, scored together (default 1)")
     args = ap.parse_args(argv)
-    transcript, s, problem = run(args.local_url, args.online)
+    transcript, s, problem = run(args.local_url, args.online, max(1, args.repeat))
     if problem is not None:
         print(f"No model server answered at {args.local_url} ({problem}). Start llama-server and re-run.")
         return 0
@@ -143,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{time.strftime('%Y%m%dT%H%M%S')}_{args.label}.json"
     path.write_text(json.dumps({"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url,
-                                "score": s, "transcript": transcript}, ensure_ascii=False, indent=2),
+                                "repeat": max(1, args.repeat), "score": s, "transcript": transcript},
+                               ensure_ascii=False, indent=2),
                     encoding="utf-8")
     print(f"Wrote {path}")
     return 0

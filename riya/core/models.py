@@ -10,6 +10,7 @@ from typing import Iterator, Protocol
 ONLINE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 ONLINE_MODEL = "gemini-2.5-flash"
 READ_TIMEOUT_S = 120.0
+LOCAL_TEMPERATURE = 0.6  # her voice on the small local model (tuned live in v0.2); online keeps the 0.8 default
 log = logging.getLogger("riya.models")
 
 
