@@ -245,3 +245,17 @@ def test_third_person_rewrites_first_person_words_only(said, want):
     ("remind me that I have a test", "remind them that they have a test")])
 def test_third_person_leaves_numerals_code_addresses_and_quotes_alone(said, want):
     assert third_person(said) == want
+
+
+@pytest.mark.parametrize("said, want", [
+    ("I am vegetarian", "they are vegetarian"),
+    ("I was born in Chennai", "they were born in Chennai"),
+    ("I have a cat named Mimi", "they have a cat named Mimi"),
+    ("I'm tired and I am done", "they're tired and they are done"),
+    ("Henry I was king", "Henry I was king"),
+    ("World War I was long and I was there", "World War I was long and they were there"),
+    ("i  AM late", "they are late"),
+    ('she said "I am fine" and I am not', 'she said "I am fine" and they are not'),
+    ("I amble and I wasabi", "they amble and they wasabi")])
+def test_third_person_conjugates_am_was_have_after_i(said, want):
+    assert third_person(said) == want
