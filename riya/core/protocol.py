@@ -44,7 +44,7 @@ class Say(BaseModel):
     utterance_id: str
     text: str
     spoken: bool
-    kind: Literal["reply", "greet", "bid"]
+    kind: Literal["reply", "greet", "bid", "report"]
 
 
 class SayEnd(BaseModel):
@@ -103,6 +103,25 @@ class EyesMsg(BaseModel):
     dont_look: bool
     glances_today: int
     cap: int
+
+
+class AgentInfo(BaseModel):
+    """One of the user's agents (a Claude Code session or a Colab run); detail is a sanitized summary, <= 80 chars."""
+    id: str
+    kind: str
+    name: str
+    status: str
+    since: float
+    detail: str
+    needs_attention: bool
+
+
+class AgentsMsg(BaseModel):
+    """The agents list (attention first, at most 20), sent on change and on hello. hooks_seen_at: when a Claude Code
+    hook last reached her (None: never), for the settings page's install status."""
+    type: Literal["agents"] = "agents"
+    items: list[AgentInfo]
+    hooks_seen_at: float | None = None
 
 
 class ErrorMsg(BaseModel):
@@ -178,7 +197,7 @@ class SetSettings(BaseModel):
 
 
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
-                              Look, EyesMsg], Field(discriminator="type")]
+                              Look, EyesMsg, AgentsMsg], Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
                               QuitCore],

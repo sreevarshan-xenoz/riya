@@ -1,5 +1,6 @@
 """RiyaCore: wires memory, feelings, presence, initiative, routing and consolidation into replies and speaking first."""
 import logging
+import queue
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from riya.agents.hub import AgentEvent, AgentHub
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
@@ -22,12 +24,13 @@ from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
-from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, bid_situation, build_messages,
-                              cant_see_situation, eyes_block, greeting_situation, remember_situation)
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
-                                EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
-                                MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey,
-                                ThreadResolve, TranscriptDelete)
+from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
+                              build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
+                              remember_situation, report_bubble, report_line, report_situation)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, AgentInfo, AgentsMsg, DontLook, EpisodeDelete, ErrorMsg,
+                                ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg,
+                                MemoryCorrect, MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg,
+                                TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
@@ -57,6 +60,13 @@ BUDDY_HALF_W = 150  # the buddy window is 300 px wide; buddy_position is its top
 CENTER_BAND = 0.1  # the window's centre within 10% of its monitor's width of hers: "center"
 TITLE_CHARS = 200
 COULDNT_SEE = "you tried to look but couldn't see it (your eyes didn't answer)"
+REPORT_GAP_S = 20  # at most one agent report this often; whatever arrives meanwhile merges into the next
+REPORT_MAX_AGE_S = 6 * 3600  # a report still pending after this long is dropped
+REPORT_FACE_S = 20
+DRAIN_MAX = 200  # inbox items taken per tick: a flood waits for later ticks, the tick never stalls on it
+URGENT = frozenset({"failed", "waiting", "lost", "stalled"})
+REPORT_FACES = {"failed": "worried", "lost": "worried", "stalled": "worried", "waiting": "curious", "finished": "happy"}
+HOOKS_SEEN_KEY = "agents.hooks_seen_at"
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
@@ -151,6 +161,17 @@ class RiyaCore:
         self._behind: tuple[WindowInfo, float] | None = None  # the last foreground window that wasn't hers
         self._look: Look | None = None
         self._eyes_sent: EyesMsg | None = None
+        # her agents: the hub is only touched under the core lock; the inboxes are filled from other threads (the
+        # hook receiver, the logwatch thread) and drained by the tick
+        self.agents = AgentHub(clock)
+        self.agent_inbox: queue.SimpleQueue = queue.SimpleQueue()  # Claude Code hook payloads (dicts)
+        self.colab_inbox: queue.SimpleQueue = queue.SimpleQueue()  # (run name, kind, line) from LogWatch.poll
+        self._reports: dict[str, tuple[AgentEvent, float]] = {}  # pending, per agent only the newest: (event, at)
+        self._greet_reports: list[tuple[AgentEvent, float]] = []  # folded into the greeting about to be said
+        self._last_report_at: float | None = None
+        seen = self.kv.get(HOOKS_SEEN_KEY)
+        self._hooks_seen_at = float(seen) if isinstance(seen, (int, float)) else None
+        self._agents_sent = self._agents_msg()
         self._expression = self._face()
 
     @property
@@ -203,13 +224,20 @@ class RiyaCore:
 
     def speak_first(self, action: Action) -> Iterator[str]:
         with self._lock:
+            reports, self._greet_reports = self._greet_reports, []
             situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
+            if reports:  # what her agents did while they were away
+                situation += " " + greeting_reports([ev for ev, _ in reports])
             yield from self._speak("greet", user_text=None, query=_query(action), situation=situation,
                                    spoken=action.spoken, threads=_threads(action),
-                                   after=lambda outcome: self._greeted(action, outcome))
+                                   after=lambda outcome: self._greeted(action, outcome, reports))
 
-    def _greeted(self, action: Action, outcome: str) -> None:
-        """The thread counts as followed up only once she actually asked; a barge-in still stops a re-raise today."""
+    def _greeted(self, action: Action, outcome: str, reports: list | None = None) -> None:
+        """The thread counts as followed up only once she actually asked; a barge-in still stops a re-raise today.
+        Reports folded into a greeting the model couldn't make go back to pending (unless newer news replaced them)."""
+        if outcome == "failed":
+            for ev, at in reports or []:
+                self._reports.setdefault(ev.agent_id, (ev, at))
         if action.thread and outcome != "failed":
             self.memory.mark_thread(action.thread.id, status="followed_up" if outcome == "done" else None,
                                     raised_at=self.clock.now())
@@ -238,12 +266,12 @@ class RiyaCore:
             turn, budget, cap = self._shape(kind, route_text)
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
-            retrieved, eyes = self._retrieve(query, threads), self._eyes_context()
+            retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
 
             def build(persona: str, situation: str | None) -> list[dict]:
                 return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
-                                      now=self.clock.now(), kind=turn, eyes=eyes)
+                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents)
 
             messages = build(self.personas[route], situation)
             if route == "online":
@@ -298,6 +326,8 @@ class RiyaCore:
         a reply's depend on the turn."""
         if kind == "greet":
             return "greeting", BUDGETS["greeting"], CAPS["greeting"]
+        if kind == "report":
+            return "report", BUDGETS["report"], CAPS["report"]
         k = turn_kind(text, about_me=about_me(text), needs_thinking=needs_thinking(text))
         return k, BUDGETS[k], CAPS[k]
 
@@ -411,7 +441,7 @@ class RiyaCore:
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(self._bid_reason(action), action.thread),
-                                      now=self.clock.now(), eyes=self._eyes_context())
+                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip())
         except Exception:
@@ -451,8 +481,10 @@ class RiyaCore:
         """Each step is guarded on its own, so one failing step can't starve the others."""
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
+        self._step("agents", lambda: self._agents_step(now))
         action = self._step("greeting", lambda: self._greeting(events, now))
-        if action is None:
+        report = None if action else self._step("report", lambda: self._report_step(now))
+        if action is None and report is None:
             self._step("bid", self._maybe_bid)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
         self._step("eyes", lambda: self._eyes_step(now))
@@ -462,7 +494,9 @@ class RiyaCore:
         self._step("persistence", lambda: self._maybe_save(now))
         self._step("state", lambda: self._maybe_state(now))
         self._step("expression", self._sync_expression)
-        return Utterance(self.speak_first(action), action.spoken) if action else None
+        if action:
+            return Utterance(self.speak_first(action), action.spoken)
+        return report if isinstance(report, Utterance) else None
 
     @staticmethod
     def _step(name: str, fn: Callable[[], object]):
@@ -537,7 +571,96 @@ class RiyaCore:
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
+            self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
+            if self._greet_reports:
+                self._last_report_at = self.clock.now()
         return action
+
+    # ---- agents -------------------------------------------------------------------------------------
+    def _agents_step(self, now: float) -> None:
+        """Drains both inboxes into the hub (at most DRAIN_MAX items a tick, Colab first: it's small), runs the hub's
+        staleness rules, queues its events as pending reports (per agent only the newest; older than 6 h dropped)
+        and sends the agents list when it changed. Any hook payload proves the hooks are installed: hooks_seen_at."""
+        events, n, hooks = [], 0, False
+        for inbox in (self.colab_inbox, self.agent_inbox):
+            while n < DRAIN_MAX:
+                try:
+                    item = inbox.get_nowait()
+                except queue.Empty:
+                    break
+                n += 1
+                try:
+                    if inbox is self.agent_inbox:
+                        hooks = True
+                        events += self.agents.on_claude_event(item)
+                    else:
+                        events += self.agents.on_colab(*item)
+                except Exception:
+                    log.exception("couldn't take an agent event")
+        events += self.agents.tick()
+        if hooks:
+            self._hooks_seen_at = now
+            self.kv.set(HOOKS_SEEN_KEY, now)
+        for ev in events:
+            self._reports.pop(ev.agent_id, None)
+            self._reports[ev.agent_id] = (ev, now)
+        self._reports = {k: v for k, v in self._reports.items() if now - v[1] < REPORT_MAX_AGE_S}
+        self._emit_agents()
+
+    def _report_step(self, now: float) -> "Utterance | bool | None":
+        """Delivers the pending agent reports with manners, everything pending merged into one line, at most one
+        every 20 s. Never while away (the came-back greeting carries them). An urgent kind goes out now (focused,
+        talking, break); a finished one waits for a break or a talking turn. While gaming it's a templated bubble and
+        the model is never called. Returns the spoken Utterance, True when a bubble was shown, else None."""
+        state = self.presence.state
+        if not self._reports or state == "away":
+            return None
+        if self._last_report_at is not None and 0 <= now - self._last_report_at < REPORT_GAP_S:
+            return None
+        events = [ev for ev, _ in self._reports.values()]
+        kinds = {ev.kind for ev in events}
+        if not (kinds & URGENT or state in ("break", "talking")):
+            return None
+        self._reports, self._last_report_at = {}, now
+        self.feelings.show(REPORT_FACES[next(k for k in REPORT_FACES if k in kinds)], REPORT_FACE_S)
+        self._sync_expression()
+        if state == "gaming":
+            self._report_bubble(events)
+            return True
+        return Utterance(self._report(events), True)
+
+    def _report(self, events: list[AgentEvent]) -> Iterator[str]:
+        """One spoken line from the local model (40 tokens, 1 sentence); if the model can't, the templated bubble."""
+        def after(outcome: str) -> None:
+            if outcome == "failed":
+                self._report_bubble(events)
+
+        with self._lock:
+            yield from self._speak("report", user_text=None, query=report_line(events, detail=False),
+                                   situation=report_situation(events), spoken=True, threads=[], after=after)
+
+    def _report_bubble(self, events: list[AgentEvent]) -> None:
+        """The templated report: a silent bubble, kept in the transcript like a bid."""
+        line, uid = report_bubble(events), uuid4().hex
+        self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
+        self.emit(SayEnd(utterance_id=uid))
+        self.memory.append_transcript("assistant", line)
+        self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
+        self.last_turn_at = self.clock.now()
+
+    def _agents_context(self) -> str | None:
+        """The `### Your agents:` prompt line (outside the memory block, like the eyes block)."""
+        return agents_block(self.agents.snapshot(), self.clock.now())
+
+    def _agents_msg(self) -> AgentsMsg:
+        return AgentsMsg(items=[AgentInfo(**a) for a in self.agents.snapshot()], hooks_seen_at=self._hooks_seen_at)
+
+    def _emit_agents(self) -> None:
+        """agents, only when it changed. hello_messages reads the last one sent (never the hub, from another thread)."""
+        msg = self._agents_msg()
+        if msg != self._agents_sent:
+            self._agents_sent = msg
+            self.emit(msg)
 
     # ---- eyes ---------------------------------------------------------------------------------------
     def _eyes_context(self) -> str | None:
@@ -821,7 +944,7 @@ class RiyaCore:
 
     def hello_messages(self) -> list[BaseModel]:
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
-                SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._eyes_msg(),
+                SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
                 *([self._look] if self._look else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
