@@ -10,7 +10,8 @@ const { boundsFor, clampToArea } = require("./src/geometry");
 const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
-  pickHotkey, modeToApply, repositionTarget, shouldSendToCore, rememberForReplay, toPhysical, toDip, displayConverter, DONT_LOOK_HOTKEYS,
+  pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
+  DONT_LOOK_HOTKEYS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -433,6 +434,13 @@ function toggleDontLook() {
   refreshTrayMenu(); // the checkbox flips by itself when clicked; put it back until the core's eyes message says so
 }
 
+/** The tray's Quit: the core stops too (quit_core), so nothing keeps glancing with no body; then the body exits. */
+function quitRiya() {
+  if (state.quitting) return;
+  sendToCore({ type: "quit_core" });
+  setTimeout(() => app.quit(), quitDelay(state.connected));
+}
+
 function refreshTrayMenu() {
   if (!state.tray) return;
   const modeItem = (mode, label) => ({
@@ -448,7 +456,7 @@ function refreshTrayMenu() {
     { type: "separator" },
     { label: "Don't look", type: "checkbox", checked: state.dontLook, click: toggleDontLook },
     { label: "Settings…", click: openSettings },
-    { label: "Quit", click: () => app.quit() },
+    { label: "Quit", click: quitRiya },
   ]));
 }
 
