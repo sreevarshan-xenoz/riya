@@ -21,6 +21,7 @@ DAY = 86400.0
 ABOUT_ME_FACTS = 8
 MAX_EPISODES = 3
 RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it's this fresh
+STALE_THREAD_S = 7 * DAY  # an open thread this far past due is dropped by the daily purge
 ABOUT_ME_RE = re.compile(
     r"\bwhat (?:do|did) you (?:remember|know) about me\b|\beverything you (?:remember|know) about me\b"
     r"|\btell me (?:everything |all |what )?(?:that )?you (?:remember|know)\b|\bwhat have i (?:told|said to) you\b",
@@ -282,6 +283,21 @@ class Memory:
             (self.clock.now(),))
         return [_thread(r) for r in rows]
 
+    def _relevant_threads(self, vec: np.ndarray, qtokens: set[str], k: int) -> list[Thread]:
+        due = self.due_threads()
+        if not due:
+            return []
+        vecs = self.embedder.embed([t.text for t in due])
+        sims = [float(np.dot(vec, v)) if v.shape == vec.shape else 0.0 for v in vecs]
+        ranked = sorted(zip(sims, due), key=lambda p: p[0], reverse=True)
+        return [t for sim, t in ranked if self.eligible(sim, qtokens, t.text)][:k]
+
+    @_locked
+    def resolve_stale_threads(self, max_overdue_s: float = STALE_THREAD_S) -> int:
+        with self.db:
+            return self.db.execute("update threads set status='resolved' where status='open' and due_at < ?",
+                                   (self.clock.now() - max_overdue_s,)).rowcount
+
     @_locked
     def mark_thread(self, thread_id: int, status: str | None = None, raised_at: float | None = None) -> None:
         with self.db:
@@ -334,10 +350,10 @@ class Memory:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
     @_locked
-    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2) -> Retrieved:
+    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2) -> Retrieved:
         """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
         it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets her
-        best facts by trust and recency instead of by similarity."""
+        best facts by trust and recency instead of by similarity. Due threads pass the same gate as facts."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         mine = about_me(query)
         facts, episodes = [], []
@@ -358,7 +374,8 @@ class Memory:
             e for e in latest[1:] if now - e.ended_at <= RECENT_EPISODE_S]
         unique = list({e.id: e for e in reversed(picked)}.values())[::-1]  # first occurrence wins
         chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
-        return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen, self.due_threads())
+        return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen,
+                         self._relevant_threads(vec, qtokens, k_threads))
 
     # --- legacy import ---
 

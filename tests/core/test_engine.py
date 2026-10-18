@@ -354,3 +354,71 @@ def test_settings_writes_wait_for_a_memory_transaction_on_another_thread():
     assert not wrote.wait(0.1)          # blocked behind the memory's lock
     t.join(); writer.join(1)
     assert wrote.is_set() and core.settings.volume == 0.5
+
+
+# --- final review: follow-up threads --------------------------------------------------------------------------------
+
+def follow_ups(messages):
+    return [line for line in messages[0]["content"].splitlines() if line.startswith("- Follow up:")]
+
+
+def test_a_reply_carries_at_most_two_relevant_threads():
+    core, _, _, local = make_core()
+    for text in ("Ask how the calculus exam went", "Ask whether the calculus exam results are out",
+                 "Ask if the calculus exam hall was cold", "Ask about the trip to Goa"):
+        core.memory.add_thread(text, due_at=core.clock.now() - 60)
+    list(core.reply("ugh, the calculus exam"))
+    assert len(follow_ups(local.calls[-1])) == 2
+    list(core.reply("what should I cook tonight?"))
+    assert follow_ups(local.calls[-1]) == []
+
+
+def test_a_greeting_carries_only_its_own_thread():
+    clock = FakeClock()
+    core, _, src, local = make_core(clock, local_replies=["Welcome back! How was the exam?"])
+    for text in ("Ask whether the calculus exam results are out", "Ask how the calculus exam went"):
+        core.memory.add_thread(text, due_at=clock.now() - 60)
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    clock.advance(3 * 3600)
+    src.idle = 0
+    run_ticks(core, clock, 1)
+    assert len(follow_ups(local.calls[-1])) == 1
+
+
+def bid_about_a_thread(clock):
+    core, emitted, src, local = make_core(clock, local_replies=["So... how did the exam go?", "Nice."])
+    core.handle(SetSettings(patch={"quiet_hours": None}))
+    core.memory.add_thread("Ask how the calculus exam went", due_at=clock.now())
+    core.memory.add_thread("Ask whether the calculus exam results are out", due_at=clock.now())
+    run_ticks(core, clock, 600, step=300)
+    src.idle = 150
+    run_ticks(core, clock, 150, step=150)
+    assert any(isinstance(m, Say) and m.kind == "bid" for m in emitted)
+    assert len(follow_ups(local.calls[-1])) == 1
+    (raised,) = core.memory.db.execute("select id from threads where last_raised_at is not null").fetchall()
+    return core, src, core.memory.due_threads()[[t.id for t in core.memory.due_threads()].index(raised[0])]
+
+
+def test_answering_a_bid_follows_its_thread_up():
+    clock = FakeClock()
+    core, src, thread = bid_about_a_thread(clock)
+    clock.advance(120); src.idle = 0
+    list(core.reply("it went okay actually"))
+    assert core.memory.db.execute("select status from threads where id=?", (thread.id,)).fetchone()[0] == "followed_up"
+
+
+def test_a_late_answer_leaves_the_bid_thread_open():
+    clock = FakeClock()
+    core, src, thread = bid_about_a_thread(clock)
+    run_ticks(core, clock, 301, step=1)
+    list(core.reply("sorry, was away"))
+    assert core.memory.db.execute("select status from threads where id=?", (thread.id,)).fetchone()[0] == "open"
+
+
+def test_the_daily_purge_resolves_week_old_threads():
+    clock = FakeClock()
+    core, *_ = make_core(clock)
+    stale = core.memory.add_thread("Ask about the old trip", due_at=clock.now() - 8 * 86400)
+    run_ticks(core, clock, 1)
+    assert core.memory.db.execute("select status from threads where id=?", (stale.id,)).fetchone()[0] == "resolved"

@@ -232,3 +232,23 @@ def test_about_me_returns_the_best_facts_without_a_similarity_gate(mem, clock, q
 
 def test_about_me_with_nothing_stored_is_empty(mem):
     assert mem.retrieve("what do you remember about me?").facts == []
+
+
+def test_retrieve_includes_at_most_two_threads_relevant_to_the_query(mem, clock):
+    due = clock.now() - 60
+    exam = mem.add_thread("Ask how the calculus exam went", due_at=due)
+    mem.add_thread("Ask whether the calculus exam results are out", due_at=due)
+    mem.add_thread("Ask if the calculus exam hall was cold", due_at=due)
+    mem.add_thread("Ask about the trip to Goa", due_at=due)
+    got = mem.retrieve("how did the calculus exam go").threads
+    assert len(got) == 2 and all("calculus exam" in t.text for t in got)
+    assert mem.retrieve("what should I cook tonight").threads == []
+    assert exam.id in [t.id for t in mem.retrieve("calculus exam went").threads]
+
+
+def test_stale_open_threads_are_resolved(mem, clock):
+    stale = mem.add_thread("Ask about the old trip", due_at=clock.now() - 8 * DAY)
+    fresh = mem.add_thread("Ask about the exam", due_at=clock.now() - 6 * DAY)
+    assert mem.resolve_stale_threads() == 1
+    assert [t.id for t in mem.due_threads()] == [fresh.id]
+    assert mem.db.execute("select status from threads where id=?", (stale.id,)).fetchone()[0] == "resolved"

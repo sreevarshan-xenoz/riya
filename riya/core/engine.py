@@ -2,7 +2,7 @@
 import logging
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -43,6 +43,10 @@ def _query(action: Action) -> str:
     return action.thread.text if action.thread else action.reason
 
 
+def _threads(action: Action) -> list:
+    return [action.thread] if action.thread else []
+
+
 class Utterance:
     """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud."""
 
@@ -79,6 +83,7 @@ class RiyaCore:
         now = clock.now()
         self.last_turn_at = now
         self.pending_bid_at: float | None = None
+        self._bid_thread: int | None = None  # the thread a pending bid brought up
         self._deferred_greeting: tuple[float, float] | None = None  # (away_s, came_back_at) while gaming
         self._last_save = self._last_state_at = now
         self._last_purge: float | None = None
@@ -103,7 +108,11 @@ class RiyaCore:
             yield from self._speak("reply", user_text=text, query=text, situation=None, spoken=True)
 
     def _take_user_turn(self, text: str) -> None:
-        self.last_turn_at, self.pending_bid_at = self.clock.now(), None
+        now = self.clock.now()
+        answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
+        if answered_bid and self._bid_thread is not None:
+            self.memory.mark_thread(self._bid_thread, status="followed_up")
+        self.last_turn_at, self.pending_bid_at, self._bid_thread = now, None, None
         self.memory.append_transcript("user", text)
         if (said := remember_intent(text)) is not None:
             self.memory.add_fact(f"The user said: {said}", source="user_said")
@@ -115,7 +124,8 @@ class RiyaCore:
         with self._lock:
             situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
             yield from self._speak("greet", user_text=None, query=_query(action), situation=situation,
-                                   spoken=action.spoken, after=lambda outcome: self._greeted(action, outcome))
+                                   spoken=action.spoken, threads=_threads(action),
+                                   after=lambda outcome: self._greeted(action, outcome))
 
     def _greeted(self, action: Action, outcome: str) -> None:
         """The thread counts as followed up only once she actually asked; a barge-in still stops a re-raise today."""
@@ -124,15 +134,16 @@ class RiyaCore:
                                     raised_at=self.clock.now())
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
-               after: Callable[[str], None] | None = None) -> Iterator[str]:
-        """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model)."""
+               threads: list | None = None, after: Callable[[str], None] | None = None) -> Iterator[str]:
+        """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
+        threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread)."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
             messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=self.memory.retrieve(query), turns=self.turns, user_text=user_text,
-                                      situation=situation, now=self.clock.now())
+                                      retrieved=self._retrieve(query, threads), turns=self.turns,
+                                      user_text=user_text, situation=situation, now=self.clock.now())
             route_text = user_text or ""
             if self.router.route(route_text) == "online":
                 thinking = True
@@ -172,6 +183,10 @@ class RiyaCore:
             except Exception:
                 log.exception("couldn't record the %s", kind)
 
+    def _retrieve(self, query: str, threads: list | None):
+        r = self.memory.retrieve(query)
+        return r if threads is None else replace(r, threads=threads)
+
     def _finish_turn(self, user_text: str | None, said: str | None) -> None:
         """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded."""
         if said is not None:
@@ -193,7 +208,7 @@ class RiyaCore:
     def _bid(self, action: Action) -> None:
         try:
             messages = build_messages(persona=self.persona, feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=self.memory.retrieve(_query(action)), turns=self.turns,
+                                      retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=bid_situation(action.reason, action.thread),
                                       now=self.clock.now())
             line = "".join(self.local.stream(messages, max_tokens=BID_MAX_TOKENS)).strip()
@@ -210,6 +225,7 @@ class RiyaCore:
         self.memory.append_transcript("assistant", line)
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.pending_bid_at = self.clock.now()
+        self._bid_thread = action.thread.id if action.thread else None
         if self.presence.state == "gaming":  # only the hotkey opens the mic during a game
             return
         try:
@@ -281,7 +297,7 @@ class RiyaCore:
     def _check_bid_ignored(self, now: float) -> None:
         if self.pending_bid_at is not None and now - self.pending_bid_at >= BID_IGNORED_S:
             self.feelings.on_event("bid_ignored")
-            self.pending_bid_at = None
+            self.pending_bid_at = self._bid_thread = None
 
     def _maybe_consolidate(self, now: float) -> None:
         if self.consolidator.due(self.last_turn_at) and (
@@ -293,6 +309,7 @@ class RiyaCore:
         if self._last_purge is None or now - self._last_purge >= PURGE_EVERY_S:
             self._last_purge = now
             self.memory.purge_transcripts()
+            self.memory.resolve_stale_threads()
 
     def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
