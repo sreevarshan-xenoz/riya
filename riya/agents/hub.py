@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from pathlib import PureWindowsPath
 from typing import Literal
 
-STALE_S = 30 * 60        # busy with no events this long -> unknown
+STALE_S = 30 * 60        # busy or waiting with no events this long -> unknown
 REMOVE_S = 10 * 60       # ended agents are dropped this long after SessionEnd
-TOOL_FAIL_LIMIT = 3      # tool failures in one turn that count as failed
+TOOL_FAIL_LIMIT = 3      # consecutive tool failures that earn the "in a row" detail (never failed: only StopFailure)
 SNAPSHOT_MAX = 20
 MAX_AGENTS = 200         # hard cap on tracked agents (least recently heard from is evicted)
 ATTENTION = {"waiting", "failed", "lost", "stalled"}
-CLAUDE_EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure",
+CLAUDE_EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure", "PostToolUse",
                  "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd"}
 _COLAB = {"running": "running", "done": "finished", "fail": "failed", "lost": "lost", "stalled": "stalled"}
 
@@ -113,8 +113,8 @@ class AgentHub:
         name = f"{folder or 'claude'} {summarize(sid[:6], 6)}"
         a = self._agents.get(sid)
         if a is None:
-            # sessions may predate Riya; a subagent stop means a turn is running
-            a = self._get(sid, "claude", name, "busy" if ev == "SubagentStop" else "idle")
+            # sessions may predate Riya; a subagent stop or a tool that ran means a turn is running
+            a = self._get(sid, "claude", name, "busy" if ev in ("SubagentStop", "PostToolUse") else "idle")
         elif folder:
             a.name = name
         if a.status == "ended" and ev not in ("UserPromptSubmit", "SessionStart"):
@@ -168,14 +168,18 @@ class AgentHub:
             ev.error = summarize(err, 40) if isinstance(err, str) and err.strip() else None
             return [ev]
 
+    def _ev_PostToolUse(self, a, p):
+        """A tool ran: the approval was given (waiting -> busy) and the run of tool errors is over."""
+        a.tool_errors = 0
+        if a.status in ("waiting", "unknown"):
+            self._set(a, "busy", "")
+
     def _ev_PostToolUseFailure(self, a, p):
+        """Stays busy, never an event: a red test run is routine. 3 in a row only changes the detail."""
         a.tool_errors += 1
         tool, err = summarize(p.get("tool_name", ""), 40), summarize(p.get("error", ""))
-        if a.tool_errors >= TOOL_FAIL_LIMIT:
-            if self._set(a, "failed", summarize(f"{a.tool_errors} tool failures, last {tool}: {err}")):
-                return [self._event(a)]
-            return []
-        self._set(a, "busy", summarize(f"{tool} failed: {err}"))
+        self._set(a, "busy", f"{a.tool_errors} tool errors in a row" if a.tool_errors >= TOOL_FAIL_LIMIT
+                  else summarize(f"{tool} failed: {err}"))
 
     # -- Colab ---------------------------------------------------------------------------------
     def on_colab(self, name: str, kind: str, line: str) -> list[AgentEvent]:
@@ -189,12 +193,13 @@ class AgentHub:
 
     # -- time ----------------------------------------------------------------------------------
     def tick(self) -> list[AgentEvent]:
-        """Staleness (busy -> unknown, never failed) and removal of long-ended agents. Emits nothing today."""
+        """Staleness (busy or waiting -> unknown, never failed: a denied or Esc'd permission fires nothing) and removal
+        of long-ended agents. Emits nothing today."""
         now = self.clock.now()
         for a in list(self._agents.values()):
             if a.status == "ended" and now - a.since >= REMOVE_S:
                 del self._agents[a.id]
-            elif a.kind == "claude" and a.status == "busy" and now - a.last_event_at >= STALE_S:
+            elif a.kind == "claude" and a.status in ("busy", "waiting") and now - a.last_event_at >= STALE_S:
                 a.status, a.since, a.needs_attention = "unknown", now, False
         return []
 
