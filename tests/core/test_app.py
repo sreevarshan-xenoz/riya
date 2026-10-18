@@ -330,7 +330,49 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
                 while not self.should_exit:
                     threading.Event().wait(0.01)
 
+    class HookServer:
+        should_exit = False
+
+    def start_hook_receiver(enqueue):
+        made["enqueue"] = enqueue
+        thread = threading.Thread(target=lambda: None, name="riya-hooks")
+        thread.start()
+        made["hooks"] = HookServer()
+        return made["hooks"], thread
+
     monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(runner, "start_hook_receiver", start_hook_receiver)
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["server"].should_exit and made["body_present"]() is False
+    inbox = made["core"].agent_inbox                           # the runner owns the queue; the receiver feeds it
+    made["enqueue"]({"hook_event_name": "Stop"})
+    assert inbox.get_nowait() == {"hook_event_name": "Stop"} and made["hooks"].should_exit
+
+
+def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
+    import uvicorn
+
+    from riya.core.protocol import QuitCore
+    made = {}
+
+    def build_core(args, emit, body_present):
+        core, *_ = make_core()
+        made["core"] = core
+        core.handle(QuitCore())
+        return core
+
+    class Server:
+        def __init__(self, config):
+            self.config, self.should_exit = config, False
+
+        def run(self):
+            with TestClient(self.config.app):
+                while not self.should_exit:
+                    threading.Event().wait(0.01)
+
+    monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(runner, "start_hook_receiver", lambda enqueue: None)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    assert runner.main(["--no-voice", "--hash-embed"]) is None
+    assert made["core"].agent_inbox is not None
