@@ -6,6 +6,7 @@ import re
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -34,7 +35,7 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, AgentInfo, Agents
                                 MemoryCorrect, MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg,
                                 TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
-from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
+from riya.core.settings import Settings, apply_patch, in_quiet_hours, load_settings, save_settings, set_autostart
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
                                is_feelings_question, is_identity_question, limit_emoji, strip_label, turn_kind)
 from riya.core.store import KV
@@ -75,6 +76,11 @@ REPORTS_KEY = "agents.reports"  # pending reports survive a restart
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
+
+
+def local_time(t: float) -> datetime:
+    """t as the machine's local wall-clock time (quiet hours are local)."""
+    return datetime.fromtimestamp(t)
 
 
 def _worded(text: str) -> bool:
@@ -734,7 +740,9 @@ class RiyaCore:
         """Delivers the pending agent reports with manners, everything pending merged into one line, at most one
         every 20 s. Never while away (the came-back greeting carries them). An urgent kind goes out now (focused,
         talking, break); a finished one waits for a break or a talking turn. While gaming it's a templated bubble and
-        the model is never called. Returns the spoken Utterance, True when a bubble was shown, else None."""
+        the model is never called. In quiet hours, or when she may not start conversations, it's always the bubble
+        (no voice, no mic): urgent ones now, finished ones only on a talking turn. Returns the spoken Utterance, True
+        when a bubble was shown, else None."""
         state = self.presence.state
         if not self._reports or state == "away":
             return None
@@ -742,12 +750,14 @@ class RiyaCore:
             return None
         events = [ev for ev, _ in self._reports.values()]
         kinds = {ev.kind for ev in events}
-        if not (kinds & URGENT or state in ("break", "talking")):
+        s = self.settings
+        restricted = not s.may_start_conversations or in_quiet_hours(s.quiet_hours, local_time(now))
+        if not (kinds & URGENT or state in (("talking",) if restricted else ("break", "talking"))):
             return None
         self._reports, self._last_report_at = {}, now
         self.feelings.show(REPORT_FACES[next(k for k in REPORT_FACES if k in kinds)], REPORT_FACE_S)
         self._sync_expression()
-        if state == "gaming":
+        if state == "gaming" or restricted:
             self._report_bubble(events)
             return True
         return Utterance(self._report(events), True)
