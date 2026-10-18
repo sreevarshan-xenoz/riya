@@ -26,6 +26,13 @@ _SPACE_BEFORE_PUNCT = re.compile(r" +([.,!?…;:])")
 _LABEL = re.compile(r"^\s*\**riya\**\s*(?::|[-\u2013\u2014](?=\s))\**\s*", re.I)  # "Riya:", "**Riya:**", "Riya -"
 FENCE = "```"
 CODE_SAID = "here's the code"
+GENERIC_PHRASES: tuple[str, ...] = (  # assistant-speak she never says; the persona scorecard counts them too
+    "you've got this", "no pressure", "let me know", "i'm here to", "i'm here for you", "feel free",
+    "how can i help", "happy to help", "don't hesitate", "just say the word", "we'll figure it out together",
+    "take a deep breath")
+GENERIC_MAX_WORDS = 6
+_IDENTITY = re.compile(r"\b(?:are you (?:human|real|alive|an? (?:ai|person|bot|robot|program|real (?:person|girl)))"
+                       r"|what are you(?=\s*(?:[?!.,]|$))|is this an? ai)\b", re.I)
 
 
 def turn_kind(text: str, *, about_me: bool, needs_thinking: bool) -> Literal["small", "explain", "about_me"]:
@@ -52,6 +59,47 @@ def cap_sentences(sentences: Iterator[str], n: int) -> Iterator[str]:
                 close()
             yield sentence
     finally:
+        if close:
+            close()
+
+
+def is_identity_question(text: str) -> bool:
+    """"are you human / real / an AI / a bot...", "what are you", "is this an AI": she must say she's an AI."""
+    return bool(_IDENTITY.search(text))
+
+
+def is_generic(sentence: str) -> bool:
+    """A short (at most 6 words) sentence made of assistant-speak: it holds a GENERIC_PHRASES phrase. Code never is."""
+    if FENCE in sentence or len(sentence.split()) > GENERIC_MAX_WORDS:
+        return False
+    t = sentence.lower().replace("’", "'")
+    return any(p in t for p in GENERIC_PHRASES)
+
+
+def drop_generic(sentences: Iterator[str], others: bool = False, dropped: list | None = None) -> Iterator[str]:
+    """Drops each short generic sentence (is_generic) as soon as another sentence is known to be in the reply. One that
+    is the reply's only sentence stays; others says another sentence was already said before this stream. Holds a
+    generic sentence back only until the next one arrives. Each one dropped is appended to dropped, when given."""
+    it = iter(sentences)
+    pending = None
+    try:
+        for sentence in it:
+            if pending is not None and dropped is not None:
+                dropped.append(pending)
+            pending = None  # another sentence exists, so the held generic one goes
+            if is_generic(sentence):
+                if others:
+                    if dropped is not None:
+                        dropped.append(sentence)
+                    continue
+                pending = sentence
+                continue
+            others = True
+            yield sentence
+        if pending is not None:
+            yield pending
+    finally:
+        close = getattr(it, "close", None)
         if close:
             close()
 

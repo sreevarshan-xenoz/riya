@@ -48,10 +48,12 @@ if (-not (Test-ModelServer)) {
     }
 }
 
-# The core runs in this console (its log stays visible). The body always starts: waiting up to 60 s for the core's
-# port only spares a flash of "connecting...", and the body reconnects on its own whenever the core comes up.
+# The core runs in this console (its log stays visible). Waiting up to 60 s for the core's port only spares a flash of
+# "connecting...": the body reconnects on its own whenever the core comes up, so it starts even if the port is slow.
+# A core that has already exited is different: there is nothing to connect to, so the body isn't started.
 $core = Start-Process -FilePath $Python -ArgumentList @("-m", "riya.core") -WorkingDirectory $Root `
     -NoNewWindow -PassThru
+$null = $core.Handle  # PowerShell 5.1 loses ExitCode for a process whose handle was never touched
 $deadline = (Get-Date).AddSeconds(60)
 while (-not $core.HasExited -and -not (Test-CorePort)) {
     if ((Get-Date) -gt $deadline) {
@@ -59,6 +61,10 @@ while (-not $core.HasExited -and -not (Test-CorePort)) {
         break
     }
     Start-Sleep -Milliseconds 500
+}
+if ($core.HasExited) {
+    Write-Host "The core exited with code $($core.ExitCode) before it opened port $CorePort; not starting the body."
+    exit $core.ExitCode
 }
 try {
     Start-Process -FilePath "npm.cmd" -ArgumentList @("--prefix", "`"$BodyDir`"", "start") `

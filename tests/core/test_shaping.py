@@ -1,7 +1,7 @@
 import pytest
 
-from riya.core.shaping import (BUDGETS, CAPS, cap_sentences, count_emoji, limit_emoji, strip_label, tts_text,
-                                turn_kind)
+from riya.core.shaping import (BUDGETS, CAPS, GENERIC_PHRASES, cap_sentences, count_emoji, drop_generic, is_generic,
+                                is_identity_question, limit_emoji, strip_label, tts_text, turn_kind)
 
 
 @pytest.mark.parametrize("about_me, thinking, expected", [
@@ -121,3 +121,42 @@ def test_limit_emoji_never_touches_a_fenced_block():
     ("Riya is cute.", "Riya is cute."), ("Riya, listen.", "Riya, listen."), ("Hey Riya: hi", "Hey Riya: hi")])
 def test_strip_label_drops_only_a_leading_speaker_label(text, want):
     assert strip_label(text) == want
+
+
+@pytest.mark.parametrize("text", [
+    "are you human?", "Are you real", "ARE YOU AN AI?", "are you a person?", "Are you a bot", "are you alive?",
+    "are you a robot?", "are you a program", "what are you?", "What are you", "are you a real person?",
+    "are you a real girl?", "is this an AI?", "hey, are you an ai or something"])
+def test_identity_questions_are_recognised(text):
+    assert is_identity_question(text)
+
+
+@pytest.mark.parametrize("text", [
+    "what are you doing?", "what are you up to", "are you hungry?", "are you there?", "hi riya", "I am human",
+    "is this an air fryer?", "are you aliens"])
+def test_other_questions_are_not_identity_questions(text):
+    assert not is_identity_question(text)
+
+
+def test_generic_phrases_live_in_core():
+    assert len(GENERIC_PHRASES) >= 12 and "no pressure" in GENERIC_PHRASES
+
+
+def test_is_generic_needs_a_phrase_and_at_most_six_words():
+    assert is_generic("No pressure!") and is_generic("Let me know.")
+    assert is_generic("You’ve got this, really.")
+    assert is_generic("Just let me know if you need me.") is False  # 8 words
+    assert not is_generic("You look tired.")
+    assert not is_generic("```py no pressure```")
+
+
+def test_drop_generic_drops_a_short_generic_sentence_when_another_remains():
+    assert list(drop_generic(iter(["Nice one.", "You've got this!", "Go on."]))) == ["Nice one.", "Go on."]
+    assert list(drop_generic(iter(["No pressure.", "That's a lot of math."]))) == ["That's a lot of math."]
+    assert list(drop_generic(iter(["Hmph.", "Take a deep breath."]))) == ["Hmph."]
+
+
+def test_drop_generic_keeps_a_sole_generic_sentence_and_with_a_lead_drops_it():
+    assert list(drop_generic(iter(["You've got this!"]))) == ["You've got this!"]
+    assert list(drop_generic(iter(["You've got this!"]), others=True)) == []
+    assert list(drop_generic(iter(["No pressure.", "Feel free."]))) == ["Feel free."]
