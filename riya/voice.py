@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 
 from riya.core.listen import MOUTH_FPS, ListenGate, barge_in_ok, mouth_level, mouth_levels, rms
+from riya.core.shaping import tts_text
 
 SR = 16000
 log = logging.getLogger("riya.voice")
@@ -267,6 +268,7 @@ class VoiceLoop:
     def say(self, sentences: Iterator[str]) -> None:
         """Speak sentences as they arrive; playback starts at the first audio chunk. A barge-in stops playback and
         closes the reply, so the core records only what was said. With mute_voice the sentences are only drained.
+        The voice speaks tts_text(sentence): no emoji, no *stage directions*; a sentence with nothing left is skipped.
         Never raises: an audio failure is logged, the rest of the reply is drained, and her state is reset."""
         with self._say_lock:
             settings = self.core.settings
@@ -274,10 +276,10 @@ class VoiceLoop:
             self.interrupt.clear()
             try:
                 for sentence in sentences:
-                    if settings.mute_voice:
+                    if settings.mute_voice or not (words := tts_text(sentence)):  # nothing left to say aloud
                         continue
                     speed, style = voice_params(*self.core.voice_state())
-                    for chunk in self._synth(sentence, speed, style):
+                    for chunk in self._synth(words, speed, style):
                         if self.interrupt.is_set():
                             break
                         if out is None:
