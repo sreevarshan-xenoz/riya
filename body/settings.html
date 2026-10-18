@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riya settings</title>
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<header>
+  <h1>Settings</h1>
+  <span id="conn" class="conn off" aria-live="polite">connecting…</span>
+</header>
+<main>
+  <section aria-labelledby="h-general">
+    <h2 id="h-general">General</h2>
+
+    <div class="row" data-key="mode">
+      <label for="mode">Mode</label>
+      <select id="mode">
+        <option value="buddy">Buddy</option>
+        <option value="panel">Panel</option>
+        <option value="window">Window</option>
+      </select>
+      <p class="err" role="alert" hidden></p>
+    </div>
+
+    <div class="row" data-key="voice">
+      <label for="voice">Voice</label>
+      <input id="voice" type="text" list="voices" maxlength="64" spellcheck="false" autocomplete="off">
+      <datalist id="voices">
+        <option value="alba"></option><option value="marius"></option><option value="javert"></option>
+        <option value="jean"></option><option value="fantine"></option><option value="cosette"></option>
+        <option value="eponine"></option><option value="azelma"></option>
+      </datalist>
+      <p class="note">Applies after a restart.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+
+    <div class="row" data-key="volume">
+      <label for="volume">Volume <output id="volume-out"></output></label>
+      <input id="volume" type="range" min="0" max="1" step="0.05">
+      <p class="err" role="alert" hidden></p>
+    </div>
+
+    <div class="row check" data-key="mute_voice">
+      <input id="mute_voice" type="checkbox"><label for="mute_voice">Mute her voice</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row check" data-key="mute_mic">
+      <input id="mute_mic" type="checkbox"><label for="mute_mic">Mute mic</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row check" data-key="autostart">
+      <input id="autostart" type="checkbox"><label for="autostart">Start with Windows</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row check" data-key="may_start_conversations">
+      <input id="may_start_conversations" type="checkbox"><label for="may_start_conversations">She may start conversations</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+
+    <div class="row" data-key="quiet_hours">
+      <label for="quiet_hours">Quiet hours</label>
+      <div class="inline">
+        <input id="quiet_hours" type="text" placeholder="23:30-08:00" maxlength="11" spellcheck="false" autocomplete="off">
+        <button id="quiet-save" type="button">Save</button>
+      </div>
+      <p class="note">She stays quiet between these times, as HH:MM-HH:MM (24-hour). Leave empty for none.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+
+    <div class="row">
+      <span class="label">Talk hotkey</span>
+      <span id="hotkey" class="static"></span>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-online">
+    <h2 id="h-online">Online model</h2>
+    <div class="row check" data-key="online_enabled">
+      <input id="online_enabled" type="checkbox"><label for="online_enabled">Use the online model</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row check" data-key="online_consolidation">
+      <input id="online_consolidation" type="checkbox"><label for="online_consolidation">Use online for memory summaries</label>
+      <p class="note">Google may use free-tier data.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <p class="note">The API key is not set here. Put <code>RIYA_ONLINE_API_KEY</code> in <code>.env</code>; it is never sent over the socket or shown in this window.</p>
+  </section>
+
+  <section aria-labelledby="h-facts">
+    <h2 id="h-facts">What she remembers</h2>
+    <p id="global-err" class="err" role="alert" hidden></p>
+    <ul id="facts" class="list"></ul>
+    <p id="facts-empty" class="empty" hidden>Nothing yet.</p>
+  </section>
+
+  <section aria-labelledby="h-threads">
+    <h2 id="h-threads">Follow-ups she is holding</h2>
+    <ul id="threads" class="list"></ul>
+    <p id="threads-empty" class="empty" hidden>No open follow-ups.</p>
+  </section>
+
+  <section aria-labelledby="h-episodes">
+    <h2 id="h-episodes">Conversation summaries</h2>
+    <ul id="episodes" class="list"></ul>
+    <p id="episodes-empty" class="empty" hidden>None yet.</p>
+  </section>
+
+  <section aria-labelledby="h-days">
+    <h2 id="h-days">Transcripts</h2>
+    <ul id="days" class="list"></ul>
+    <p id="days-empty" class="empty" hidden>No saved transcripts.</p>
+  </section>
+</main>
+
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <form method="dialog" id="confirm-form">
+    <h3 id="confirm-title"></h3>
+    <p id="confirm-body"></p>
+    <label id="confirm-check-row" class="check-row"><input id="confirm-check" type="checkbox"><span id="confirm-check-label"></span></label>
+    <div class="buttons">
+      <button id="confirm-cancel" type="button" value="cancel">Cancel</button>
+      <button id="confirm-ok" type="submit" value="ok" class="danger">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="src/settings-logic.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

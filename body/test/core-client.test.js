@@ -104,7 +104,7 @@ test("fixtures match the committed protocol schema", () => {
   const dir = path.join(__dirname, "fixtures");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
   assert.equal(names.filter((n) => n.startsWith("core_")).length, 9);
-  assert.equal(names.filter((n) => n.startsWith("body_")).length, 8);
+  assert.equal(names.filter((n) => n.startsWith("body_")).length, 10);
   for (const n of names) {
     const validate = n.startsWith("core_") ? validators.core : validators.body;
     const obj = JSON.parse(fs.readFileSync(path.join(dir, n), "utf8"));

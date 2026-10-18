@@ -13,6 +13,7 @@ const { makeTrayPng } = require("./src/tray-icon");
 const { pickHotkey, modeToApply, repositionTarget, shouldSendToCore } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
+const OPEN_SETTINGS = process.env.RIYA_OPEN_SETTINGS === "1"; // dev/smoke: open the settings window at startup
 const REPO_ROOT = path.resolve(__dirname, "..");
 const TALK_HOTKEYS = ["Control+Alt+Space", "Control+Alt+F9"]; // first one that registers wins
 const FIRST_SETTINGS_WAIT_MS = 1500;
@@ -34,6 +35,7 @@ const state = {
   drag: null,
   quitting: false,
   tray: null,
+  settingsWin: null,
   cache: new Map(),
 };
 const stageWindows = new Set();
@@ -71,8 +73,13 @@ function sendToCore(msg) {
   else state.bridgeQueue.push(msg);
 }
 
+/** Every window that shows the core: the stage windows and the settings window. */
+function uiWindows() {
+  return [...stageWindows, state.settingsWin].filter((win) => win && !win.isDestroyed());
+}
+
 function broadcast(channel, payload) {
-  for (const win of stageWindows) if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  for (const win of uiWindows()) win.webContents.send(channel, payload);
 }
 
 function createBridge() {
@@ -134,13 +141,17 @@ ipcMain.on("bridge:status", (event, connected) => {
   if (state.bridge && event.sender === state.bridge.webContents) onCoreStatus(Boolean(connected));
 });
 ipcMain.on("core:send", (event, msg) => {
-  if (!isStageSender(event.sender)) return;
+  if (!isUiSender(event.sender)) return;
   if (msg && typeof msg === "object" && typeof msg.type === "string") sendToCore(msg);
 });
 
 function isStageSender(sender) {
   for (const win of stageWindows) if (!win.isDestroyed() && win.webContents === sender) return true;
   return false;
+}
+
+function isUiSender(sender) {
+  return uiWindows().some((win) => win.webContents === sender);
 }
 
 // ---- sprite pack ----------------------------------------------------------------------------------------------------
@@ -165,7 +176,7 @@ function loadPack() {
 }
 
 /** The active talk-hotkey accelerator (e.g. "Control+Alt+F9" when the preferred one was taken), or null. */
-ipcMain.handle("hotkey:get", (event) => (isStageSender(event.sender) ? state.hotkey : null));
+ipcMain.handle("hotkey:get", (event) => (isUiSender(event.sender) ? state.hotkey : null));
 ipcMain.handle("pack:get", (event) => (isStageSender(event.sender) ? loadPack() : null));
 
 // ---- windows --------------------------------------------------------------------------------------------------------
@@ -340,8 +351,45 @@ function stopDrag(save) {
 
 // ---- tray, settings and hotkey ----------------------------------------------------------------------------------
 
+/** The one settings window: a normal framed window for the settings controls and the memory list. */
 function openSettings() {
-  log("settings window is not implemented yet");
+  const existing = state.settingsWin;
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 520,
+    height: 720,
+    show: false,
+    title: "Riya settings",
+    autoHideMenuBar: true,
+    fullscreenable: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      additionalArguments: ["--riya-mode=settings"],
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  state.settingsWin = win;
+  win.removeMenu();
+  win.once("ready-to-show", () => {
+    if (win.isDestroyed()) return;
+    win.show();
+  });
+  win.webContents.on("did-finish-load", () => {
+    if (win.isDestroyed()) return;
+    win.webContents.send("core:status", state.connected);
+    for (const msg of state.cache.values()) win.webContents.send("core:message", msg);
+  });
+  win.on("closed", () => {
+    if (state.settingsWin === win) state.settingsWin = null;
+  });
+  win.loadFile(path.join(__dirname, "settings.html"));
 }
 
 function requestMode(mode) {
@@ -398,6 +446,7 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     state.hotkey = pickHotkey(TALK_HOTKEYS, (accelerator) =>
       globalShortcut.register(accelerator, () => sendToCore({ type: "talk_hotkey" })));
+    if (OPEN_SETTINGS) openSettings();
     log(state.hotkey ? `talk hotkey: ${state.hotkey}` : `no talk hotkey registered (tried ${TALK_HOTKEYS.join(", ")})`);
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, relayout);
     // Wait briefly for the core's settings so she opens in the right mode; show buddy if the core isn't there.
