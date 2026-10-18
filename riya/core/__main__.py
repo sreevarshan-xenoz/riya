@@ -14,7 +14,7 @@ from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
 from riya.core.listen import ListenGate
-from riya.core.models import OpenAICompatModel, load_dotenv, load_online_from_env
+from riya.core.models import load_dotenv, load_online_from_env, local_model
 from riya.core.presence import make_idle_source
 from riya.core.protocol import Mouth
 from riya.core.store import open_db
@@ -54,7 +54,7 @@ def make_embedder(hash_embed: bool):
 def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None]) -> RiyaCore:
     load_dotenv()
     core = RiyaCore(db=open_db(args.db), embedder=make_embedder(args.hash_embed), clock=SystemClock(),
-                    idle_source=make_idle_source(), local=OpenAICompatModel("local", f"{args.local_url}/v1"),
+                    idle_source=make_idle_source(), local=local_model(args.local_url),
                     online=load_online_from_env(), emit=emit)
     legacy = Path(args.legacy_memory)
     legacy = legacy if legacy.is_absolute() else REPO_ROOT / legacy

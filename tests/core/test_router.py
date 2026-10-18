@@ -205,3 +205,27 @@ def test_load_dotenv_with_garbage_bytes_warns_and_returns_nothing(tmp_path, capl
     with caplog.at_level("WARNING"):
         assert load_dotenv(str(p)) == {}
     assert "RIYA_T_BAD" not in os.environ and any(".env" in r.getMessage() for r in caplog.records)
+
+
+def test_local_model_sends_the_user_turn_stop_sequences():
+    import json
+    from riya.core.models import LOCAL_STOP, local_model
+    seen = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["body"], seen["path"] = json.loads(self.rfile.read(int(self.headers["Content-Length"]))), self.path
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"Hi."}}]}\n\ndata: [DONE]\n\n')
+
+        def log_message(self, *a):
+            pass
+
+    srv, url = _serve(H)
+    m = local_model(url + "/", first_token_timeout_s=5.0)
+    assert m.name == "local" and "".join(m.stream(MSGS)) == "Hi."
+    srv.shutdown()
+    assert LOCAL_STOP == ("\nUser:", "User:") and seen["body"]["stop"] == list(LOCAL_STOP)
+    assert seen["path"] == "/v1/chat/completions" and OpenAICompatModel("online", url).stop is None

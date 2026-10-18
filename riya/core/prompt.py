@@ -3,7 +3,7 @@ honesty line, the situation and a reply-rules line (v0.2 spec section 4.2)."""
 from riya.core.memory import Fact, Retrieved, Thread
 from riya.core.shaping import CAPS
 
-NO_MEMORY_LINE = "You have no stored memory about this. If asked, say you don't remember instead of guessing."
+NO_MEMORY_LINE = "(nothing stored about this yet)"
 NO_ABOUT_ME_LINE = "Nothing yet. You don't know much about them so far: say so, and don't guess."
 HONESTY_LINE = ("Only mention memories listed here. Never invent memories or facts about them. "
                 "If what they ask about isn't listed, say you don't remember.")
@@ -12,8 +12,11 @@ MEMORY_START = "### What you know about them (the only true things you know):"
 MEMORY_END = "### End"
 AFTER_ABOUT_ME = "Recent conversations (context only, not facts to list):"
 REPLY_RULES = {"small": f"Reply in at most {CAPS['small']} sentences.",
-               "explain": f"Explain clearly in at most {CAPS['explain']} sentences.",
+               "explain": f"Explain clearly in at most {CAPS['explain']} sentences. No ~ in explanations.",
                "about_me": "List what's in the memory block, nothing else."}
+# the last line of the system message is the one the small model reliably obeys, so the hard rules ride on it
+HARD_RULES = ("You're an AI and say so if asked. Only the memory block is true about them; if something isn't there, "
+              "say you don't know.")
 
 _SOURCES = {"user_said": "user said", "inferred": "you inferred", "looked_up": "looked up"}
 
@@ -29,8 +32,9 @@ def _when(ended_at: float, now: float) -> str:
 
 
 def reply_rule(kind: str | None) -> str | None:
-    """The `### Reply rules:` line for a reply's turn kind (small, explain, about_me); None for anything else."""
-    return f"### Reply rules: {REPLY_RULES[kind]}" if kind in REPLY_RULES else None
+    """The `### Reply rules:` line for a reply's turn kind (small, explain, about_me): its length rule plus the hard
+    rules. None for anything else."""
+    return f"### Reply rules: {REPLY_RULES[kind]} {HARD_RULES}" if kind in REPLY_RULES else None
 
 
 def _memory_block(r: Retrieved, now: float, about_me: bool = False) -> str:
@@ -74,6 +78,11 @@ def greeting_situation(away_s: float, missing: float, thread: Thread | None) -> 
     s += (f" Greet them warmly and ask about this: {thread.text}." if thread
           else " Greet them warmly and ask how their day went.")
     return s + " Keep it to one or two short sentences."
+
+
+def remember_situation(fact: str) -> str:
+    """A remember-that turn: the fact is already saved, so she only has to confirm it."""
+    return f'You just saved this to memory: "{fact}". Confirm in one short sentence that you\'ll remember it.'
 
 
 def bid_situation(reason: str, thread: Thread | None) -> str:
