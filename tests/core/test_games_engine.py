@@ -2,11 +2,14 @@
 bids offering a game while an agent is busy. Offline: fake models and a fake clock."""
 import random
 
+import pytest
+
 from riya.core import games
 from riya.core.clock import FakeClock
+from riya.core.engine import REMEMBER_ACKS
 from riya.core.initiative import Action
 from riya.core.protocol import Say, SetSettings
-from tests.fakes import make_core
+from tests.fakes import FakeModel, make_core
 
 
 def run_ticks(core, clock, seconds, step=1):
@@ -151,10 +154,10 @@ def test_riddles_ask_the_riddle_after_her_line():
     assert not any(games.mentions(situation(local), a) for a in games.RIDDLES[core.game.riddle].answers)
 
 
-def test_a_game_move_never_saves_a_remember_fact():
+def test_a_remember_that_mid_word_chain_is_chat_and_saves_the_fact():
     core, *_ = gaming("let's play word chain")
     list(core.reply("remember that elephant"))
-    assert core.memory.list_facts() == [] and core.game.turns == 1
+    assert [f.text for f in core.memory.list_facts()] == ["The user said: elephant"] and core.game.turns == 0
 
 
 # --- fix round 1: start requests, off-topic turns, the engine's line, no bids mid-game --------------------------------
@@ -304,3 +307,77 @@ def test_no_game_offer_while_a_game_is_on():
     core.game = None                                       # the same bid without a game does offer one
     core._bid(Action("bid", False, None, "worked 2.5 h straight"))
     assert core._offer is not None and "busy" in situation(local)
+
+
+# --- off-game turns are chat in every game (final review I1) -------------------------------------------------------
+
+def mid_game(kind, **kw):
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, **kw)
+    core.game = games.new_game(kind, random.Random(3))
+    return core, emitted, local, clock
+
+
+def untouched(g):
+    return (g.turns, g.questions, g.misses, g.word, set(g.used), g.riddle)
+
+
+@pytest.mark.parametrize("kind", games.GAMES)
+def test_a_screen_question_mid_game_does_the_screen_look(kind):
+    from tests.core.test_eyes_engine import eyes_core
+    vision = FakeModel("vision", ["That's your editor, a test is red."])
+    core, emitted, _, local, clock, _, _, grab = eyes_core(vision=vision)
+    g = core.game = games.new_game(kind, random.Random(3))
+    before = untouched(g)
+    out = list(core.reply("what's on my screen?"))
+    assert out == ["That's your editor, a test is red."] and len(grab.calls) == 1
+    assert vision.calls[-1][-1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert core.game is g and untouched(g) == before
+    assert "still in the middle of" in vision.calls[-1][0]["content"]
+
+
+@pytest.mark.parametrize("kind", games.GAMES)
+def test_remember_that_mid_game_saves_the_fact(kind):
+    core, emitted, local, _ = mid_game(kind)
+    g = core.game
+    before = untouched(g)
+    out = list(core.reply("remember that I like tea"))
+    assert any("tea" in f.text for f in core.memory.list_facts())
+    assert out[0] in REMEMBER_ACKS and core.game is g and untouched(g) == before
+
+
+@pytest.mark.parametrize("kind", games.GAMES)
+@pytest.mark.parametrize("text", ["how's my agent doing?", "did claude finish?", "is my training run done yet?",
+                                  "are the tests green?", "what do you remember about me?", "are you an AI?",
+                                  "do you have feelings?"])
+def test_agent_identity_and_feelings_questions_mid_game_are_chat(kind, text):
+    core, emitted, local, clock = mid_game(kind, local_replies=("It's still busy~",))
+    core.agent_inbox.put({"hook_event_name": "UserPromptSubmit", "session_id": "abc123def", "cwd": "E:/riya"})
+    run_ticks(core, clock, 1)
+    g = core.game
+    before = untouched(g)
+    assert list(core.reply(text)) == ["It's still busy~"]
+    assert core.game is g and untouched(g) == before
+    s = situation(local)
+    assert "still in the middle of" in s and "judged" not in s
+    assert "### Your agents: riya abc123 — busy" in local.calls[-1][0]["content"]
+
+
+def test_how_is_my_agent_mid_20_questions_answers_and_never_counts():
+    core, emitted, local, clock = mid_game("twenty_questions", local_replies=("It's still working on it.",))
+    core.agent_inbox.put({"hook_event_name": "UserPromptSubmit", "session_id": "abc123def", "cwd": "E:/riya"})
+    run_ticks(core, clock, 1)
+    list(core.reply("how's my agent doing?"))
+    assert core.game.questions == 0 and "20 questions left" in situation(local)
+    assert core.game.secret not in situation(local)
+    list(core.reply("is it alive?"))                       # the next real question is question 1
+    assert core.game.questions == 1 and "question 1 of 20" in situation(local)
+
+
+@pytest.mark.parametrize("text", ["ok thanks", "eagle, your turn", "e4gle", "brb 2 min"])
+def test_word_chain_chat_never_counts(text):
+    core, emitted, local, _ = mid_game("word_chain")
+    g = core.game
+    before = untouched(g)
+    list(core.reply(text))
+    assert core.game is g and untouched(g) == before and "still in the middle of word chain" in situation(local)

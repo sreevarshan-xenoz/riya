@@ -11,7 +11,6 @@ GAMES: tuple[Kind, ...] = ("word_chain", "twenty_questions", "riddles")
 NAMES = {"word_chain": "word chain", "twenty_questions": "20 questions", "riddles": "riddles"}
 MAX_TURNS = 15  # moves in one game of word chain or riddles (off-topic turns don't count)
 MAX_QUESTIONS = 20  # 20 questions ends at 20 question-or-guess moves instead
-CHAIN_MAX_WORDS = 3  # a word chain message longer than this is off-topic
 RIDDLE_MAX_WORDS = 8  # a riddles message longer than this that isn't right is off-topic
 RIDDLE_TRIES = 3  # wrong guesses before she tells the answer and moves on
 TEASES = ("Nice try, I'm not telling~", "Hehe, my lips are sealed.", "Nope, you have to guess it yourself~")
@@ -33,6 +32,7 @@ _ACCEPT = re.compile(r"(?:yes|yeah|yea|yep|yup|sure|ok|okay|alright|absolutely|d
                      r"|let's do it|lets do it|let's play|why not|sounds good|i'm in|go on)\b")
 _DECLINE = frozenset("no nah nope not later but don't dont maybe".split())
 _ACCEPT_MAX_WORDS = 5
+_AGENTS = re.compile(r"\b(?:agents?|claude|colab|run|training|build|tests?)\b")
 
 
 def _lower(text: str) -> str:
@@ -237,18 +237,18 @@ def _is_word(w: str) -> bool:
     return w.isalpha() and len(w) >= 2 and any(c in "aeiouy" for c in w) and not re.search(r"(.)\1\1", w)
 
 
-def _off(s: GameState) -> Verdict:
+def off(s: GameState) -> Verdict:
     """Not a move (chat in the middle of a game): no turn counted, the game stays on."""
     return Verdict("off", "They said something that isn't a move.")
 
 
 def _chain(s: GameState, text: str) -> Verdict:
+    """A move is one alphabetic word; anything else (2+ words, digits, nothing at all) is chat."""
     need, toks = _last(s.word), _tokens(text)
-    if len(toks) > CHAIN_MAX_WORDS:
-        return _off(s)
+    if len(toks) != 1 or not toks[0].isalpha():
+        return off(s)
     s.turns += 1
-    word = toks[0] if len(toks) == 1 else next((t for t in reversed(toks) if t.startswith(need)),
-                                               toks[-1] if toks else "")
+    word = toks[0]
     bad = ((f'"{word}" isn\'t a real word.', "not a word") if not _is_word(word)
            else (f'"{word}" doesn\'t start with "{need}".', "wrong letter") if word[0] != need
            else (f'"{word}" was already used.', "used") if word in s.used else None)
@@ -283,7 +283,7 @@ def _twenty(s: GameState, text: str) -> Verdict:
     guess = named or (len(toks) <= 4 and bool(_GUESS.match(said))) or any(
         mentions(text, a, plural=True) for t in THINGS for a in t.aliases)
     if not (question or guess):
-        return _off(s)
+        return off(s)
     s.turns += 1
     s.questions += 1
     if named:
@@ -302,7 +302,7 @@ def _riddles(s: GameState, text: str) -> Verdict:
     r = RIDDLES[s.riddle]
     right = any(mentions(text, a, plural=True) for a in r.answers)
     if not right and len(_tokens(text)) > RIDDLE_MAX_WORDS:
-        return _off(s)
+        return off(s)
     s.turns += 1
     reveal = None
     if right:
@@ -399,6 +399,11 @@ def guard(s: GameState, sentence: str) -> str:
     if s.kind != "twenty_questions" or s.over or not any(mentions(sentence, a, plural=True) for a in s.aliases):
         return sentence
     return s.rng.choice(TEASES)
+
+
+def about_agents(text: str) -> bool:
+    """The message mentions their agents or runs (agent, claude, colab, run, training, build, test): chat mid-game."""
+    return bool(_AGENTS.search(_lower(text)))
 
 
 def is_stop(text: str) -> bool:
