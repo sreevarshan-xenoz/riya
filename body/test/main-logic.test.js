@@ -202,3 +202,13 @@ test("agents is replayed to a new window (the settings page reads hooks_seen_at 
   assert.equal(cache.size, 1);
   assert.equal(cache.get("agents").hooks_seen_at, 5);
 });
+
+const { forgetOnDisconnect } = require("../src/main-logic");
+
+test("a disconnect forgets the cached look and agents, so a reload never replays a stale agents list", () => {
+  const cache = new Map();
+  for (const msg of [{ type: "hello" }, { type: "settings" }, { type: "look", hwnd: 1 },
+    { type: "agents", items: [{ id: "a", status: "busy" }] }, { type: "state" }]) rememberForReplay(cache, msg);
+  forgetOnDisconnect(cache);
+  assert.deepEqual([...cache.keys()], ["hello", "settings", "state"]);
+});
