@@ -34,7 +34,7 @@ class Embedder(Protocol):
 
 
 class HashEmbedder:
-    def __init__(self, dim: int = 512):
+    def __init__(self, dim: int = 2048):
         self.dim = dim
 
     def embed(self, texts: list[str]) -> np.ndarray:
