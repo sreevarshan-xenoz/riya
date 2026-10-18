@@ -289,3 +289,8 @@ def test_the_favourite_movie_example_is_cheerfully_honest_without_dont_remember(
     i = next(i for i, ln in enumerate(lines) if "favourite movie" in ln)
     answer = lines[i + 1]
     assert answer.startswith("Riya: ") and "don't know" in answer and "remember" not in answer.lower()
+
+
+def test_no_style_example_duplicates_the_templated_remember_ack():
+    text = style_examples().lower()
+    assert "remember that, okay" not in text and "saved" not in text

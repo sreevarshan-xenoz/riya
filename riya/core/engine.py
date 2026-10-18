@@ -124,7 +124,8 @@ class RiyaCore:
             lead = None
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
-            yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead)
+            yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
+                                   small=bool(saved))
 
     def _take_user_turn(self, text: str) -> str | None:
         """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away)."""
@@ -158,10 +159,11 @@ class RiyaCore:
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
-               lead: str | None = None) -> Iterator[str]:
+               lead: str | None = None, small: bool = False) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
-        lead is a fixed sentence said first, before the model is even asked; it counts as one of the capped sentences.
+        lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
+        small makes it small talk on the local model whatever the text (a remember-that turn just reacts).
         A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not recorded."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped = None, {"stream": False}, []
@@ -172,7 +174,7 @@ class RiyaCore:
                 self.emit(Say(utterance_id=uid, text=lead, spoken=spoken, kind=kind))
                 said.append(lead)
                 yield lead
-            route_text = user_text or ""
+            route_text = "" if small else user_text or ""
             turn, budget, cap = self._shape(kind, route_text)
             route = self.router.route(route_text)  # decided first, so the prompt carries the matching persona
             messages = build_messages(persona=self.personas[route], examples=self.examples,
@@ -185,7 +187,7 @@ class RiyaCore:
                 self._sync_expression()
             stream = self.router.stream(messages, route_text, budget)
             kept = drop_generic(self._sentences(stream, parts, done), others=bool(lead), dropped=dropped)
-            sentences = cap_sentences(kept, cap - bool(lead))
+            sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
                 self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
