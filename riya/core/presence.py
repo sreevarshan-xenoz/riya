@@ -10,6 +10,7 @@ BREAK_IDLE_S = 120
 BREAK_TAIL_S = 60
 TALKING_WINDOW_S = 180
 _RESUME_IDLE_S = 5
+KV_EVERY_S = 30  # last_active_at is rewritten only once it moved this far
 
 
 class Clock(Protocol):
@@ -125,6 +126,7 @@ class Presence:
         self._last_turn: float | None = None
         self._tail_start: float | None = None
         last_active = kv.get("presence.last_active_at")
+        self._saved_active, self._saved_left = last_active, kv.get("presence.left_at")
         if last_active is not None and now - last_active >= AWAY_IDLE_S:
             self.state, self.left_at = "away", last_active
 
@@ -142,6 +144,8 @@ class Presence:
             self._tail_start = None if self._tail_start is None else min(self._tail_start, now)
             self._last_turn = None if self._last_turn is None else min(self._last_turn, now)
             self._work_start = min(self._work_start, now)
+        if self._last_turn is not None:  # a hands-free conversation is input too
+            idle = min(idle, max(0.0, now - self._last_turn))
         slept = now - self._last_update > AWAY_IDLE_S  # the laptop slept: away since the last update
         if was == "away":
             if not locked and idle < _RESUME_IDLE_S:
@@ -162,11 +166,17 @@ class Presence:
                 events.append(PresenceEvent("went_away"))
         else:
             events += self._active(now, idle, was)
-        if self.state != "away":
-            self.kv.set("presence.last_active_at", now - idle)
-        self.kv.set("presence.left_at", self.left_at)
+        self._persist(now - idle)
         self._last_update = now
         return events
+
+    def _persist(self, last_active: float) -> None:
+        if self.state != "away" and (self._saved_active is None or abs(last_active - self._saved_active) >= KV_EVERY_S):
+            self._saved_active = last_active
+            self.kv.set("presence.last_active_at", last_active)
+        if self.left_at != self._saved_left:
+            self._saved_left = self.left_at
+            self.kv.set("presence.left_at", self.left_at)
 
     def _resume(self, now: float) -> None:
         self.left_at, self._tail_start, self._work_start = None, None, now
@@ -180,6 +190,9 @@ class Presence:
         return "focused"
 
     def _active(self, now: float, idle: float, was: State) -> list[PresenceEvent]:
+        if self.source.fullscreen():  # a video or a gamepad game sends no keyboard or mouse input: never a break
+            self._tail_start, self.state = None, "gaming"
+            return [PresenceEvent("break_ended")] if was == "break" else []
         if idle >= BREAK_IDLE_S:
             self._tail_start = None
             self.state = "break"

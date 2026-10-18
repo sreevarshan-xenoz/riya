@@ -256,3 +256,49 @@ def test_barge_in_records_what_was_said_and_releases_the_lock():
     assert core.turns == [{"role": "user", "content": "count for me"}, {"role": "assistant", "content": "One."}]
     assert sum(isinstance(m, SayEnd) for m in emitted) == 1
     assert not core._lock.locked()
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+def long_stretch(core, clock):
+    core.handle(SetSettings(patch={"quiet_hours": None}))
+    run_ticks(core, clock, 2 * 3600 + 600, step=300)
+
+
+def test_fullscreen_without_input_never_bids_or_opens_the_mic():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=["Water break?"])
+    hooked = []
+    core.on_spoke_first = hooked.append
+    long_stretch(core, clock)
+    src.is_fullscreen, src.idle = True, 150
+    run_ticks(core, clock, 150, step=150)
+    assert core.presence.state == "gaming"
+    assert not any(isinstance(m, Say) for m in emitted) and hooked == [] and local.calls == []
+
+
+def test_a_bid_never_opens_the_mic_while_gaming():
+    from riya.core.initiative import Action
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock, local_replies=["psst"])
+    hooked = []
+    core.on_spoke_first = hooked.append
+    src.is_fullscreen = True
+    run_ticks(core, clock, 1)
+    core._bid(Action("bid", False, None, "test"))
+    assert hooked == []
+
+
+def test_hands_free_conversation_is_neither_a_break_nor_away():
+    clock = FakeClock()
+    core, emitted, src, _ = make_core(clock, local_replies=["Mm-hm."])
+    long_stretch(core, clock)
+    states = set()
+    for _ in range(20):
+        list(core.reply("and then what happened"))
+        for _ in range(6):
+            clock.advance(10); src.idle += 10
+            core.tick()
+            states.add(core.presence.state)
+    assert states <= {"talking", "focused"}
+    assert not any(isinstance(m, Say) and m.kind == "bid" for m in emitted)
