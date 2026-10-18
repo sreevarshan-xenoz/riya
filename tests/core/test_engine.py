@@ -1,9 +1,11 @@
 import json
 import threading
+from datetime import datetime, timedelta
 
 from riya.core.clock import FakeClock
 from riya.core.models import ModelUnavailable
-from riya.core.protocol import ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings, ErrorMsg
+from riya.core.protocol import (ErrorMsg, ExpressionMsg, GetMemories, MemoriesMsg, Say, SayEnd, SetSettings,
+                                StateMsg)
 from tests.fakes import make_core
 
 CONSOLIDATION = json.dumps({
@@ -69,6 +71,7 @@ def test_no_greeting_after_short_absence():
 def test_bid_is_a_silent_bubble_and_ignoring_it_makes_her_pout():
     clock = FakeClock()
     core, emitted, src, _ = make_core(clock, local_replies=["Hey... water break? you've been at it forever~"])
+    core.handle(SetSettings(patch={"quiet_hours": None}))   # the default quiet hours depend on the local timezone
     run_ticks(core, clock, 2 * 3600 + 600, step=300)   # long focused stretch
     src.idle = 150
     assert run_ticks(core, clock, 150, step=150) == []  # nothing spoken aloud
@@ -186,3 +189,68 @@ def test_turns_keep_the_last_24_messages():
     for i in range(15):
         list(core.reply(f"message {i}"))
     assert len(core.turns) == 24 and core.turns[-2]["content"] == "message 14"
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------------------------
+
+def test_no_bid_during_quiet_hours():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=["Water break?"])
+    bid_at = datetime.fromtimestamp(clock.now() + 2 * 3600 + 600 + 150)
+    window = f"{bid_at - timedelta(hours=1):%H:%M}-{bid_at + timedelta(hours=1):%H:%M}"
+    core.handle(SetSettings(patch={"quiet_hours": window}))
+    run_ticks(core, clock, 2 * 3600 + 600, step=300)
+    src.idle = 150
+    run_ticks(core, clock, 150, step=150)
+    assert core.presence.state == "break"
+    assert not any(isinstance(m, Say) for m in emitted) and local.calls == []
+
+
+def test_greeting_that_fails_leaves_the_thread_open():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock)
+    thread = core.memory.add_thread("Ask how the calculus exam went", due_at=clock.now())
+    src.idle = 950
+    run_ticks(core, clock, 1)
+    clock.advance(3 * 3600)
+    src.idle = 0
+    local.fail = ModelUnavailable("llama-server is down")
+    assert run_ticks(core, clock, 1) == [[]]
+    assert [t.id for t in core.memory.due_threads()] == [thread.id]
+    assert core.memory.due_threads()[0].last_raised_at is None
+
+
+def test_failing_consolidation_does_not_starve_persistence():
+    clock = FakeClock()
+    core, emitted, _, _ = make_core(clock)
+    list(core.reply("hi riya"))
+
+    def boom():
+        raise RuntimeError("bad proposals")
+    core.consolidator.run = boom
+    run_ticks(core, clock, 600, step=60)          # the last tick is the consolidation tick
+    assert core.kv.get("feelings")["saved_at"] == clock.now()
+    assert sum(isinstance(m, StateMsg) for m in emitted) == 10
+
+
+def test_state_messages_keep_coming_while_talking():
+    clock = FakeClock()
+    core, emitted, _, _ = make_core(clock)
+    for second in range(1, 121):
+        clock.advance(1)
+        if second % 10 == 0:
+            list(core.reply("still here"))
+        core.tick()
+    assert sum(isinstance(m, StateMsg) for m in emitted) == 4
+
+
+def test_barge_in_records_what_was_said_and_releases_the_lock():
+    core, emitted, _, _ = make_core(local_replies=["One. Two. Three."])
+    gen = core.reply("count for me")
+    assert next(gen) == "One."
+    gen.close()
+    assert [(t["role"], t["text"]) for t in core.memory.unconsolidated()] == [
+        ("user", "count for me"), ("assistant", "One.")]
+    assert core.turns == [{"role": "user", "content": "count for me"}, {"role": "assistant", "content": "One."}]
+    assert sum(isinstance(m, SayEnd) for m in emitted) == 1
+    assert not core._lock.locked()
