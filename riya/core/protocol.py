@@ -118,10 +118,14 @@ class AgentInfo(BaseModel):
 
 class AgentsMsg(BaseModel):
     """The agents list (attention first, at most 20), sent on change and on hello. hooks_seen_at: when a Claude Code
-    hook last reached her (None: never), for the settings page's install status."""
+    hook last reached her (None: never), for the settings page's install status. receiver_ok: the hook receiver is
+    serving (False while port 8766 is busy; she retries every 60 s). rejected_recent: hook requests turned away for a
+    wrong token in the last 24 h."""
     type: Literal["agents"] = "agents"
     items: list[AgentInfo]
     hooks_seen_at: float | None = None
+    receiver_ok: bool = True
+    rejected_recent: int = 0
 
 
 class ErrorMsg(BaseModel):

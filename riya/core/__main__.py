@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from riya.agents.hooks import start_hook_receiver
+from riya.agents.hooks import HookReceiver
 from riya.agents.logwatch import LogWatch
 from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
@@ -151,6 +151,13 @@ def start_logwatch(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thr
     return stop, thread
 
 
+def start_receiver(core: RiyaCore, make=HookReceiver):
+    """The hook receiver, kept up (retried while 8766 is busy) and handed to the core for the settings' status."""
+    receiver = make(core.agent_inbox.put).start()
+    core.receiver = receiver
+    return receiver
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     import uvicorn
@@ -170,7 +177,7 @@ def main(argv: list[str] | None = None) -> None:
         core = app.state.core
         log.info("Riya core listening on ws://%s:%d/ws", DEFAULT_HOST, args.port)
         # hook payloads and log lines cross from their own threads into the core's inboxes; the tick drains them
-        hooks = start_hook_receiver(core.agent_inbox.put)
+        hooks = start_receiver(core)
         logwatch = start_logwatch(core)
         if not args.no_voice:
             try:
@@ -187,8 +194,7 @@ def main(argv: list[str] | None = None) -> None:
         if speaker.loop is not None:
             speaker.loop.stop()
         if hooks is not None:
-            hooks[0].should_exit = True
-            hooks[1].join(timeout=5)
+            hooks.stop()
         if logwatch is not None:
             logwatch[0].set()
             logwatch[1].join(timeout=5)

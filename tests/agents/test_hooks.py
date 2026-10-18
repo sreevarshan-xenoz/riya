@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from riya.agents.hooks import MAX_BODY, create_hook_app, load_or_create_token, start_hook_receiver
+from riya.agents.hooks import (MAX_BODY, HookReceiver, RejectCounter, create_hook_app, load_or_create_token,
+                               start_hook_receiver)
 
 TOKEN = "t" * 64
 OK = {"hook_event_name": "Stop", "session_id": "s1", "cwd": "E:/riya"}
@@ -229,3 +230,92 @@ def test_a_superscript_content_length_through_raw_asgi_is_not_a_500():
 
     asyncio.run(run())
     assert sent[0]["status"] == 200
+
+
+# --- wrong-token counter and receiver retry (final review M4, M5) ---------------------------------------------------
+
+class Tick:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_wrong_tokens_are_counted_and_nothing_else_is():
+    rejected = RejectCounter()
+    c = TestClient(create_hook_app(TOKEN, lambda _: None, rejected=rejected))
+    assert c.post("/hook", content=json.dumps(OK)).status_code == 401
+    assert post(c, headers={"X-Riya-Token": "nope"}).status_code == 401
+    assert post(c).status_code == 200
+    assert post(c, headers={"Origin": "http://x"}).status_code == 403
+    assert rejected.recent() == 2
+
+
+def test_the_counter_forgets_after_24_hours_and_is_thread_safe():
+    import threading
+    tick = Tick()
+    rejected = RejectCounter(clock=tick)
+    threads = [threading.Thread(target=lambda: [rejected.hit() for _ in range(500)]) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert rejected.recent() == 4000
+    tick.t += 24 * 3600 - 1
+    rejected.hit()
+    assert rejected.recent() == 4001
+    tick.t += 1
+    assert rejected.recent() == 1
+
+
+def wait_until(cond, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_busy_port_is_retried_until_it_binds(tmp_path):
+    got = []
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen()
+    port = blocker.getsockname()[1]
+    receiver = HookReceiver(got.append, token_path=tmp_path / "tok", port=port, retry_s=0.1).start()
+    try:
+        assert not receiver.ok
+        time.sleep(0.3)
+        assert not receiver.ok                                   # still busy: still retrying
+        blocker.close()
+        assert wait_until(lambda: receiver.ok)
+        token = (tmp_path / "tok").read_text().strip()
+        r = httpx.post(f"http://127.0.0.1:{port}/hook", content=json.dumps(OK), headers={"X-Riya-Token": token},
+                       timeout=2)
+        assert r.status_code == 200 and got == [OK]
+        httpx.post(f"http://127.0.0.1:{port}/hook", content=json.dumps(OK), headers={"X-Riya-Token": "x"}, timeout=2)
+        assert receiver.rejected.recent() == 1
+    finally:
+        blocker.close()
+        receiver.stop()
+    assert not receiver.ok
+
+
+def test_stopping_ends_the_retry(tmp_path):
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen()
+        receiver = HookReceiver(lambda _: None, token_path=tmp_path / "tok", port=blocker.getsockname()[1],
+                                retry_s=0.05).start()
+        receiver.stop()
+        assert not receiver.ok and (receiver._retry is None or not receiver._retry.is_alive())
+
+
+def test_a_free_port_serves_at_once_with_no_retry_thread(tmp_path):
+    receiver = HookReceiver(lambda _: None, token_path=tmp_path / "tok", port=free_port()).start()
+    try:
+        assert receiver.ok and receiver._retry is None
+    finally:
+        receiver.stop()

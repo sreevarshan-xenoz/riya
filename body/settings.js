@@ -7,7 +7,7 @@
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
     DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
-  const { hookStatus, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
+  const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
   const errorEls = new Map(); // target -> its inline error element
@@ -46,6 +46,7 @@
   const LOG_LABELS = { name: "Name", glob: "Glob", done_re: "Done", fail_re: "Failed", lost_re: "Lost" };
   let logsDirty = false; // edited and not yet saved: a settings message must not overwrite it
   let hooksSeenAt = null;
+  let lastAgents = null; // the last agents message: the receiver's status
   let coreConnected = false;
 
   function logEntry(entry) {
@@ -87,6 +88,9 @@
 
   function renderHooks() {
     $("agents-hooks").textContent = hookStatus(hooksSeenAt, Date.now(), coreConnected);
+    const problems = receiverProblems(lastAgents, coreConnected);
+    $("agents-receiver").textContent = problems.join("; ");
+    $("agents-receiver").hidden = problems.length === 0;
   }
 
   $("agents-token").textContent = TOKEN_PATH;
@@ -348,6 +352,7 @@
       renderEyes(msg);
     } else if (msg.type === "agents") {
       hooksSeenAt = typeof msg.hooks_seen_at === "number" ? msg.hooks_seen_at : null;
+      lastAgents = msg;
       renderHooks();
     } else if (msg.type === "memories") {
       router.settle();

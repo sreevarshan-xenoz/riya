@@ -670,3 +670,51 @@ def test_unrestricted_finished_reports_still_go_out_on_a_break():
     core.agent_inbox.put(stop())
     src.idle = BREAK_IDLE_S + 1
     assert ["riya finished!"] in run_ticks(core, clock, 30)
+
+
+# --- receiver status in AgentsMsg (final review M4, M5) ------------------------------------------------------------
+
+class FakeReceiver:
+    def __init__(self, ok=True, rejected=0):
+        self.ok = ok
+        self.rejected = type("R", (), {"recent": lambda _self: self.n})()
+        self.n = rejected
+
+
+def test_agents_msg_carries_the_receiver_status_and_rejected_tokens():
+    core, emitted, src, local, clock = focused()
+    assert core._agents_sent.receiver_ok is False and core._agents_sent.rejected_recent == 0   # none attached
+    core.receiver = FakeReceiver(ok=True)
+    run_ticks(core, clock, 1)
+    msg = [m for m in emitted if isinstance(m, AgentsMsg)][-1]
+    assert msg.receiver_ok is True and msg.rejected_recent == 0
+    core.receiver.ok = False                                  # 8766 busy: retrying
+    run_ticks(core, clock, 1)
+    assert [m for m in emitted if isinstance(m, AgentsMsg)][-1].receiver_ok is False
+    core.receiver.n = 3
+    n = len([m for m in emitted if isinstance(m, AgentsMsg)])
+    run_ticks(core, clock, 1)
+    msgs = [m for m in emitted if isinstance(m, AgentsMsg)]
+    assert len(msgs) == n + 1 and msgs[-1].rejected_recent == 3
+    run_ticks(core, clock, 5)
+    assert len([m for m in emitted if isinstance(m, AgentsMsg)]) == n + 1     # only on change
+
+
+def test_the_runner_keeps_the_receiver_up_and_hands_it_to_the_core():
+    core, *_ = focused()
+    made = []
+
+    class Made(FakeReceiver):
+        def __init__(self, enqueue):
+            super().__init__()
+            self.enqueue, self.started = enqueue, False
+            made.append(self)
+
+        def start(self):
+            self.started = True
+            return self
+
+    receiver = runner.start_receiver(core, make=Made)
+    assert made == [receiver] and receiver.started and core.receiver is receiver
+    receiver.enqueue({"x": 1})
+    assert core.agent_inbox.get_nowait() == {"x": 1}
