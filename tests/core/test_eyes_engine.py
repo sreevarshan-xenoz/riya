@@ -367,7 +367,8 @@ DESKTOP = WindowInfo(5, "", "explorer.exe", MON, MON, False, False, "Progman")
 TASKBAR = WindowInfo(6, "", "explorer.exe", (0, 1032, 1920, 1080), MON, False, False, "Shell_TrayWnd")
 
 
-@pytest.mark.parametrize("shell", [DESKTOP, TASKBAR, WindowInfo(7, "", "explorer.exe", MON, MON, False, False, "WorkerW"),
+@pytest.mark.parametrize("shell", [DESKTOP, TASKBAR, WindowInfo(7, "", "explorer.exe", MON, MON, False, False,
+                                                                 "WorkerW"),
                                    WindowInfo(8, "Search", "SearchHost.exe", MON, MON, False, False, "x")])
 def test_the_desktop_and_taskbar_are_never_glanced_or_grabbed(shell):
     core, emitted, _, local, clock, vision, _, grab = eyes_core(info=shell)
@@ -790,8 +791,8 @@ def test_the_prompt_says_what_they_are_doing_outside_the_memory_block():
     assert "### What they're doing now" not in system and "fixing a failing test" in system
 
 
-@pytest.mark.parametrize("patch,now_line,block", [({"dont_look": True}, False, True), ({"eyes_enabled": False}, False, False),
-                                                   ({}, True, True)])
+@pytest.mark.parametrize("patch,now_line,block", [({"dont_look": True}, False, True),
+                                                   ({"eyes_enabled": False}, False, False), ({}, True, True)])
 def test_dont_look_drops_the_now_line_and_eyes_off_drops_the_eyes_block(patch, now_line, block):
     core, _, _, local, clock, *_ = eyes_core(local_replies=["Hey~"])
     core.vision = None
