@@ -263,22 +263,22 @@ class RiyaCore:
         sentence passes the secret guard, and the engine's own line (her word, the next riddle, the reveal) follows
         unless she already said it."""
         try:
-            self._take_user_turn(text, remember=False)
+            self._take_user_turn(text, remember=False, consolidate=False)
         except Exception:
             log.exception("couldn't record the user's turn")
         game = SimpleNamespace(guard=lambda sentence: games.guard(g, sentence), say=v.say, key=v.key, told=False)
         yield from self._speak("reply", user_text=text, query=text, spoken=True,
                                situation=games.game_situation(g, v), game=game)
 
-    def _take_user_turn(self, text: str, remember: bool = True) -> str | None:
+    def _take_user_turn(self, text: str, remember: bool = True, consolidate: bool = True) -> str | None:
         """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away). A game
-        turn (remember off) never saves a fact."""
+        turn (remember and consolidate off) never saves a fact and never reaches consolidation."""
         now = self.clock.now()
         answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
         if answered_bid and self._bid_thread is not None:
             self.memory.mark_thread(self._bid_thread, status="followed_up")
         self.last_turn_at, self.pending_bid_at, self._bid_thread = now, None, None
-        self.memory.append_transcript("user", text)
+        self.memory.append_transcript("user", text, consolidate=consolidate)
         saved = None
         if remember and (said := remember_intent(text)) is not None:
             saved = f"The user said: {third_person(said)}"
@@ -297,7 +297,8 @@ class RiyaCore:
             said: list[str] = []
             yield from self._counted(self._speak(
                 "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
-                threads=_threads(action), after=lambda outcome: self._greeted(action, outcome, reports, bool(said))),
+                threads=_threads(action), after=lambda outcome: self._greeted(action, outcome, reports, bool(said)),
+                consolidate=not reports),
                 said)
 
     @staticmethod
@@ -324,7 +325,7 @@ class RiyaCore:
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
                lead: str | None = None, small: bool = False, seeing: SimpleNamespace | None = None,
-               game: SimpleNamespace | None = None) -> Iterator[str]:
+               game: SimpleNamespace | None = None, consolidate: bool = True) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
@@ -334,7 +335,8 @@ class RiyaCore:
         recorded. game (a game turn): the local model, the small budget and one sentence; every sentence passes
         game.guard, and game.say (the engine's line: her word, the next riddle, the reveal) follows unless game.key
         was already said. The game state already moved, so that line goes out even when the model failed or said
-        nothing, and on a barge-in it's still shown (not spoken) and recorded."""
+        nothing, and on a barge-in it's still shown (not spoken) and recorded. A report, a game turn or consolidate
+        off (a greeting carrying reports) is kept in the transcript but never reaches consolidation."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped = None, {"stream": False}, []
 
@@ -417,7 +419,7 @@ class RiyaCore:
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
-                self._finish_turn(user_text, text)
+                self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report")
                 if after:
                     after(outcome)
             except Exception:
@@ -511,11 +513,11 @@ class RiyaCore:
         r = self.memory.retrieve(query)
         return r if threads is None else replace(r, threads=threads)
 
-    def _finish_turn(self, user_text: str | None, said: str | None) -> None:
+    def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True) -> None:
         """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded."""
         if said is not None:
             if said:
-                self.memory.append_transcript("assistant", said)
+                self.memory.append_transcript("assistant", said, consolidate=consolidate)
             new = ([] if user_text is None else [{"role": "user", "content": user_text}]) + (
                 [{"role": "assistant", "content": said}] if said else [])
             self.turns = (self.turns + new)[-KEEP_TURNS:]
@@ -788,11 +790,11 @@ class RiyaCore:
             self._reports_saved = rows
 
     def _report_bubble(self, events: list[AgentEvent]) -> None:
-        """The templated report: a silent bubble, kept in the transcript like a bid."""
+        """The templated report: a silent bubble, kept in the transcript like a bid (never consolidated)."""
         line, uid = report_bubble(events), uuid4().hex
         self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
         self.emit(SayEnd(utterance_id=uid))
-        self.memory.append_transcript("assistant", line)
+        self.memory.append_transcript("assistant", line, consolidate=False)
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.clock.now()
 
