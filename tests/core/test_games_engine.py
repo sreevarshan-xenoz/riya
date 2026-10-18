@@ -88,15 +88,29 @@ def test_giving_up_reveals_the_secret():
     assert ("assistant", f"Aww, okay. It was {games._a(secret)}!") in transcript(core)
 
 
-def test_the_15th_turn_ends_the_game():
+def test_20_questions_ends_at_the_20th_question_with_a_true_countdown():
     core, emitted, _, local, _, _ = gaming()
-    for i in range(games.MAX_TURNS):
-        assert core.game is not None
+    secret = core.game.secret
+    for n in range(1, games.MAX_QUESTIONS):
         list(core.reply("is it alive?"))
-    assert core.game is None and "game is over" in situation(local)
+        assert core.game is not None and f"question {n} of 20; {20 - n} left" in situation(local)
+    out = list(core.reply("is it alive?"))
+    assert core.game is None and "you win" in situation(local) and out[-1] == f"It was {games._a(secret)}!"
     calls = len(local.calls)
     list(core.reply("is it alive?"))
     assert len(local.calls) == calls + 1 and "[Situation]" not in local.calls[-1][0]["content"]
+
+
+def test_riddles_end_at_the_15th_move_and_chat_never_counts():
+    core, emitted, _, local, _, _ = gaming("can we play riddles", replies=("Hmm~",))
+    for _ in range(games.MAX_TURNS - 1):
+        list(core.reply("a potato"))
+        list(core.reply("sorry, my agent wants approval for something again, one sec"))   # off-topic
+        assert core.game is not None
+    open_riddle = core.game.riddle
+    out = list(core.reply("a potato"))
+    assert core.game is None and "game is over" in situation(local)
+    assert out == ["Hmm~", f"It was {games.RIDDLES[open_riddle].told}!"]
 
 
 def test_an_idle_game_ends_after_10_minutes():
@@ -137,10 +151,100 @@ def test_riddles_ask_the_riddle_after_her_line():
     assert not any(games.mentions(situation(local), a) for a in games.RIDDLES[core.game.riddle].answers)
 
 
-def test_a_game_turn_never_saves_a_remember_fact():
+def test_a_game_move_never_saves_a_remember_fact():
     core, *_ = gaming("let's play word chain")
-    list(core.reply("remember that I like trains"))
-    assert core.memory.list_facts() == []
+    list(core.reply("remember that elephant"))
+    assert core.memory.list_facts() == [] and core.game.turns == 1
+
+
+# --- fix round 1: start requests, off-topic turns, the engine's line, no bids mid-game --------------------------------
+
+def test_declining_her_offer_starts_nothing():
+    core, emitted, src, local, clock, bid = on_break(busy=True)
+    src.idle = 0
+    list(core.reply("I don't want to play riddles"))
+    assert core.game is None
+
+
+def test_a_mention_mid_game_doesnt_switch_but_a_request_does():
+    core, emitted, _, local, _, _ = gaming("let's play word chain", replies=("Ooh!",))
+    list(core.reply("my kids play 20 questions in the car"))
+    assert core.game is not None and core.game.kind == "word_chain" and core.game.turns == 0
+    list(core.reply("riddles are hard"))
+    assert core.game.kind == "word_chain"
+    list(core.reply("let's play 20 questions"))
+    assert core.game.kind == "twenty_questions"
+
+
+def test_off_topic_chat_gets_a_normal_reply_and_the_game_stays_on():
+    core, emitted, _, local, _, _ = gaming(replies=("Okay, got one~", "Aww, rest a bit. We're still playing!"))
+    secret = core.game.secret
+    out = list(core.reply("I'm so tired today"))
+    assert out == ["Aww, rest a bit.", "We're still playing!"]               # a normal reply: not capped at one
+    s = situation(local)
+    assert "still in the middle of 20 questions" in s and secret not in local.calls[-1][0]["content"]
+    assert core.game is not None and core.game.questions == 0 and core.game.turns == 0
+
+
+def test_her_word_goes_out_even_when_the_model_fails():
+    core, emitted, _, local, _, _ = gaming("let's play word chain", replies=("Ooh, fun!",))
+    first = core.game.word
+    word = next(w for w in games.WORDS[games._last(first)] if w != first)
+    local.fail = RuntimeError("down")
+    out = list(core.reply(word))
+    mine = core.game.word
+    assert out == [f"My word: {mine}!"] and said(emitted)[-1] == f"My word: {mine}!"
+    assert ("assistant", f"My word: {mine}!") in transcript(core)
+
+
+def test_her_word_goes_out_when_the_model_says_nothing():
+    core, emitted, _, local, _, _ = gaming("let's play word chain", replies=("Ooh, fun!", ""))
+    first = core.game.word
+    word = next(w for w in games.WORDS[games._last(first)] if w != first)
+    out = list(core.reply(word))
+    assert out == [f"My word: {core.game.word}!"]
+
+
+def test_a_barge_in_still_shows_and_records_her_word():
+    core, emitted, _, local, _, _ = gaming("let's play word chain", replies=("Ooh, fun!", "Nice one. Really nice."))
+    first = core.game.word
+    word = next(w for w in games.WORDS[games._last(first)] if w != first)
+    gen = core.reply(word)
+    assert next(gen) == "Nice one."
+    gen.close()
+    mine = core.game.word
+    last = [m for m in emitted if isinstance(m, Say)][-1]
+    assert last.text == f"My word: {mine}!" and last.spoken is False
+    assert ("assistant", f"Nice one. My word: {mine}!") in transcript(core)
+    assert not core._lock.locked()
+
+
+def test_the_riddle_reveal_is_said_by_the_engine():
+    core, emitted, _, local, _, _ = gaming("can we play riddles", replies=("Hmm~",))
+    first = core.game.riddle
+    for _ in range(games.RIDDLE_TRIES):
+        out = list(core.reply("a potato"))
+    nxt = games.RIDDLES[core.game.riddle].question
+    assert out == ["Hmm~", f"It was {games.RIDDLES[first].told}! Next one: {nxt}"]
+
+
+def test_no_bids_while_a_game_is_on():
+    clock = FakeClock()
+    core, emitted, src, local = make_core(clock, local_replies=("Water break?",))
+    core.handle(SetSettings(patch={"quiet_hours": None}))
+    run_ticks(core, clock, 2 * 3600 + 600, step=300)
+    core.game, core._game_at = games.new_game("riddles", random.Random(0)), clock.now()
+    src.idle = 150
+    run_ticks(core, clock, 150, step=150)
+    assert core.presence.state == "break" and core.game is not None
+    assert not [m for m in emitted if isinstance(m, Say) and m.kind == "bid"]
+
+
+def test_a_voice_turn_plays_the_same():
+    core, emitted, _, local, _, _ = gaming(replies=("Okay, got one~", "Yes, you got it!"))
+    secret = core.game.secret
+    assert list(core.reply(f"is it {games._a(secret)}", source="voice")) == ["Yes, you got it!"]
+    assert core.game is None
 
 
 # --- bids offer a game while an agent is busy -----------------------------------------------------------------------
