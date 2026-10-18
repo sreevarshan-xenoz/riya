@@ -1,5 +1,6 @@
 """Outfit candidates for Riya: SDXL anime model + IP-Adapter from the reference images. Run on a Colab T4.
 
+  pip install -U diffusers transformers accelerate safetensors peft
   python colab/sprites/gen_outfits.py --refs "<drive>/jarvis/riya images" --out <drive>/jarvis/sprites/outfits
 
 Resumable: existing outfit_<id>_<seed>.png files are skipped. Writes outfits_sheet.png for picking.
