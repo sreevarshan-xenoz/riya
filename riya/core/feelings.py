@@ -11,9 +11,8 @@ from dataclasses import asdict, dataclass, field, fields
 import numpy as np
 
 from riya.core.appraise import NEG, POS, appraise
+from riya.core.protocol import EXPRESSIONS  # noqa: F401  (re-exported)
 
-EXPRESSIONS = ("neutral", "happy", "excited", "missed_you", "pouty", "flustered", "teasing", "worried", "sad",
-               "sleepy", "curious", "thinking", "surprised", "covering_eyes")
 AFFECT_HALF_LIFE_S = 300
 MOOD_TAU_S = 6 * 3600
 MISSING_HALF_LIFE_S = 240
