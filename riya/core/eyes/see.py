@@ -100,6 +100,7 @@ _SCREEN_QUESTION = re.compile("|".join([
     rf"\b(?:look(?:ing)? at|take a look at|have a look at|check(?: out)?|read|explain|translate|summari[sz]e|review|"
     rf"debug|fix|help me with|help with) {_DEM}\b",
     rf"^\s*(?:please )?(?:read|see) (?:this|that|here){_END}",
+    rf"\b(?:look at|check) (?:this|that)(?: out)?(?:[\s,]+(?:lol|lmao|haha|please|pls|riya|now|rn|real quick))*{_END}",
     rf"\bsee {_DEM}\b",
     rf"\b(?:can|could|do|did|will) you (?:see|read|look at|make out)\b.{{0,25}}\b(?:{_DEM}|here|error)\b",
     rf"\b(?:can|could|do|did|will) you (?:see|read|look at|make out) (?:this|that){_END}",
