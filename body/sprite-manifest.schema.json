@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://riya.local/sprite-manifest.schema.json",
   "title": "Riya sprite pack manifest",
-  "description": "Describes one sprite pack. Only expressions.neutral.closed is required; the body falls back per frame for anything missing (variant -> closed -> neutral.variant -> neutral.closed).",
+  "description": "Authoritative contract. Omit absent frames; don't put metadata in the manifest. Describes one sprite pack. Only expressions.neutral.closed is required; the body falls back per frame for anything missing (variant -> closed -> neutral.variant -> neutral.closed).",
   "type": "object",
   "required": ["name", "version", "canvas", "crops", "expressions"],
   "additionalProperties": false,

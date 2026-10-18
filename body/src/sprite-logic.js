@@ -4,6 +4,7 @@
 const VARIANTS = ['closed', 'open', 'blink'];
 
 function validateManifest(manifest, expressions) {
+  // sprite-manifest.schema.json is the authoritative contract; this is a runtime sanity check.
   const need = (ok, what) => { if (!ok) throw new Error(`sprite manifest: missing ${what}`); };
   need(manifest && typeof manifest === 'object', 'manifest object');
   need(typeof manifest.name === 'string' && manifest.name, 'name');

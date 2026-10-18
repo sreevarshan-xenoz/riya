@@ -102,6 +102,7 @@ const SPECS = {
 
 function frame(expression, variant) {
   const spec = SPECS[expression];
+  if (!spec) throw new Error(`no placeholder spec for ${expression}`);
   const blinking = variant === 'blink';
   let eyes = spec.eyes(blinking);
   if (blinking && expression !== 'teasing' && expression !== 'covering_eyes') eyes = [closedEye(EX[0]), closedEye(EX[1])];

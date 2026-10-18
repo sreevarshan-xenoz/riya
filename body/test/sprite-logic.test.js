@@ -43,6 +43,15 @@ test('placeholder pack matches the manifest schema and ships every frame', () =>
   }
 });
 
+test('manifest schema lists exactly the protocol expressions', () => {
+  assert.deepEqual(Object.keys(SCHEMA.properties.expressions.properties).sort(), [...EXPRESSIONS].sort());
+});
+
+test('placeholder generator names the expression it has no spec for', () => {
+  const { frame } = require('../tools/make-placeholder-pack');
+  assert.throws(() => frame('grumpy', 'closed'), /no placeholder spec for grumpy/);
+});
+
 test('manifest schema accepts a minimal manifest and rejects broken ones', () => {
   const validate = new Ajv({ strict: true }).compile(SCHEMA);
   assert.ok(validate(base()), JSON.stringify(validate.errors));
