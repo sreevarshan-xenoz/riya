@@ -11,7 +11,6 @@ pack and removes frames that are no longer in --raw. rembg is imported only when
 import argparse
 import json
 import math
-import os
 import sys
 from pathlib import Path
 from typing import Callable
@@ -20,11 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # run as a script 
 
 from PIL import Image
 
-from colab.sprites.common import EXPRESSION_PROMPTS, VARIANT_PROMPTS, existing_pngs, save_image_atomic
-from colab.sprites.gen_expressions import Box, face_box, parse_face_box
+from colab.sprites.common import EXPRESSION_PROMPTS, VARIANT_PROMPTS, existing_pngs, save_image_atomic, save_json_atomic
+from colab.sprites.gen_expressions import DEFAULT_FACE_BOX, Box, parse_face_box, read_run
 
 CANVAS = (768, 1344)
-RAW_SIZE = (832, 1216)  # what gen_expressions generates; the face box is in these coordinates
 CROP_WIDTH, CROP_ABOVE, CROP_BELOW = 2.0, 0.15, 0.7  # head and shoulders, in face-box widths / heights
 SCHEMA = Path(__file__).resolve().parents[2] / "body" / "sprite-manifest.schema.json"
 
@@ -58,22 +56,23 @@ def upper_crop(raw_size: tuple[int, int], box: Box, canvas: tuple[int, int] = CA
     return [left, top, max(1, right - left), max(1, bottom - top)]
 
 
+def pack_face_box(raw_dir: Path, override: Box | None) -> Box:
+    """`override`, else the face box recorded in <raw>/run.json by gen_expressions, else the default."""
+    if override:
+        return override
+    run = read_run(raw_dir)
+    if run is None:
+        print(f"no {Path(raw_dir) / 'run.json'}: using the default face box {DEFAULT_FACE_BOX}", flush=True)
+        return DEFAULT_FACE_BOX
+    return tuple(run["face_box"])
+
+
 def default_remover() -> Callable[[Image.Image], Image.Image]:
     """rembg with the anime model and alpha matting (clean silver hair edges). rembg loads here, not at import."""
     from rembg import new_session, remove
 
     session = new_session("isnet-anime")
     return lambda img: remove(img, session=session, alpha_matting=True)
-
-
-def _write_json_atomic(data: dict, path: Path) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _validate(manifest: dict) -> None:
@@ -107,7 +106,7 @@ def build_pack(
     if odd:
         raise ValueError(f"every frame must be {size[0]}x{size[1]} like neutral_closed.png (one transform for all): " + ", ".join(odd))
 
-    box = face_box(*RAW_SIZE, face_override)
+    box = pack_face_box(raw_dir, face_override)
     manifest = {
         "name": name, "version": 1, "canvas": {"width": CANVAS[0], "height": CANVAS[1]},
         "crops": {"upper": upper_crop(size, box)}, "expressions": {},
@@ -121,7 +120,7 @@ def build_pack(
         with Image.open(raw_dir / f"{e}_{v}.png") as im:
             save_image_atomic(normalise(remove_bg(im.convert("RGB"))), out_dir / f"{e}_{v}.png")
         print("wrote", out_dir / f"{e}_{v}.png", flush=True)
-    _write_json_atomic(manifest, out_dir / "manifest.json")
+    save_json_atomic(manifest, out_dir / "manifest.json")
     frame_names = {f"{e}_{v}.png" for e, v in cells}
     keep = {f"{e}_{v}.png" for e, v in present}
     for stale in out_dir.glob("*.png"):  # frames of an earlier build, and leftovers of an interrupted one
@@ -136,7 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", type=Path, required=True, help="pack folder to write, e.g. sprites/riya-v1")
     ap.add_argument("--name", default="riya-v1", help="pack name in the manifest")
     ap.add_argument("--face-box", type=parse_face_box, default=None, metavar="X0,Y0,X1,Y1",
-                    help="face box in the 832x1216 raw frames (use the one you passed to gen_expressions)")
+                    help="face box in the 832x1216 raw frames (default: the one in <raw>/run.json)")
     args = ap.parse_args(argv)
     missing = build_pack(args.raw, args.out, default_remover(), args.name, args.face_box)
     print(f"pack written to {args.out}")

@@ -14,7 +14,8 @@ from PIL import Image, ImageChops
 from colab.sprites import build_pack as build_pack_module, gen_expressions, gen_outfits
 from colab.sprites.build_pack import build_pack, normalise
 from colab.sprites.gen_expressions import (
-    box_mask, face_box, frame_passes, hands_box, job_list, parse_face_box, parse_only, run_jobs, stable_seed,
+    DEFAULT_FACE_BOX, box_mask, frame_passes, frame_seed, hands_box, job_list, load_choice, merge_rerolls,
+    parse_expressions, parse_face_box, read_run, run_jobs, stable_seed,
 )
 from colab.sprites.common import (
     EXPRESSION_PROMPTS, OUTFITS, VARIANT_PROMPTS, existing_pngs, load_pipeline, save_image_atomic,
@@ -107,9 +108,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BOX = (256, 60, 576, 420)
 
 
-def test_face_box_default_and_override():
-    assert face_box(832, 1216, None) == (256, 60, 576, 420)
-    assert face_box(832, 1216, (1, 2, 3, 4)) == (1, 2, 3, 4)
+def test_default_face_box():
+    assert DEFAULT_FACE_BOX == (256, 60, 576, 420)
 
 
 def test_job_list_skips_existing_and_keeps_order():
@@ -172,22 +172,50 @@ def test_open_and_blink_inpaint_only_their_feathered_sub_mask(tmp_path):
         assert opened.getpixel((416, 350)) == (255, 0, 0)
 
 
-def test_parse_only_validates_against_the_expression_prompts():
-    assert parse_only("pouty, sad") == ["pouty", "sad"]
-    with pytest.raises(argparse.ArgumentTypeError, match="pouting"):
-        parse_only("pouty,pouting")
+def test_parse_expressions_validates_against_the_expression_prompts():
+    assert parse_expressions("pouty, sad") == ["pouty", "sad"]
+    for bad in ("pouty,pouting", " , "):
+        with pytest.raises(argparse.ArgumentTypeError, match="choose from"):
+            parse_expressions(bad)
 
 
-def test_parse_face_box_needs_four_ordered_ints():
+def test_parse_face_box_needs_four_ordered_ints_inside_the_base():
     assert parse_face_box("1, 2,30,40") == (1, 2, 30, 40)
-    for bad in ("1,2,3", "a,b,c,d", "10,2,5,40"):
+    assert parse_face_box("0,0,832,1216") == (0, 0, 832, 1216)
+    for bad in ("1,2,3", "a,b,c,d", "10,2,5,40", "10,40,50,40", "-1,0,10,10", "0,0,833,100", "0,0,100,1217"):
         with pytest.raises(argparse.ArgumentTypeError):
             parse_face_box(bad)
 
 
-def test_main_rejects_unknown_only_names_before_doing_any_work(tmp_path, capsys):
+def test_frame_seed_changes_with_the_reroll_count():
+    assert frame_seed("pouty", 5, {}) == stable_seed("pouty", 5)
+    assert frame_seed("pouty", 5, {"pouty": 2, "sad": 1}) == stable_seed("pouty", 5) + 2000
+    assert frame_seed("happy", 5, {"pouty": 2}) == stable_seed("happy", 5)
+
+
+def test_merge_rerolls_takes_the_larger_count_bumps_rerolled_names_and_reports_changes():
+    assert merge_rerolls({}, {}, []) == ({}, [])
+    assert merge_rerolls({"sad": 1}, {}, ["pouty"]) == ({"pouty": 1, "sad": 1}, ["pouty"])
+    assert merge_rerolls({"sad": 1}, {"sad": 3, "happy": 0}, ["sad"]) == ({"sad": 4}, ["sad"])
+    assert merge_rerolls({"sad": 2}, {"sad": 1}, []) == ({"sad": 2}, [])
+
+
+def test_load_choice_reads_and_validates_rerolls(tmp_path):
+    path = tmp_path / "choice.json"
+    path.write_text(json.dumps({"outfit": "white_tee", "seed": 4}))
+    assert load_choice(path) == ("white_tee", 4, {})
+    path.write_text(json.dumps({"outfit": "white_tee", "seed": 4, "rerolls": {"pouty": 2}}))
+    assert load_choice(path) == ("white_tee", 4, {"pouty": 2})
+    for bad, match in (({"pouting": 1}, "pouting"), ({"pouty": -1}, "pouty"), ({"pouty": "x"}, "pouty"), ([1], "rerolls")):
+        path.write_text(json.dumps({"outfit": "white_tee", "seed": 4, "rerolls": bad}))
+        with pytest.raises(SystemExit, match=match):
+            load_choice(path)
+
+
+@pytest.mark.parametrize("flag", ["--only", "--reroll"])
+def test_main_rejects_unknown_expression_names_before_doing_any_work(tmp_path, capsys, flag):
     (tmp_path / "choice.json").write_text(json.dumps({"outfit": "white_tee", "seed": 1}))
-    argv = ["--choice", str(tmp_path / "choice.json"), "--refs", str(tmp_path), "--out", str(tmp_path / "o"), "--only", "nope"]
+    argv = ["--choice", str(tmp_path / "choice.json"), "--refs", str(tmp_path), "--out", str(tmp_path / "o"), flag, "nope"]
     with pytest.raises(SystemExit) as exc:
         gen_expressions.main(argv)
     assert exc.value.code == 2 and "nope" in capsys.readouterr().err and not (tmp_path / "o").exists()
@@ -210,7 +238,8 @@ def test_help_works_without_torch_or_diffusers():
     subprocess.run([sys.executable, "-c", code], check=True, cwd=ROOT, capture_output=True)
     script = subprocess.run([sys.executable, "colab/sprites/gen_expressions.py", "--help"], check=True, cwd=ROOT,
                             capture_output=True, text=True)
-    assert "--choice" in script.stdout and "--only" in script.stdout
+    for flag in ("--choice", "--only", "--reroll", "--reset-run", "--preview-box"):
+        assert flag in script.stdout
 
 
 def fake_inpaint(calls):
@@ -384,6 +413,107 @@ def test_missing_candidate_regenerates_with_exactly_the_outfit_sheets_prompt_and
     assert calls[0]["negative_prompt"] == sheet_calls[0]["negative_prompt"] and FakeTorch.seeds[-1] == 22
 
 
+def full_frames_dir(tmp_path, choice):
+    """A frames folder with an 832x1216 grey base.png and every frame filled with (90, 90, 200)."""
+    out = tmp_path / "frames"
+    out.mkdir()
+    (tmp_path / "choice.json").write_text(json.dumps(choice))
+    grey_base(out)
+    filled = Image.new("RGB", (832, 1216), (90, 90, 200))
+    for expr in EXPRESSION_PROMPTS:
+        for variant in VARIANT_PROMPTS:
+            filled.save(out / f"{expr}_{variant}.png")
+    return out
+
+
+def run_json(out):
+    return json.loads((out / "run.json").read_text(encoding="utf-8"))
+
+
+def test_first_run_writes_run_json_and_a_resume_refuses_a_different_outfit_seed_or_face_box(tmp_path, capsys):
+    out = frames_dir(tmp_path, with_base=True)
+    gen_expressions.main(expressions_argv(tmp_path, out, "--face-box", "200,50,600,450"))
+    assert run_json(out) == {"outfit": "pink_hoodie", "seed": 22, "face_box": [200, 50, 600, 450], "rerolls": {}}
+    assert [p.name for p in out.iterdir() if ".tmp" in p.name] == []
+    gen_expressions.main(expressions_argv(tmp_path, out))  # no --face-box: the recorded one is used
+    assert run_json(out)["face_box"] == [200, 50, 600, 450]
+    capsys.readouterr()
+
+    for choice, extra, word in (({"outfit": "pink_hoodie", "seed": 23}, (), "seed"),
+                                ({"outfit": "white_tee", "seed": 22}, (), "outfit"),
+                                ({"outfit": "pink_hoodie", "seed": 22}, ("--face-box", "256,60,576,420"), "face_box")):
+        (tmp_path / "choice.json").write_text(json.dumps(choice))
+        with pytest.raises(SystemExit) as exc:
+            gen_expressions.main(expressions_argv(tmp_path, out, *extra))
+        err = capsys.readouterr().err
+        assert exc.value.code == 2 and word in err and "--reset-run" in err
+        assert run_json(out)["seed"] == 22 and run_json(out)["outfit"] == "pink_hoodie"
+
+    (tmp_path / "choice.json").write_text(json.dumps({"outfit": "white_tee", "seed": 5}))
+    gen_expressions.main(expressions_argv(tmp_path, out, "--reset-run"))
+    assert run_json(out) == {"outfit": "white_tee", "seed": 5, "face_box": [256, 60, 576, 420], "rerolls": {}}
+
+
+def test_a_corrupt_run_json_fails_clearly(tmp_path):
+    out = frames_dir(tmp_path, with_base=True)
+    (out / "run.json").write_text('{"outfit": "pink_hoodie", "seed": 22, "face_box": [5, 5, 1, 1], "rerolls": {}}')
+    with pytest.raises(SystemExit, match="run.json"):
+        gen_expressions.main(expressions_argv(tmp_path, out))
+
+
+def test_reroll_regenerates_exactly_that_expressions_three_frames_with_a_new_seed(tmp_path, monkeypatch):
+    out = full_frames_dir(tmp_path, {"outfit": "pink_hoodie", "seed": 22})
+    kinds, calls = [], []
+    fake_generation(monkeypatch, gen_expressions, kinds, calls)
+    gen_expressions.main(expressions_argv(tmp_path, out))
+    assert kinds == [] and run_json(out)["rerolls"] == {}
+
+    gen_expressions.main(expressions_argv(tmp_path, out, "--reroll", "pouty"))
+    assert kinds == ["inpaint"] and len(calls) == 3  # closed (face), open (mouth), blink (eyes): one pass each
+    assert FakeTorch.seeds == [stable_seed("pouty", 22) + 1000] * 3
+    assert run_json(out)["rerolls"] == {"pouty": 1}
+    for expr in EXPRESSION_PROMPTS:
+        for variant, point in (("closed", (416, 240)), ("open", (416, 350)), ("blink", (416, 210))):
+            with Image.open(out / f"{expr}_{variant}.png") as im:
+                assert im.getpixel(point) == ((1, 2, 3) if expr == "pouty" else (90, 90, 200)), (expr, variant)
+
+    gen_expressions.main(expressions_argv(tmp_path, out, "--reroll", "pouty", "--only", "sad"))
+    assert run_json(out)["rerolls"] == {"pouty": 2} and FakeTorch.seeds[3:] == [stable_seed("pouty", 22) + 2000] * 3
+    gen_expressions.main(expressions_argv(tmp_path, out))  # a plain resume redoes nothing
+    assert len(calls) == 6 and run_json(out)["rerolls"] == {"pouty": 2}
+
+
+def test_rerolls_in_choice_json_set_the_seed(tmp_path, monkeypatch):
+    out = tmp_path / "frames"
+    out.mkdir()
+    grey_base(out)
+    (tmp_path / "choice.json").write_text(json.dumps({"outfit": "pink_hoodie", "seed": 22, "rerolls": {"sad": 2}}))
+    fake_generation(monkeypatch, gen_expressions, [], [])
+    gen_expressions.main(expressions_argv(tmp_path, out, "--only", "sad"))
+    assert FakeTorch.seeds == [stable_seed("sad", 22) + 2000] * 3 and run_json(out)["rerolls"] == {"sad": 2}
+
+
+def test_preview_box_draws_the_boxes_on_base_and_exits_before_inpainting(tmp_path, monkeypatch):
+    out = tmp_path / "frames"
+    out.mkdir()
+    grey_base(out)
+    (tmp_path / "choice.json").write_text(json.dumps({"outfit": "pink_hoodie", "seed": 22}))
+    kinds = []
+    fake_generation(monkeypatch, gen_expressions, kinds, [])
+    gen_expressions.main(expressions_argv(tmp_path, out, "--preview-box"))
+    assert kinds == [] and sorted(p.name for p in out.iterdir()) == ["base.png", "base_box.png"]
+    with Image.open(out / "base_box.png") as preview:
+        assert preview.size == (832, 1216)
+        assert preview.getpixel((256, 240)) != (128, 128, 128)  # the face box's left edge
+        assert preview.getpixel((128, 600)) != (128, 128, 128)  # the hands box's left edge
+        assert preview.getpixel((416, 240)) == (128, 128, 128)
+    (out / "run.json").write_text(json.dumps({"outfit": "pink_hoodie", "seed": 22, "face_box": [1, 2, 3, 4], "rerolls": {}}))
+    gen_expressions.main(expressions_argv(tmp_path, out, "--preview-box", "--face-box", "300,100,500,300"))  # not refused
+    with Image.open(out / "base_box.png") as preview:
+        assert preview.getpixel((300, 200)) != (128, 128, 128) and preview.getpixel((256, 240)) == (128, 128, 128)
+    assert run_json(out)["face_box"] == [1, 2, 3, 4]
+
+
 def fake_remove(img):
     img = img.convert("RGB")
     differs = ImageChops.difference(img, Image.new("RGB", img.size, (128, 128, 128))).convert("L")
@@ -482,6 +612,19 @@ def test_the_bodys_crop_box_for_the_default_crop_is_at_most_400_tall():
     )
     out = subprocess.run(["node", "-e", script, json.dumps(crop)], check=True, cwd=ROOT, capture_output=True, text=True)
     assert float(out.stdout) == pytest.approx(crop_box_height(320, crop)) and float(out.stdout) <= 400
+
+
+def test_build_pack_takes_the_face_box_from_run_json_unless_overridden(tmp_path):
+    raw = raw_frames(tmp_path / "raw", ["neutral_closed"])
+    (raw / "run.json").write_text(json.dumps({"outfit": "white_tee", "seed": 1, "face_box": [300, 120, 540, 400],
+                                              "rerolls": {}}))
+    build_pack(raw, tmp_path / "a", fake_remove)
+    crop = json.loads((tmp_path / "a" / "manifest.json").read_text())["crops"]["upper"]
+    assert crop == build_pack_module.upper_crop((832, 1216), (300, 120, 540, 400))
+    build_pack(raw, tmp_path / "b", fake_remove, face_override=BOX)
+    crop = json.loads((tmp_path / "b" / "manifest.json").read_text())["crops"]["upper"]
+    assert crop == build_pack_module.upper_crop((832, 1216), BOX)
+    assert read_run(raw)["face_box"] == [300, 120, 540, 400] and read_run(tmp_path / "a") is None
 
 
 def test_every_frame_has_the_canvas_size_and_the_same_bottom_centred_anchor(tmp_path):
