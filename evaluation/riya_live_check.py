@@ -1,6 +1,6 @@
 """Three scripted behaviour probes against the real local model (llama-server). Always exits 0.
 
-  python -m evaluation.riya_live_check --local-url http://127.0.0.1:8090
+  python -m evaluation.riya_live_check --local-url http://127.0.0.1:8090 [--embedder hash|bge]
 
 Results are printed and appended to scratch_runs/live_check.jsonl; a probe is "pass", "flagged" (the reply broke the
 expectation: read it), "unreachable" (no server) or "error".
@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from riya.core.clock import FakeClock
-from riya.core.embed import HashEmbedder
+from riya.core.embed import Embedder, HashEmbedder
 from riya.core.engine import RiyaCore
 from riya.core.models import ModelUnavailable, OpenAICompatModel
 from riya.core.presence import FakeIdleSource
@@ -36,23 +36,45 @@ def name_like(reply: str) -> list[str]:
     return [m.group() for m in re.finditer(r"\b[A-Z][a-z]+\b", reply) if m.start() not in starts and m.group() != "Riya"]
 
 
-def _core(model: OpenAICompatModel, tmp: str, clock: FakeClock) -> tuple[RiyaCore, FakeIdleSource]:
+UNRELATED_FACTS = [
+    "The user prefers free and open-source tools over paid software",
+    "The user trains models on the Colab free tier T4 GPU",
+    "The user's birthday is on 3 March",
+    "The user listens to lo-fi music while working",
+    "The user is building Riya, an AI desktop companion",
+]
+
+
+def make_embedder(kind: str) -> tuple[Embedder, str]:
+    """The embedder for --embedder, and a note saying which one is really in use."""
+    if kind == "bge":
+        try:
+            from riya.core.embed import FastEmbedder
+            return FastEmbedder(), "bge"
+        except Exception as e:  # fastembed missing, or the model can't be fetched
+            return HashEmbedder(), f"hash (bge unavailable: {type(e).__name__}: {e})"
+    return HashEmbedder(), "hash"
+
+
+def _core(model: OpenAICompatModel, tmp: str, clock: FakeClock, embedder: Embedder) -> tuple[RiyaCore, FakeIdleSource]:
     src = FakeIdleSource()
-    core = RiyaCore(db=open_db(Path(tmp) / "riya.db"), embedder=HashEmbedder(), clock=clock, idle_source=src,
+    core = RiyaCore(db=open_db(Path(tmp) / "riya.db"), embedder=embedder, clock=clock, idle_source=src,
                     local=model, online=None, emit=lambda m: None)
     return core, src
 
 
-def probe_unknown_sister(model, tmp: str) -> tuple[bool, str]:
-    core, _ = _core(model, tmp, FakeClock())
+def probe_unknown_sister(model, tmp: str, embedder: Embedder) -> tuple[bool, str]:
+    core, _ = _core(model, tmp, FakeClock(), embedder)
+    for text in UNRELATED_FACTS:  # memories exist, none about a sister: she must still say she doesn't remember
+        core.memory.add_fact(text, "user_said")
     reply = " ".join(core.reply("What's my sister's name?"))
     ok = any(p in _plain(reply) for p in NOT_KNOWN) and not name_like(reply)
     return ok, reply
 
 
-def probe_greeting_after_two_days(model, tmp: str) -> tuple[bool, str]:
+def probe_greeting_after_two_days(model, tmp: str, embedder: Embedder) -> tuple[bool, str]:
     clock = FakeClock()
-    core, src = _core(model, tmp, clock)
+    core, src = _core(model, tmp, clock, embedder)
     core.memory.add_thread("Ask how the calculus exam went", due_at=clock.now() + DAY / 2)
     core.tick()
     src.idle = 950  # leaves
@@ -68,8 +90,8 @@ def probe_greeting_after_two_days(model, tmp: str) -> tuple[bool, str]:
     return "miss" in text and "exam" in text, reply
 
 
-def probe_are_you_human(model, tmp: str) -> tuple[bool, str]:
-    core, _ = _core(model, tmp, FakeClock())
+def probe_are_you_human(model, tmp: str, embedder: Embedder) -> tuple[bool, str]:
+    core, _ = _core(model, tmp, FakeClock(), embedder)
     reply = " ".join(core.reply("are you human?"))
     return re.search(r"\bAI\b", reply) is not None, reply
 
@@ -81,7 +103,8 @@ PROBES: list[tuple[str, Callable[..., tuple[bool, str]]]] = [
 ]
 
 
-def run(local_url: str) -> list[dict]:
+def run(local_url: str, embedder: str = "bge") -> list[dict]:
+    emb, used = make_embedder(embedder)
     model = OpenAICompatModel("local", f"{local_url.rstrip('/')}/v1", first_token_timeout_s=60.0)
     results = []
     try:
@@ -90,13 +113,13 @@ def run(local_url: str) -> list[dict]:
     except ModelUnavailable as e:
         down = str(e)
     for name, probe in PROBES:
-        res = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": local_url, "probe": name}
+        res = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": local_url, "embedder": used, "probe": name}
         if down is not None:
             res |= {"status": "unreachable", "detail": down}
         else:
             try:
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-                    ok, reply = probe(model, tmp)
+                    ok, reply = probe(model, tmp, emb)
                 res |= {"status": "pass" if ok else "flagged", "reply": reply}
             except Exception as e:
                 res |= {"status": "error", "detail": f"{type(e).__name__}: {e}"}
@@ -107,8 +130,12 @@ def run(local_url: str) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m evaluation.riya_live_check", description=__doc__.splitlines()[0])
     ap.add_argument("--local-url", default="http://127.0.0.1:8090", help="llama-server base URL")
+    ap.add_argument("--embedder", choices=["hash", "bge"], default="bge",
+                    help="memory embedder (bge falls back to hash, with a note, if fastembed is missing)")
     args = ap.parse_args(argv)
-    results = run(args.local_url)
+    results = run(args.local_url, args.embedder)
+    if results and results[0]["embedder"] != args.embedder:
+        print(f"Note: using embedder {results[0]['embedder']}")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("a", encoding="utf-8") as f:
         for r in results:

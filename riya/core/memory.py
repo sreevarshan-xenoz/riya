@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from riya.core.embed import Embedder
+from riya.core.embed import Embedder, content_tokens
 
 RANK = {"user_said": 2, "looked_up": 1, "inferred": 0}
 QUALITY = {"user_said": 1.0, "looked_up": 0.7, "inferred": 0.5}
@@ -79,9 +79,18 @@ def _vec(blob: bytes) -> np.ndarray:
 
 class Memory:
     def __init__(self, db: sqlite3.Connection, embedder: Embedder, clock,
-                 dup_sim: float = 0.92, forgotten_sim: float = 0.85, min_sim: float = 0.2):
+                 dup_sim: float = 0.92, forgotten_sim: float = 0.85, min_sim: float | None = None):
+        """min_sim, when given, overrides the embedder's strong/weak retrieval thresholds."""
         self.db, self.embedder, self.clock = db, embedder, clock
         self.dup_sim, self.forgotten_sim, self.min_sim = dup_sim, forgotten_sim, min_sim
+
+    def eligible(self, sim: float, query_tokens: set[str], text: str) -> bool:
+        """Strongly similar, or weakly similar and sharing at least one content word with the query."""
+        if self.min_sim is not None:
+            return sim >= self.min_sim
+        strong = getattr(self.embedder, "strong_sim", 0.2)
+        weak = getattr(self.embedder, "weak_sim", strong)
+        return sim >= strong or (sim >= weak and not query_tokens.isdisjoint(content_tokens(text)))
 
     def _embed(self, text: str) -> np.ndarray:
         return self.embedder.embed([text])[0]
@@ -278,15 +287,15 @@ class Memory:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
     def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2) -> Retrieved:
-        vec, now = self._embed(query), self.clock.now()
+        vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         facts, episodes = [], []
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
-            if sim >= self.min_sim:
+            if self.eligible(sim, qtokens, r["text"]):
                 facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
-            if sim >= self.min_sim:
+            if self.eligible(sim, qtokens, r["summary"]):
                 episodes.append((self._score(sim, now - r["ended_at"], QUALITY["inferred"]), _episode(r)))
         facts.sort(key=lambda p: p[0], reverse=True)
         episodes.sort(key=lambda p: p[0], reverse=True)

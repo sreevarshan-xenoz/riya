@@ -154,3 +154,42 @@ def test_import_legacy_json_empty_or_bad(tmp_path, mem):
     p.write_text("not json", encoding="utf-8")
     assert mem.import_legacy_json(p) is None
     assert mem.recent_episodes(5) == []
+
+
+class _Dense:
+    """Embedder stub: 'sim=0.7 cats' sits at cosine 0.7 from any query ('cats?'), each fact in its own direction."""
+    dim, strong_sim, weak_sim = 3, 0.8, 0.6
+    WORDS = ("apples", "cats", "pears", "dogs")
+
+    def embed(self, texts):
+        import math
+
+        import numpy as np
+        out = []
+        for t in texts:
+            if not t.startswith("sim="):
+                out.append([1.0, 0.0, 0.0])
+                continue
+            sim, phi = float(t.split()[0][4:]), math.pi / 2 * self.WORDS.index(t.split()[-1])
+            r = math.sqrt(1 - sim * sim)
+            out.append([sim, r * math.cos(phi), r * math.sin(phi)])
+        return np.array(out, dtype=np.float32)
+
+
+def _dense_mem(clock, **kw):
+    mem = Memory(open_db(":memory:"), _Dense(), clock, **kw)
+    for text in ["sim=0.9 apples", "sim=0.7 cats", "sim=0.7 pears", "sim=0.5 dogs"]:
+        mem.add_fact(text, "user_said")
+    return mem
+
+
+def test_hybrid_eligibility_uses_embedder_thresholds(clock):
+    # query "cats?" shares a content word with the 0.7 "cats" fact only
+    texts = [f.text for f in _dense_mem(clock).retrieve("cats?").facts]
+    assert sorted(texts) == ["sim=0.7 cats", "sim=0.9 apples"]  # strong, or weak + shared word; pears, dogs out
+
+
+def test_explicit_min_sim_overrides_both_thresholds(clock):
+    texts = [f.text for f in _dense_mem(clock, min_sim=0.45).retrieve("cats?").facts]
+    assert len(texts) == 4
+    assert _dense_mem(clock, min_sim=0.95).retrieve("cats?").facts == []
