@@ -186,7 +186,9 @@ def run_mismatches(stored: dict, outfit: str, seed: int, box: Box | None) -> lis
             if value is not None and stored[key] != value]
 
 
-def merge_rerolls(stored: dict[str, int], from_choice: dict[str, int], reroll: list[str]) -> tuple[dict[str, int], list[str]]:
+def merge_rerolls(
+    stored: dict[str, int], from_choice: dict[str, int], reroll: list[str],
+) -> tuple[dict[str, int], list[str]]:
     """(new counts, expressions whose count changed): the larger of the recorded and choice.json counts, plus one for
     each --reroll name. A changed count means that expression's frames must be regenerated."""
     counts = {e: max(stored.get(e, 0), from_choice.get(e, 0)) + (e in reroll) for e in EXPRESSION_PROMPTS}
