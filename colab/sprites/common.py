@@ -2,6 +2,7 @@
 
 The module imports without torch or diffusers; they load inside load_pipeline only.
 """
+import json
 import os
 from pathlib import Path
 from typing import Literal
@@ -70,6 +71,19 @@ def save_image_atomic(image, path: Path) -> Path:
     tmp = path.with_name(path.stem + ".tmp.png")
     try:
         image.save(tmp, format="PNG")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def save_json_atomic(data: dict, path: Path) -> Path:
+    """Write `data` as indented JSON via a .tmp sibling then os.replace (never a truncated file)."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
