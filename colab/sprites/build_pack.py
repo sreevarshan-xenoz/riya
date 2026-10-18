@@ -1,12 +1,15 @@
 """Turns the raw generated frames into Riya's sprite pack: transparent PNGs on one canvas plus manifest.json.
 
+  pip install "rembg[cpu]" jsonschema
   python colab/sprites/build_pack.py --raw <pulled frames dir> --out sprites/riya-v1 [--face-box x0,y0,x1,y1]
 
-Reads <expression>_<closed|open|blink>.png from --raw (base.png, the review sheet and anything else are ignored),
-removes the background, fits every frame onto one 768x1344 canvas with the same bottom-centred transform (so she never
-jumps between expressions), and writes the frames plus a manifest that validates against body/sprite-manifest.schema.json.
-Frames that are absent are omitted from the manifest and printed as `<expression>.<variant>`. Re-running overwrites the
-pack and removes frames that are no longer in --raw. rembg is imported only when the real remover is used.
+Reads <expression>_<closed|open|blink>.png from --raw (base.png, the sheets and anything else are ignored) and the face
+box from <raw>/run.json (written by gen_expressions; --face-box overrides it). Removes the background: outside the face
+(and the hands for covering_eyes) every frame reuses neutral_closed's alpha, so the silhouette never flickers. Fits every
+frame onto one 768x1344 canvas with the same bottom-centred transform (so she never jumps between expressions), and
+writes the frames plus a manifest that validates against body/sprite-manifest.schema.json. Frames that are absent are
+omitted from the manifest and printed as `<expression>.<variant>`. Re-running overwrites the pack and removes frames
+that are no longer in --raw. rembg is imported only when the real remover is used.
 """
 import argparse
 import json
@@ -17,10 +20,10 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # run as a script from anywhere
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from colab.sprites.common import EXPRESSION_PROMPTS, VARIANT_PROMPTS, existing_pngs, save_image_atomic, save_json_atomic
-from colab.sprites.gen_expressions import DEFAULT_FACE_BOX, Box, parse_face_box, read_run
+from colab.sprites.gen_expressions import DEFAULT_FACE_BOX, Box, box_mask, hands_box, parse_face_box, read_run
 
 CANVAS = (768, 1344)
 CROP_WIDTH, CROP_ABOVE, CROP_BELOW = 2.0, 0.15, 0.7  # head and shoulders, in face-box widths / heights
@@ -65,6 +68,15 @@ def pack_face_box(raw_dir: Path, override: Box | None) -> Box:
         print(f"no {Path(raw_dir) / 'run.json'}: using the default face box {DEFAULT_FACE_BOX}", flush=True)
         return DEFAULT_FACE_BOX
     return tuple(run["face_box"])
+
+
+def own_alpha_mask(size: tuple[int, int], box: Box, expression: str) -> Image.Image:
+    """Where a frame keeps its own background-removal alpha: the feathered face mask (plus the hands for
+    covering_eyes), the only region inpainting changed. Everywhere else every frame takes neutral_closed's alpha."""
+    mask = box_mask(size, box)
+    if expression == "covering_eyes":
+        mask = ImageChops.lighter(mask, box_mask(size, hands_box(box, size)))
+    return mask
 
 
 def default_remover() -> Callable[[Image.Image], Image.Image]:
@@ -116,9 +128,18 @@ def build_pack(
     _validate(manifest)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for e, v in present:
+
+    def cut_out(e: str, v: str) -> Image.Image:
         with Image.open(raw_dir / f"{e}_{v}.png") as im:
-            save_image_atomic(normalise(remove_bg(im.convert("RGB"))), out_dir / f"{e}_{v}.png")
+            return remove_bg(im.convert("RGB")).convert("RGBA")
+
+    neutral = cut_out("neutral", "closed")
+    neutral_alpha = neutral.getchannel("A")
+    for e, v in present:
+        cut = neutral if (e, v) == ("neutral", "closed") else cut_out(e, v)
+        # one silhouette for the whole pack: removal run per frame would make the outline flicker between frames
+        cut.putalpha(Image.composite(cut.getchannel("A"), neutral_alpha, own_alpha_mask(size, box, e)))
+        save_image_atomic(normalise(cut), out_dir / f"{e}_{v}.png")
         print("wrote", out_dir / f"{e}_{v}.png", flush=True)
     save_json_atomic(manifest, out_dir / "manifest.json")
     frame_names = {f"{e}_{v}.png" for e, v in cells}
