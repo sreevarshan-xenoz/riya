@@ -87,3 +87,12 @@ test("memory fixtures with episodes and threads are tolerated", () => {
   assert.equal(L.memoryLists(msg).episodes.length, 1);
   assert.deepEqual(L.memoryLists({ type: "memories" }), { facts: [], episodes: [], threads: [], days: [] });
 });
+
+test("voiceOptions lists the presets and keeps a non-preset current voice as a custom entry", () => {
+  assert.deepEqual(L.VOICES, ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]);
+  const presets = L.VOICES.map((v) => ({ value: v, label: v }));
+  assert.deepEqual(L.voiceOptions("alba"), presets);
+  assert.deepEqual(L.voiceOptions(undefined), presets);
+  assert.deepEqual(L.voiceOptions(""), presets);
+  assert.deepEqual(L.voiceOptions("my_clip.wav"), [{ value: "my_clip.wav", label: "my_clip.wav (custom)" }, ...presets]);
+});

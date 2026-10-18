@@ -3,7 +3,9 @@
  *  summaries, transcript days). Text from the core is only ever put in with textContent. Pure logic is in
  *  src/settings-logic.js. */
 (() => {
-  const { sourceLabel, formatWhen, settingPatch, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter } = RiyaSettings;
+  const {
+    sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
+  } = RiyaSettings;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
   const errorEls = new Map(); // target -> its inline error element
@@ -59,11 +61,22 @@
   $("quiet-save").addEventListener("click", () => changeSetting("quiet_hours", $("quiet_hours").value));
   $("quiet_hours").addEventListener("keydown", (e) => { if (e.key === "Enter") changeSetting("quiet_hours", e.target.value); });
 
+  /** The voice presets, plus the current voice as "(custom)" when it isn't one (e.g. a reference WAV). */
+  function showVoice(current) {
+    const select = $("voice");
+    select.replaceChildren(...voiceOptions(current).map(({ value, label }) => {
+      const option = h("option", null, label);
+      option.value = value;
+      return option;
+    }));
+    select.value = typeof current === "string" ? current : "";
+  }
+
   /** Show the core's settings in the controls (a control being typed in keeps its text). */
   function applySettings(s) {
     const set = (id, prop, value) => { if (document.activeElement !== $(id)) $(id)[prop] = value; };
     if (typeof s.mode === "string") $("mode").value = s.mode;
-    if (typeof s.voice === "string") set("voice", "value", s.voice);
+    if (typeof s.voice === "string") showVoice(s.voice);
     if (typeof s.volume === "number") {
       set("volume", "value", String(s.volume));
       $("volume-out").textContent = `${Math.round(s.volume * 100)}%`;
@@ -231,6 +244,7 @@
     }
   });
 
+  showVoice(null);
   window.riya.hotkey().then((accelerator) => { $("hotkey").textContent = hotkeyText(accelerator); },
     () => { $("hotkey").textContent = hotkeyText(null); });
   send({ type: "get_memories" });
