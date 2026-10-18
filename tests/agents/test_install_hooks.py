@@ -23,6 +23,13 @@ class Runner:
         return SimpleNamespace(returncode=self.rc)
 
 
+@pytest.fixture(autouse=True)
+def no_real_paths(tmp_path, monkeypatch):
+    """A test that forgets --settings/token_path can never reach the real files."""
+    monkeypatch.setattr(ih, "default_settings_path", lambda: tmp_path / "default-home" / "settings.json")
+    monkeypatch.setattr(ih, "default_token_path", lambda: tmp_path / "default-home" / "hook_token")
+
+
 @pytest.fixture
 def env(tmp_path):
     return SimpleNamespace(settings=tmp_path / "claude" / "settings.json", token=tmp_path / "tok" / "hook_token",
@@ -225,3 +232,67 @@ def test_handler_never_has_on_failure(env):
 def test_apply_mentions_hooks_command_in_restart_note(env):
     run(env, "--apply")
     assert any("/hooks" in line and "restart" in line.lower() for line in env.out)
+
+
+def test_default_paths_resolve_to_the_guarded_tmp_dirs(env):
+    assert ih.main(["--apply"], runner=env.runner, out=env.out.append) == 0
+    home = env.tmp / "default-home"
+    assert (home / "settings.json").exists() and (home / "hook_token").exists()
+    assert not env.settings.exists()
+
+
+def test_symlinked_settings_stays_a_symlink(env):
+    real = env.tmp / "dotfiles" / "settings.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps({"model": "x"}), encoding="utf-8")
+    env.settings.parent.mkdir(parents=True)
+    try:
+        env.settings.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    assert run(env, "--apply") == 0
+    assert env.settings.is_symlink()
+    assert set(json.loads(real.read_text(encoding="utf-8"))["hooks"]) == EVENTS
+    assert list(real.parent.glob("settings.json.riya-backup-*")) and backups(env) == []
+    assert run(env, "--remove") == 0
+    assert env.settings.is_symlink() and json.loads(real.read_text(encoding="utf-8")) == {"model": "x"}
+
+
+def test_unencodable_settings_abort_leaving_nothing_behind(env):
+    env.settings.parent.mkdir(parents=True)
+    raw = '{"note": "\\ud800"}'  # valid JSON, a lone surrogate once decoded
+    env.settings.write_text(raw, encoding="utf-8")
+    assert run(env, "--apply") == 1
+    assert env.settings.read_text(encoding="utf-8") == raw
+    assert backups(env) == [] and not env.token.exists() and env.runner.calls == []
+    assert [p.name for p in env.settings.parent.iterdir()] == ["settings.json"]
+    assert any("nothing was changed" in line for line in env.out)
+
+
+def test_bom_prefixed_file_is_handled_safely(env):
+    env.settings.parent.mkdir(parents=True)
+    raw = b"\xef\xbb\xbf" + json.dumps({"model": "x"}).encode("utf-8")
+    env.settings.write_bytes(raw)
+    assert run(env, "--apply") == 0
+    assert load(env)["model"] == "x" and set(load(env)["hooks"]) == EVENTS
+    (b,) = backups(env)
+    assert b.read_bytes() == raw  # the backup keeps the original bytes
+
+
+def test_file_with_comments_aborts_and_writes_nothing(env):
+    env.settings.parent.mkdir(parents=True)
+    raw = '{\n  // my settings\n  "model": "x"\n}\n'
+    env.settings.write_text(raw, encoding="utf-8")
+    assert run(env, "--apply") == 1
+    assert env.settings.read_text(encoding="utf-8") == raw
+    assert backups(env) == [] and not env.token.exists() and env.runner.calls == []
+
+
+def test_group_without_hooks_list_is_left_alone_and_riya_group_added(env):
+    odd = {"matcher": "Bash"}
+    env.settings.parent.mkdir(parents=True)
+    env.settings.write_text(json.dumps({"hooks": {"Stop": [odd, "weird", {"hooks": "nope"}]}}), encoding="utf-8")
+    assert run(env, "--apply") == 0
+    assert load(env)["hooks"]["Stop"] == [odd, "weird", {"hooks": "nope"}, {"hooks": [HANDLER]}]
+    assert run(env, "--remove") == 0
+    assert load(env) == {"hooks": {"Stop": [odd, "weird", {"hooks": "nope"}]}}

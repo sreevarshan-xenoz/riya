@@ -148,13 +148,20 @@ def backup(path: Path, now: datetime | None = None) -> Path:
     return dest
 
 
-def write_atomic(path: Path, data: dict) -> None:
+def encode(data: dict) -> bytes:
+    """Serialise first, so an unencodable value (a lone surrogate) aborts before anything is written."""
+    try:
+        return (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    except (UnicodeError, ValueError, TypeError) as e:
+        raise SettingsError(f"cannot encode the new settings as UTF-8 ({e}); nothing was changed") from e
+
+
+def write_atomic(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -188,13 +195,18 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
         existed = data is not None
         data = {} if data is None else data
         added = merge(data)
+        payload = encode(data)
     except SettingsError as e:
         out(f"Error: {e}")
         return 1
-    token = load_or_create_token(token_path)
-    if existed:
-        out(f"Backup: {backup(settings_path, now)}")
-    write_atomic(settings_path, data)
+    try:
+        token = load_or_create_token(token_path)
+        if existed:
+            out(f"Backup: {backup(settings_path, now)}")
+        write_atomic(settings_path, payload)
+    except OSError as e:
+        out(f"Error: could not write the settings ({e}); the original file was not changed")
+        return 1
     out(f"Settings updated: {settings_path} ({added} event(s) added, {len(EVENTS) - added} already present)")
     for line in warnings(data):
         out(line)
@@ -215,18 +227,23 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
 def do_remove(settings_path: Path, out=print, now=None) -> int:
     try:
         data = read_settings(settings_path)
+        removed = strip(data) if data is not None else 0
+        payload = encode(data) if removed else b""
     except SettingsError as e:
         out(f"Error: {e}")
         return 1
     if data is None:
         out(f"{settings_path} does not exist; nothing to remove.")
         return 0
-    removed = strip(data)
     if not removed:
         out("No Riya handlers found; nothing changed.")
         return 0
-    out(f"Backup: {backup(settings_path, now)}")
-    write_atomic(settings_path, data)
+    try:
+        out(f"Backup: {backup(settings_path, now)}")
+        write_atomic(settings_path, payload)
+    except OSError as e:
+        out(f"Error: could not write the settings ({e}); the original file was not changed")
+        return 1
     out(f"Removed {removed} Riya handler(s) from {settings_path}.")
     out(f"The {ENV_VAR} environment variable was left alone. To remove it:\n"
         f"  reg delete HKCU\\Environment /v {ENV_VAR} /f")
@@ -242,6 +259,7 @@ def main(argv=None, runner=subprocess.run, token_path=None, settings_path=None, 
     p.add_argument("--settings", help="settings.json path (default: %%USERPROFILE%%/.claude/settings.json)")
     args = p.parse_args(argv)
     settings = Path(args.settings) if args.settings else Path(settings_path) if settings_path else default_settings_path()
+    settings = settings.resolve()  # a symlinked settings.json stays a symlink: backup and replace hit the target
     token = Path(token_path) if token_path else default_token_path()
     if args.mode == "apply":
         return do_apply(token, settings, runner, out, now)
