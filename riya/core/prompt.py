@@ -174,6 +174,7 @@ _CANT_SEE = {"eyes off": "your eyes are switched off in settings",
              "riya window": "the only window in front of you is your own",
              "unknown process": "that window looks private, so you don't look at it",
              "overlay": "the window in front is a see-through overlay, so you don't look at it",
+             "covered": "another window is on top of that one, so you don't look",
              "denylisted": "that window looks private (passwords, banking or a private window), so you don't look "
                            "at it",
              "online model unavailable": "your eyes need the online model and it isn't available right now",

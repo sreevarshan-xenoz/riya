@@ -9,6 +9,7 @@ Rect = tuple[int, int, int, int]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _ELECTRON_DIR = (REPO_ROOT / "body" / "node_modules" / "electron").as_posix().lower()
 _dpi_done = False
+MAX_Z_WALK = 10000  # windows above a target, at most (a loop in a changing z-order can't run forever)
 
 
 @dataclass
@@ -31,12 +32,18 @@ class WindowSource(Protocol):
     def window(self, hwnd: int) -> WindowInfo | None:
         """That window as it is now (current title, rect, minimized), or None when it's gone."""
 
+    def above(self, hwnd: int) -> list[WindowInfo]:
+        """The visible top-level windows above hwnd in z-order, nearest first (topmost ones included; cloaked and
+        minimized ones too, flagged). Raises when it can't tell."""
+
 
 class FakeWindowSource:
-    """info is the foreground window; windows are the other open ones (a window seen in front stays open)."""
+    """info is the foreground window; windows are the other open ones (a window seen in front stays open); stacks
+    maps a window to the windows above it."""
 
-    def __init__(self, info: WindowInfo | None = None, windows: dict[int, WindowInfo] | None = None):
-        self.info, self.windows = info, dict(windows or {})
+    def __init__(self, info: WindowInfo | None = None, windows: dict[int, WindowInfo] | None = None,
+                 stacks: dict[int, list[WindowInfo]] | None = None):
+        self.info, self.windows, self.stacks = info, dict(windows or {}), dict(stacks or {})
 
     def foreground(self) -> WindowInfo | None:
         if self.info is not None:
@@ -47,6 +54,9 @@ class FakeWindowSource:
         if self.info is not None and self.info.hwnd == hwnd:
             return self.info
         return self.windows.get(hwnd)
+
+    def above(self, hwnd: int) -> list[WindowInfo]:
+        return list(self.stacks.get(hwnd, []))
 
 
 def is_riya_window(path: str, title: str) -> bool:
@@ -113,6 +123,9 @@ class WindowsWindowSource:
         u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         u.IsIconic.argtypes = [wintypes.HWND]
+        u.IsWindowVisible.argtypes = [wintypes.HWND]
+        u.GetWindow.restype = wintypes.HWND
+        u.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
         u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         # 32-bit Python has only GetWindowLongW (the same thing there)
         self._ex_style = getattr(u, "GetWindowLongPtrW", None) or u.GetWindowLongW
@@ -164,6 +177,19 @@ class WindowsWindowSource:
             return self._info(hwnd) if hwnd and self._user32.IsWindow(hwnd) else None
         except Exception:
             return None
+
+    def above(self, hwnd: int) -> list[WindowInfo]:
+        u, out, h = self._user32, [], hwnd
+        for _ in range(MAX_Z_WALK):
+            h = u.GetWindow(h, 3)  # GW_HWNDPREV: the next window up, up to the topmost one
+            if not h:
+                if not u.IsWindow(hwnd):
+                    raise RuntimeError("the window is gone")
+                return out
+            if u.IsWindowVisible(h):  # a window it can't read still covers its frame
+                out.append(self._info(h) or WindowInfo(int(h), "", "", self._frame(h), self._frame(h), False, False,
+                                                       cloaked=self._cloaked(h)))
+        raise RuntimeError("the z-order walk didn't reach the top")
 
     def _info(self, hwnd) -> WindowInfo | None:
         try:
