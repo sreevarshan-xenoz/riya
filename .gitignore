@@ -26,3 +26,4 @@ sprites/
 *.db-shm
 .env
 scratch_runs/voice_candidates/
+!tests/data/
