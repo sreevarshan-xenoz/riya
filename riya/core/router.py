@@ -26,17 +26,24 @@ class Router:
     def route(self, text: str) -> str:
         return "online" if self.online is not None and self.online_enabled and needs_thinking(text) else "local"
 
-    def stream(self, messages: list[dict], text: str, max_tokens: int = 300) -> Iterator[str]:
+    @property
+    def last_finish_reason(self) -> str | None:
+        """Why the last answer's model stopped ("length": it ran out of tokens), when it says."""
+        return getattr(self.online if self.last_source == "online" else self.local, "finish_reason", None)
+
+    def stream(self, messages: list[dict], text: str, max_tokens: int = 300,
+               online_tokens: int | None = None) -> Iterator[str]:
+        """online_tokens, when given, is the online model's budget; a local fallback keeps max_tokens."""
         if self.route(text) == "online":
-            yield from self._online(messages, max_tokens)
+            yield from self._online(messages, max_tokens, online_tokens or max_tokens)
         else:
             self.last_source = "local"
             yield from self.local.stream(messages, max_tokens, LOCAL_TEMPERATURE)
 
-    def _online(self, messages, max_tokens) -> Iterator[str]:
+    def _online(self, messages, max_tokens, online_tokens) -> Iterator[str]:
         buf, started = "", False
         try:
-            for piece in self.online.stream(messages, max_tokens):
+            for piece in self.online.stream(messages, online_tokens):
                 if started:
                     yield piece
                     continue

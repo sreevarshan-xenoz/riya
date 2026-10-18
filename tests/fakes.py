@@ -9,14 +9,16 @@ from riya.core.store import open_db
 
 
 class FakeModel:
-    def __init__(self, name="fake", replies=("Okay.",), fail=None, fail_after=None, delay=0.0):
+    def __init__(self, name="fake", replies=("Okay.",), fail=None, fail_after=None, delay=0.0, finish_reason="stop"):
         self.name, self.replies, self.fail, self.fail_after = name, list(replies), fail, fail_after
+        self.finish_after, self.finish_reason = finish_reason, None  # finish_reason is set once a reply ran out
         self.delay = delay  # seconds to wait before each token, to make a reply slow
         self.calls, self.temperatures = [], []
 
     def stream(self, messages, max_tokens=300, temperature=0.8):
         self.calls.append(messages)
         self.temperatures.append(temperature)
+        self.finish_reason = None
         if self.fail:
             raise self.fail
         text = self.replies[min(len(self.calls) - 1, len(self.replies) - 1)]
@@ -26,6 +28,7 @@ class FakeModel:
             if self.delay:
                 time.sleep(self.delay)
             yield tok
+        self.finish_reason = self.finish_after
 
 
 def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None):

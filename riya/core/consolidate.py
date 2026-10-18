@@ -20,6 +20,8 @@ CONSOLIDATE_PROMPT = (
     '"threads": a list of {"text", "due_in_hours"} for things Riya should follow up on later, such as asking how '
     "an event went.\n"
     "Use empty lists and an empty summary when there is nothing worth keeping.")
+CONSOLIDATE_TOKENS = 600
+CONSOLIDATE_TOKENS_ONLINE = 1200  # online models may count their thinking tokens
 CHUNK_ROWS = 60
 CHUNK_CHARS = 8000
 CHUNK_GAP_S = 1800  # a longer silence starts a new conversation
@@ -137,8 +139,10 @@ class Consolidator:
             return Proposals.empty()
         messages = [{"role": "system", "content": CONSOLIDATE_PROMPT},
                     {"role": "user", "content": "\n".join(f"{r['role']}: {r['text']}" for r in rows)}]
+        model = model or self.model_getter()
+        tokens = CONSOLIDATE_TOKENS_ONLINE if getattr(model, "name", "") == "online" else CONSOLIDATE_TOKENS
         try:
-            proposals = _parse(complete(model or self.model_getter(), messages, max_tokens=600))
+            proposals = _parse(complete(model, messages, max_tokens=tokens))
         except ModelUnavailable:  # an outage isn't the chunk's fault: leave it, retry on the normal cadence, uncounted
             return Proposals.empty()
         if proposals is None:  # an unusable reply: leave the transcripts so a later run retries; 3 in a row give up

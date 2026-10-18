@@ -229,3 +229,41 @@ def test_local_model_sends_the_user_turn_stop_sequences():
     srv.shutdown()
     assert LOCAL_STOP == ("\nUser:",) and seen["body"]["stop"] == list(LOCAL_STOP)
     assert seen["path"] == "/v1/chat/completions" and OpenAICompatModel("online", url).stop is None
+
+
+# --- final fix wave: M5, finish_reason and the online budget ------------------------------------------------------
+def test_openai_compat_records_the_last_finish_reason():
+    chunk = 'data: {"choices":[{"delta":{"content":"%s"},"finish_reason":%s}]}'
+    srv, url = _sse([chunk % ("Hel", "null"), chunk % ("lo", '"length"'), "data: [DONE]"])
+    m = OpenAICompatModel("t", url)
+    assert m.finish_reason is None
+    assert "".join(m.stream(MSGS)) == "Hello" and m.finish_reason == "length"
+    srv.shutdown()
+    srv, url = _sse([chunk % ("Hi", "null"), 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                     "data: [DONE]"])
+    m.base_url = f"{url}"
+    assert "".join(m.stream(MSGS)) == "Hi" and m.finish_reason == "stop"
+    srv.shutdown()
+
+
+def test_router_reports_the_finish_reason_of_the_model_that_answered():
+    local, online = FakeModel("local", ["L."]), FakeModel("online", ["O."], finish_reason="length")
+    r = Router(local, online)
+    list(r.stream(MSGS, "explain recursion"))
+    assert r.last_finish_reason == "length"
+    list(r.stream(MSGS, "hi riya"))
+    assert r.last_finish_reason == "stop"
+
+
+def test_online_turns_can_get_their_own_token_budget_and_the_fallback_keeps_the_local_one():
+    seen = []
+
+    class Spy(FakeModel):
+        def stream(self, messages, max_tokens=300, temperature=0.8):
+            seen.append((self.name, max_tokens))
+            return super().stream(messages, max_tokens, temperature)
+    r = Router(Spy("local", ["L."]), Spy("online", ["O."]))
+    list(r.stream(MSGS, "explain recursion", 380, online_tokens=600))
+    r.online = Spy("online", fail=ModelUnavailable("429"))
+    list(r.stream(MSGS, "explain recursion", 380, online_tokens=600))
+    assert seen == [("online", 600), ("online", 600), ("local", 380)]

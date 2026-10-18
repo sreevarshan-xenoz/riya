@@ -26,7 +26,7 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, EpisodeDelete, Er
                                 SettingsMsg, StateMsg, TalkHotkey, ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
-from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, cap_sentences, count_emoji, drop_generic,
+from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
                                is_identity_question, limit_emoji, strip_label, turn_kind)
 from riya.core.store import KV
 
@@ -43,6 +43,7 @@ CONSOLIDATE_RETRY_S = 600
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 _TILDES = re.compile(r"[~\s]*")
+_ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
 
 
 def _worded(text: str) -> bool:
@@ -185,8 +186,10 @@ class RiyaCore:
                 thinking = True
                 self.feelings.on_event("thinking")
                 self._sync_expression()
-            stream = self.router.stream(messages, route_text, budget)
-            kept = drop_generic(self._sentences(stream, parts, done), others=bool(lead), dropped=dropped)
+            stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
+            ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
+            kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead)), others=bool(lead),
+                                dropped=dropped)
             sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
@@ -204,7 +207,7 @@ class RiyaCore:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
             # the model finished on its own and nothing of it was dropped: keep its own spacing
-            whole = outcome == "done" and done["stream"] and not dropped
+            whole = outcome == "done" and done["stream"] and not dropped and not done.get("cut")
             text = None if outcome == "failed" else (
                 " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip())])) if whole
                 else " ".join(said))
@@ -251,10 +254,12 @@ class RiyaCore:
         return (len(buf) if head is None else head, len(buf)) if final and buf.strip() else None
 
     @staticmethod
-    def _sentences(stream: Iterator[str], parts: list[str], done: dict) -> Iterator[str]:
+    def _sentences(stream: Iterator[str], parts: list[str], done: dict, ran_out: Callable[[], bool] = lambda: False,
+                   said: bool = False) -> Iterator[str]:
         """The model's pieces as whole sentences (_cut), each with only the reply's first emoji (an emoji's leftovers
-        vanish) and the first without a leading "Riya:" label. Closing this closes the model stream; done["stream"]
-        is set once the model ended by itself."""
+        vanish) and the first without a leading "Riya:" label. When the model ran out of tokens (ran_out) after a
+        complete sentence was said (here, or before it: said), its unfinished last fragment is dropped and
+        done["cut"] set. Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
         buf, used, first = "", 0, True
 
         def tidy(sentence: str) -> str:
@@ -277,7 +282,10 @@ class RiyaCore:
                 buf += piece
                 while (cut := RiyaCore._cut(buf)) is not None:
                     if sentence := take(cut):
+                        said = True
                         yield sentence
+            if said and _worded(buf) and not _ENDED.search(buf) and ran_out():
+                buf, done["cut"] = "", True
             while (cut := RiyaCore._cut(buf, final=True)) is not None:
                 if sentence := take(cut):
                     yield sentence
