@@ -1,6 +1,7 @@
 """RiyaCore: wires memory, feelings, presence, initiative, routing and consolidation into replies and speaking first."""
 import logging
 import queue
+import random
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -13,6 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from riya.agents.hub import AgentEvent, AgentHub
+from riya.core import games
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
@@ -66,6 +68,8 @@ REPORT_FACE_S = 20
 DRAIN_MAX = 200  # inbox items taken per tick: a flood waits for later ticks, the tick never stalls on it
 URGENT = frozenset({"failed", "waiting", "lost", "stalled"})
 REPORT_FACES = {"failed": "worried", "lost": "worried", "stalled": "worried", "waiting": "curious", "finished": "happy"}
+GAME_IDLE_S = 600  # a game with no turn this long ends, silently
+BUSY = frozenset({"busy", "running"})  # an agent at work: her bids may offer a game meanwhile
 HOOKS_SEEN_KEY = "agents.hooks_seen_at"
 REPORTS_KEY = "agents.reports"  # pending reports survive a restart
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
@@ -174,6 +178,11 @@ class RiyaCore:
         seen = self.kv.get(HOOKS_SEEN_KEY)
         self._hooks_seen_at = float(seen) if isinstance(seen, (int, float)) else None
         self._agents_sent = self._agents_msg()
+        # games: the state (the 20 questions secret included) lives here, never in the transcript or her prompt history
+        self.game: games.GameState | None = None
+        self._game_at = now  # the last game turn
+        self._offer: tuple[str, float] | None = None  # (game, when) a bid offered while an agent was busy
+        self.game_rng = random.Random()
         self._expression = self._face()
 
     @property
@@ -186,6 +195,14 @@ class RiyaCore:
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
         with self._lock:
+            move = None
+            try:
+                move = self._game_move(text)
+            except Exception:
+                log.exception("couldn't play the game turn")
+            if move is not None:
+                yield from self._game_reply(text, *move)
+                return
             saved = None
             try:
                 saved = self._take_user_turn(text)
@@ -207,8 +224,44 @@ class RiyaCore:
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
                                    small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None)
 
-    def _take_user_turn(self, text: str) -> str | None:
-        """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away)."""
+    def _game_move(self, text: str) -> tuple[games.GameState, games.Verdict] | None:
+        """The game side of a user turn, judged by the engine before the model is asked: a stop phrase ends the
+        active game; a start phrase (or a yes to a fresh offer) starts one; otherwise an active game plays the turn.
+        None when this isn't a game turn. Any turn uses up a pending offer."""
+        now = self.clock.now()
+        offer, self._offer = self._offer, None
+        offered = offer[0] if offer and now - offer[1] < BID_IGNORED_S else None
+        g = self.game
+        if g is not None and games.is_stop(text):
+            self.game = None
+            return g, games.stop(g, text)
+        if kind := games.detect_start(text, offered):
+            g = self.game = games.new_game(kind, self.game_rng)
+            self._game_at = now
+            return g, games.opening(g)
+        if g is None:
+            return None
+        v = games.play(g, text)
+        self._game_at = now
+        if v.over:
+            self.game = None
+        return g, v
+
+    def _game_reply(self, text: str, g: games.GameState, v: games.Verdict) -> Iterator[str]:
+        """A game turn: the local model voices the verdict in one short sentence (the situation is never kept), every
+        sentence passes the secret guard, and the engine's own line (her word, the next riddle, the reveal) follows
+        unless she already said it."""
+        try:
+            self._take_user_turn(text, remember=False)
+        except Exception:
+            log.exception("couldn't record the user's turn")
+        game = SimpleNamespace(guard=lambda sentence: games.guard(g, sentence), say=v.say, key=v.key)
+        yield from self._speak("reply", user_text=text, query=text, spoken=True,
+                               situation=games.game_situation(g, v), game=game)
+
+    def _take_user_turn(self, text: str, remember: bool = True) -> str | None:
+        """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away). A game
+        turn (remember off) never saves a fact."""
         now = self.clock.now()
         answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
         if answered_bid and self._bid_thread is not None:
@@ -216,7 +269,7 @@ class RiyaCore:
         self.last_turn_at, self.pending_bid_at, self._bid_thread = now, None, None
         self.memory.append_transcript("user", text)
         saved = None
-        if (said := remember_intent(text)) is not None:
+        if remember and (said := remember_intent(text)) is not None:
             saved = f"The user said: {third_person(said)}"
             self.memory.add_fact(saved, source="user_said")
         self.feelings.on_user_text(text)
@@ -259,15 +312,16 @@ class RiyaCore:
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
-               lead: str | None = None, small: bool = False,
-               seeing: SimpleNamespace | None = None) -> Iterator[str]:
+               lead: str | None = None, small: bool = False, seeing: SimpleNamespace | None = None,
+               game: SimpleNamespace | None = None) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
         small makes it small talk on the local model whatever the text (a remember-that turn just reacts).
         seeing (from _look_now, with an image) sends the image with her full prompt to the vision model; the same
         shaping applies. A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not
-        recorded."""
+        recorded. game (a game turn): the local model, the small budget and one sentence; every sentence passes
+        game.guard, and game.say follows unless game.key was already said."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped = None, {"stream": False}, []
         try:
@@ -277,8 +331,8 @@ class RiyaCore:
                 self.emit(Say(utterance_id=uid, text=lead, spoken=spoken, kind=kind))
                 said.append(lead)
                 yield lead
-            route_text = "" if small else user_text or ""
-            turn, budget, cap = self._shape(kind, route_text)
+            route_text = "" if small or game else user_text or ""
+            turn, budget, cap = ("game", BUDGETS["small"], 1) if game else self._shape(kind, route_text)
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
@@ -308,9 +362,16 @@ class RiyaCore:
             sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
+                if game:
+                    sentence = game.guard(sentence)
                 self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
                 said.append(sentence)
                 yield sentence
+            if game and game.say and not games.mentions(" ".join(said), game.key):
+                tail = game.guard(game.say)
+                self.emit(Say(utterance_id=uid, text=tail, spoken=spoken, kind=kind))
+                said.append(tail)
+                yield tail
             outcome = "done"
         except GeneratorExit:
             outcome = "closed"
@@ -322,7 +383,7 @@ class RiyaCore:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
             # the model finished on its own and nothing of it was dropped: keep its own spacing
-            whole = outcome == "done" and done["stream"] and not dropped and not done.get("cut")
+            whole = outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
             text = None if outcome == "failed" else (
                 " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip())])) if whole
                 else " ".join(said))
@@ -451,11 +512,19 @@ class RiyaCore:
             f" ({g.notable})" if g.notable else "")
 
     def _bid(self, action: Action) -> None:
+        """A silent bid. While an agent is busy (and no game is on) it offers a random game, named by the engine if
+        the model's line doesn't; a yes within BID_IGNORED_S starts it."""
+        offer = None
         try:
+            if self.game is None and any(a["status"] in BUSY for a in self.agents.snapshot()):
+                offer = self.game_rng.choice(games.GAMES)
+            situation = bid_situation(self._bid_reason(action), action.thread)
+            if offer:
+                situation += " " + games.offer_situation(offer)
             messages = build_messages(persona=self.personas["local"], examples=self.examples,
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
-                                      user_text=None, situation=bid_situation(self._bid_reason(action), action.thread),
+                                      user_text=None, situation=situation,
                                       now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip())
@@ -464,6 +533,9 @@ class RiyaCore:
             return
         if not line:
             return
+        if offer and not games.offers(line, offer):
+            line = f"{line} {games.offer_line(offer)}"
+        self._offer = (offer, self.clock.now()) if offer else None
         if action.thread:
             self.memory.mark_thread(action.thread.id, raised_at=self.clock.now())
         uid = uuid4().hex
@@ -503,6 +575,7 @@ class RiyaCore:
             self._step("bid", self._maybe_bid)
         self._step("reports", self._save_reports)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
+        self._step("game", lambda: self._end_idle_game(now))
         self._step("eyes", lambda: self._eyes_step(now))
         self._step("feelings", lambda: self.feelings.tick(present=self.presence.state != "away"))
         self._step("consolidation", lambda: self._maybe_consolidate(now))
@@ -551,6 +624,11 @@ class RiyaCore:
         if self.pending_bid_at is not None and now - self.pending_bid_at >= BID_IGNORED_S:
             self.feelings.on_event("bid_ignored")
             self.pending_bid_at = self._bid_thread = None
+
+    def _end_idle_game(self, now: float) -> None:
+        """A game with no turn for 10 min ends, silently."""
+        if self.game is not None and now - self._game_at >= GAME_IDLE_S:
+            self.game = None
 
     def _maybe_consolidate(self, now: float) -> None:
         if self.presence.state == "gaming":  # never load the local model during a game
