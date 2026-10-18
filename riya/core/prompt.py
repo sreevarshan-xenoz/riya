@@ -177,6 +177,7 @@ _CANT_SEE = {"eyes off": "your eyes are switched off in settings",
              "covered": "another window is on top of that one, so you don't look",
              "denylisted": "that window looks private (passwords, banking or a private window), so you don't look "
                            "at it",
+             "no body": "your window isn't open, so your eyes are closed",
              "online model unavailable": "your eyes need the online model and it isn't available right now",
              "daily cap": "you've already looked at their screen enough times today",
              "presence gaming": "they're in a game and you don't look while they play"}

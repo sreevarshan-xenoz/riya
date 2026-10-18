@@ -180,3 +180,16 @@ test("a conversion that throws or answers junk leaves the position as it was", (
   assert.deepEqual(toDip([5, 6], broken), [5, 6]);
   assert.deepEqual(toPhysical([5, 6], null), [5, 6]);
 });
+
+const { quitDelay, QUIT_FLUSH_MS } = require("../src/main-logic");
+
+test("quit_core is only meaningful now: never queued while disconnected", () => {
+  assert.equal(shouldSendToCore({ type: "quit_core" }, true), true);
+  assert.equal(shouldSendToCore({ type: "quit_core" }, false), false);
+});
+
+test("quitting waits briefly for quit_core to reach a connected core, and not at all otherwise", () => {
+  assert.ok(QUIT_FLUSH_MS > 0 && QUIT_FLUSH_MS <= 1000);
+  assert.equal(quitDelay(true), QUIT_FLUSH_MS);
+  assert.equal(quitDelay(false), 0);
+});

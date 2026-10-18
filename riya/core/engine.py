@@ -26,7 +26,7 @@ from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SIT
                               cant_see_situation, eyes_block, greeting_situation, remember_situation)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
                                 EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
-                                MemoryDelete, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey,
+                                MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey,
                                 ThreadResolve, TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, load_settings, save_settings, set_autostart
@@ -105,10 +105,13 @@ class Utterance:
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None, vision: ChatModel | None = None,
-                 window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg):
+                 window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
+                 body_present: Callable[[], bool] = lambda: True):
         """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
-        window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only)."""
+        window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
+        body is connected (her eyes stay shut without one)."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
+        self.body_present, self.quit_requested = body_present, threading.Event()  # quit_requested: the tray's Quit
         self.vision, self.windows, self._grab = vision, window_source or FakeWindowSource(None), grab
         # the small local model gets the short persona, the online one the full sheet; persona= overrides both
         self.personas = {k: persona if persona is not None else persona_prompt(k) for k in ("local", "online")}
@@ -543,6 +546,8 @@ class RiyaCore:
     def _why_not(self, info: WindowInfo | None, s: Settings, force: bool = False,
                  presence: str | None = None) -> str | None:
         """None when she may look at info now, else the policy's reason. Call with _eyes_lock held."""
+        if not self.body_present():
+            return "no body"
         return self.policy.allowed(info=info, presence=presence or self.presence.state, eyes_enabled=s.eyes_enabled,
                                    dont_look=s.dont_look, online_ok=self.vision is not None and s.online_enabled,
                                    extra_titles=s.eyes_deny_titles, extra_processes=s.eyes_deny_processes, force=force)
@@ -819,6 +824,9 @@ class RiyaCore:
                 return
             elif isinstance(msg, TalkHotkey):
                 self.talk_requested = True
+                return
+            elif isinstance(msg, QuitCore):
+                self.quit_requested.set()
                 return
             else:  # BodyReady (the socket sends hello on connect) and UserText (goes through reply)
                 return

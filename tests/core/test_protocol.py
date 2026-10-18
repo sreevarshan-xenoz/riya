@@ -77,3 +77,10 @@ def test_eyes_messages():
                                                                        activity="x", details="", notable=None)])
     assert json.loads(dump(m))["glances"][0]["activity"] == "x"
     assert MemoriesMsg(facts=[], transcript_days=[]).glances == []
+
+
+def test_quit_core_message():
+    from riya.core.protocol import QuitCore
+    assert parse_body_message('{"type":"quit_core"}') == QuitCore()
+    fixture = Path("body/test/fixtures/body_quit_core.json")
+    assert parse_body_message(fixture.read_text(encoding="utf-8")) == QuitCore()

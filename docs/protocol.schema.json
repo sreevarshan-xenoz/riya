@@ -138,6 +138,19 @@
         "title": "MemoryDelete",
         "type": "object"
       },
+      "QuitCore": {
+        "description": "The user chose Quit in the tray: the core stops too.",
+        "properties": {
+          "type": {
+            "const": "quit_core",
+            "default": "quit_core",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "QuitCore",
+        "type": "object"
+      },
       "SetSettings": {
         "properties": {
           "patch": {
@@ -239,6 +252,7 @@
         "glance_delete": "#/$defs/GlanceDelete",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
+        "quit_core": "#/$defs/QuitCore",
         "set_settings": "#/$defs/SetSettings",
         "talk_hotkey": "#/$defs/TalkHotkey",
         "thread_resolve": "#/$defs/ThreadResolve",
@@ -283,6 +297,9 @@
       },
       {
         "$ref": "#/$defs/GlanceDelete"
+      },
+      {
+        "$ref": "#/$defs/QuitCore"
       }
     ]
   },

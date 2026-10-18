@@ -167,6 +167,11 @@ class GlanceDelete(BaseModel):
     id: int
 
 
+class QuitCore(BaseModel):
+    """The user chose Quit in the tray: the core stops too."""
+    type: Literal["quit_core"] = "quit_core"
+
+
 class SetSettings(BaseModel):
     type: Literal["set_settings"] = "set_settings"
     patch: dict
@@ -175,7 +180,8 @@ class SetSettings(BaseModel):
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
                               Look, EyesMsg], Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
-                              TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete],
+                              TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
+                              QuitCore],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)

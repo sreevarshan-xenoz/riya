@@ -842,3 +842,34 @@ def test_build_core_sets_dpi_awareness_first_and_gives_eyes_their_own_model(tmp_
     assert calls[0] == "dpi" and "windows" in calls
     assert core.vision is not core.online and core.vision.first_token_timeout_s == 20
     assert core.online.first_token_timeout_s == 8
+
+
+# ---- no body, quitting ---------------------------------------------------------------------------------------------
+
+def test_no_glance_or_screen_look_without_a_connected_body():
+    present = [False]
+    vision = FakeModel("vision", [NOTE, "Looks fine."])
+    clock, source, grab = FakeClock(), FakeWindowSource(win()), Grabber()
+    core, emitted, _, local = make_core(clock, vision=vision, window_source=source, grab=grab,
+                                        body_present=lambda: present[0])
+    run(core, clock, 400)
+    assert grab.calls == [] and vision.calls == []
+    list(core.reply("what's on my screen?"))
+    assert grab.calls == [] and vision.calls == [] and "window isn't open" in situation(local)
+    present[0] = True                                          # the body connects again
+    run(core, clock, 10)
+    assert len(grab.calls) == 1 and len(vision.calls) == 1
+
+
+def test_a_body_is_assumed_in_tests_and_evaluation():
+    core, *_ = eyes_core()
+    assert core.body_present() is True
+
+
+def test_quit_core_asks_the_runner_to_stop():
+    from riya.core.protocol import QuitCore
+    core, emitted, *_ = eyes_core()
+    assert not core.quit_requested.is_set()
+    n = len(emitted)
+    core.handle(QuitCore())
+    assert core.quit_requested.is_set() and emitted[n:] == []
