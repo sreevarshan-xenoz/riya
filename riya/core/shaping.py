@@ -20,6 +20,8 @@ _CODE_SPLIT = re.compile(r"(```.*?(?:```|\Z))", re.S)  # split(): the odd items 
 _BOLD = re.compile(r"(?<!\w)\*\*(?=\S)(.+?)\*\*")
 _STARS = re.compile(r"(?<!\w)\*(?=\S)([^*]+)\*")  # *giggles*
 _PARENS = re.compile(r"\(([^()]*)\)")  # (laughs)
+STAGE_WORDS = frozenset("""laughs laughing giggles giggling sighs sighing blushes blushing smiles smiling grins grinning
+pouts pouting winks whispers whispering nods huffs teasing hehe hmph yawns yawning stretches""".split())
 _SPACE_BEFORE_PUNCT = re.compile(r" +([.,!?…;:])")
 FENCE = "```"
 CODE_SAID = "here's the code"
@@ -77,8 +79,8 @@ def limit_emoji(text: str, max_n: int = 1) -> str:
 
 def tts_text(text: str) -> str:
     """What the voice should say: a fenced block becomes "here's the code"; no emoji; only short stage directions go.
-    *giggles*: not right after a word character, at most 6 words. (laughs): not right after a word character or a
-    closing bracket, at most 4 words, no digits. So "3 * 4" and "f(x)" are read as written. Whitespace is collapsed."""
+    *giggles*: not right after a word character, at most 6 words. (laughs softly): 1-3 words, one of them a STAGE_WORDS
+    word, so asides like "(the powerhouse)" and "f(x)" are read as written. Whitespace is collapsed."""
     removed = 0
 
     def stars(m: re.Match) -> str:
@@ -90,9 +92,8 @@ def tts_text(text: str) -> str:
 
     def parens(m: re.Match) -> str:
         nonlocal removed
-        before = m.string[:m.start()]
-        if (len(m.group(1).split()) > 4 or re.search(r"\d", m.group(1)) or before[-1:].isalnum()
-                or before.rstrip()[-1:] in (")", "]")):  # f(x), and an aside tacked onto a call or a bracket
+        words = m.group(1).split()
+        if len(words) > 3 or not STAGE_WORDS.intersection(re.findall(r"[a-z]+", m.group(1).lower())):
             return m.group()
         removed += 1
         return " "
