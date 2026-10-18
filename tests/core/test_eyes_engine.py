@@ -254,6 +254,15 @@ def test_empty_screen_answers_escalate_the_backoff_too():
     assert core.policy.unusable() == 1800                        # 300 and 900 were used by the two questions
 
 
+def test_a_good_screen_answer_resets_the_unusable_streak():
+    vision = FakeModel("vision", ["", "", "It's a TypeError."])
+    core, _, _, _, clock, _, _, _ = eyes_core(vision=vision, local_replies=["Hmm~"])
+    for _ in range(3):
+        list(core.reply("what's wrong with this?"))
+    assert len(vision.calls) == 3 and core.policy.glances_today() == 3
+    assert core.policy.unusable() == 300                         # the streak (300, 900) started over
+
+
 @pytest.mark.parametrize("fail", [ModelUnavailable("online: <urlopen error [WinError 10061] refused>"),
                                   ModelUnavailable("online: HTTP 503"), RuntimeError("socket blew up")])
 def test_an_outage_backs_off_for_30_minutes(fail):
