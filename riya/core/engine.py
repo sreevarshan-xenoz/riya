@@ -257,6 +257,7 @@ class RiyaCore:
         action = None
         for ev in events:
             if ev.kind == "came_back":
+                self.feelings.tick(present=False)  # catch up on the absence first, so it can't fade her missing them
                 if self.presence.state == "gaming":  # never greet into a game: wait until it ends
                     self._deferred_greeting = (ev.away_s, now)
                 else:
