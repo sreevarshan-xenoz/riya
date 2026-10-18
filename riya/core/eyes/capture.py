@@ -40,6 +40,11 @@ def is_riya_window(path: str, title: str) -> bool:
     return p.startswith(_ELECTRON_DIR + "/") or (p.rsplit("/", 1)[-1] == "electron.exe" and title.startswith("Riya"))
 
 
+def clean_title(title: str) -> str:
+    """A window title safe to encode: lone surrogates become U+FFFD, emoji stay."""
+    return title.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
 def clamp_rect(rect: Rect, bounds: Rect) -> Rect:
     """`rect` cut to `bounds`; empty (right <= left or bottom <= top) when they don't overlap."""
     return (max(rect[0], bounds[0]), max(rect[1], bounds[1]), min(rect[2], bounds[2]), min(rect[3], bounds[3]))
@@ -49,13 +54,13 @@ def _set_dpi() -> None:
     import ctypes
 
     try:
-        f = ctypes.windll.user32.SetProcessDpiAwarenessContext
+        f = ctypes.WinDLL("user32", use_last_error=True).SetProcessDpiAwarenessContext
         f.argtypes = [ctypes.c_void_p]
         if f(-4):  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             return
     except (AttributeError, OSError):
         pass
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    ctypes.WinDLL("shcore", use_last_error=True).SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
 
 
 def set_dpi_awareness() -> None:
@@ -78,8 +83,9 @@ class WindowsWindowSource:
         from ctypes import wintypes
 
         self._c, self._w = ctypes, wintypes
-        u, k = ctypes.windll.user32, ctypes.windll.kernel32
-        self._user32, self._kernel32, self._dwm = u, k, ctypes.windll.dwmapi
+        # private handles: argtypes on the shared ctypes.windll objects would be overwritten by other modules
+        u, k = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("kernel32", use_last_error=True)
+        self._user32, self._kernel32, self._dwm = u, k, ctypes.WinDLL("dwmapi", use_last_error=True)
 
         class MONITORINFO(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
@@ -87,6 +93,7 @@ class WindowsWindowSource:
 
         self._MONITORINFO = MONITORINFO
         u.GetForegroundWindow.restype = wintypes.HWND
+        u.GetWindowTextLengthW.argtypes = [wintypes.HWND]
         u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         u.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
@@ -127,17 +134,19 @@ class WindowsWindowSource:
             hwnd = u.GetForegroundWindow()
             if not hwnd:
                 return None
-            title = c.create_unicode_buffer(512)
-            u.GetWindowTextW(hwnd, title, 512)
+            n = min(max(u.GetWindowTextLengthW(hwnd), 0), 4096) + 1
+            buf = c.create_unicode_buffer(n)
+            u.GetWindowTextW(hwnd, buf, n)
+            title = clean_title(buf.value)
             path = self._image_path(hwnd)
             mon = self._MONITORINFO()
             mon.cbSize = c.sizeof(self._MONITORINFO)
             if not u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), c.byref(mon)):  # MONITOR_DEFAULTTONEAREST
                 return None
             m = mon.rcMonitor
-            return WindowInfo(int(hwnd), title.value, path.replace("\\", "/").rsplit("/", 1)[-1], self._frame(hwnd),
+            return WindowInfo(int(hwnd), title, path.replace("\\", "/").rsplit("/", 1)[-1], self._frame(hwnd),
                               (m.left, m.top, m.right, m.bottom), bool(u.IsIconic(hwnd)),
-                              is_riya_window(path, title.value))
+                              is_riya_window(path, title))
         except Exception:
             return None
 
@@ -167,6 +176,8 @@ def thumb(jpeg: bytes) -> bytes:
     """A 64x36 grayscale raw thumbnail, for telling whether the screen changed."""
     from PIL import Image
 
+    if not jpeg:
+        return b""
     with Image.open(io.BytesIO(jpeg)) as img:
         return img.convert("L").resize((64, 36)).tobytes()
 
