@@ -1,5 +1,5 @@
 from riya.core.clock import FakeClock
-from riya.core.feelings import EXPRESSIONS, MAX_TURN_DELTA, Feelings, missing_curve
+from riya.core.feelings import EXPRESSIONS, MAX_TURN_DELTA, MOOD_BASELINE, FeelingState, Feelings, missing_curve
 
 TRAITS = {"sweetness": 0.85, "teasing": 0.5, "clinginess": 0.8, "verbosity": 0.35}
 
@@ -142,3 +142,34 @@ def test_affect_decays_toward_mood_and_restore_decays_elapsed_time():
     g.tick(present=True)
     assert g.state.missing < 0.001
     assert abs(g.state.valence - g.state.mood) < 0.01
+
+
+def _negative_half_hour(step):
+    clock = FakeClock()
+    f = Feelings(clock, TRAITS)
+    for i in range(30 * 60 // step):
+        if i * step % 180 == 0:
+            f.on_user_text("you are useless and stupid")
+        clock.advance(step)
+        f.tick(present=True)
+    return f
+
+
+def test_sustained_negativity_lowers_mood():
+    f = _negative_half_hour(1)
+    assert f.state.mood < FeelingState().mood - 0.02
+
+
+def test_mood_is_independent_of_tick_size():
+    fine, coarse = _negative_half_hour(1).state.mood, _negative_half_hour(60).state.mood
+    assert abs(fine - coarse) <= max(0.005, 0.1 * abs(fine))
+
+
+def test_mood_returns_to_baseline_over_days():
+    clock = FakeClock()
+    f = Feelings(clock, TRAITS)
+    f.state.mood = f.state.valence = -0.5
+    gap = abs(f.state.mood - MOOD_BASELINE)
+    clock.advance(7 * 86400)
+    f.tick(present=False)
+    assert abs(f.state.mood - MOOD_BASELINE) <= 0.25 * gap
