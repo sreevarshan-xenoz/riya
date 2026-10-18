@@ -8,3 +8,4 @@ sounddevice
 pocket-tts
 moonshine-voice
 jsonschema
+pillow
