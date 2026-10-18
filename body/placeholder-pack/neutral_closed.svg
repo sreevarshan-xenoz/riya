@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="384" height="672" viewBox="0 0 384 672">
+<title>neutral closed</title>
+<path d="M 64 180 C 44 400 70 560 112 596 L 272 596 C 314 560 340 400 320 180 Z" fill="#aab3c7"/>
+<rect x="148" y="480" width="26" height="104" rx="12" fill="#ffe4d6"/><rect x="210" y="480" width="26" height="104" rx="12" fill="#ffe4d6"/>
+<ellipse cx="161" cy="590" rx="24" ry="12" fill="#3a3f55"/><ellipse cx="223" cy="590" rx="24" ry="12" fill="#3a3f55"/>
+<path d="M 126 322 Q 192 296 258 322 L 276 500 Q 192 520 108 500 Z" fill="#2f3b66"/>
+<path d="M 168 304 L 192 336 L 216 304 Z" fill="#fff"/>
+<path d="M 192 330 l -16 -10 v 22 z M 192 330 l 16 -10 v 22 z" fill="#d8243c"/>
+<rect x="178" y="286" width="28" height="30" fill="#ffe4d6"/>
+<ellipse cx="192" cy="185" rx="118" ry="112" fill="#ffe4d6"/>
+<path d="M 74 176 C 66 70 318 70 310 176 C 284 132 252 140 232 168 C 212 128 172 128 152 168 C 132 140 100 132 74 176 Z" fill="#cfd5e2" stroke="#aab3c7" stroke-width="3"/>
+<path d="M 74 176 C 60 220 66 260 82 300 C 70 250 82 210 100 190 Z M 310 176 C 324 220 318 260 302 300 C 314 250 302 210 284 190 Z" fill="#cfd5e2"/>
+<path d="M 276 74 l 34 -22 v 44 z M 276 74 l -34 -22 v 44 z" fill="#d8243c"/><circle cx="276" cy="74" r="9" fill="#a8182c"/>
+<ellipse cx="150" cy="205" rx="20" ry="24" fill="#fff" stroke="#3a3f55" stroke-width="3"/><ellipse cx="150" cy="205" rx="14" ry="19" fill="#4c8fe0"/><ellipse cx="150" cy="205" rx="7" ry="10" fill="#3a3f55"/><circle cx="144" cy="197" r="5" fill="#fff"/><ellipse cx="234" cy="205" rx="20" ry="24" fill="#fff" stroke="#3a3f55" stroke-width="3"/><ellipse cx="234" cy="205" rx="14" ry="19" fill="#4c8fe0"/><ellipse cx="234" cy="205" rx="7" ry="10" fill="#3a3f55"/><circle cx="228" cy="197" r="5" fill="#fff"/>
+
+<path d="M 182 258 Q 192 268 202 258" fill="none" stroke="#3a3f55" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="192" y="648" text-anchor="middle" font-family="sans-serif" font-size="22" fill="#3a3f55">neutral / closed</text>
+</svg>
