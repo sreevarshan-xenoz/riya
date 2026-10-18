@@ -30,6 +30,10 @@ def load_refs(folder: Path) -> list:
     return images
 
 
+def outfit_prompt(outfit_id: str) -> str:
+    return f"{BASE_PROMPT}, {OUTFITS[outfit_id]}"
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--refs", type=Path, required=True, help="folder of reference images")
@@ -51,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
         pipe = load_pipeline("txt2img", args.lora, args.lora_scale)
         for oid, seed, path in todo:
             image = pipe(
-                prompt=f"{BASE_PROMPT}, {OUTFITS[oid]}",
+                prompt=outfit_prompt(oid),
                 negative_prompt=NEGATIVE,
                 ip_adapter_image=[refs],  # one adapter, all reference images
                 width=SIZE[0],
