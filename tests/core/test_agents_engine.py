@@ -77,7 +77,9 @@ def test_urgent_while_focused_is_spoken_now_with_a_curious_face():
     assert 'riya abc123 is waiting for approval ("Bash: npm test")' in s and UNTRUSTED in s
     assert any(isinstance(m, ExpressionMsg) and m.name == "curious" for m in emitted)
     assert core.memory.list_facts() == []                    # transcript only, never a fact
-    assert any(t["text"] == "Heads up, riya wants to run npm test." for t in core.memory.unconsolidated())
+    rows = [r["text"] for r in core.memory.db.execute("select text from transcripts")]
+    assert "Heads up, riya wants to run npm test." in rows   # in the transcript view, never consolidated
+    assert core.memory.unconsolidated() == []
 
 
 def test_a_report_is_one_sentence():
@@ -569,3 +571,54 @@ def test_a_colab_failure_line_is_quoted_not_mapped():
     core.colab_inbox.put(("colab:w3/belief", "fail", "FAILED"))
     run_ticks(core, clock, 1)
     assert 'colab:w3/belief failed ("FAILED")' in situation(local)
+
+
+# --- consolidation never sees reports or games (final review I4) ---------------------------------------------------
+
+def test_consolidation_never_receives_reports_bubbles_or_game_turns():
+    import random
+
+    from riya.agents.hub import AgentEvent
+    from riya.core.consolidate import CONSOLIDATE_PROMPT
+
+    payload = "Migrated the auth DB to Postgres and dropped the legacy users table"
+    core, emitted, src, local, clock = focused(local_replies=("Your agent dropped the legacy users table!",))
+    core.agent_inbox.put(failure(error=payload))
+    assert run_ticks(core, clock, 1) == [["Your agent dropped the legacy users table!"]]
+    core._report_bubble([AgentEvent("finished", "colab:w3", "w3", payload)])
+    core.game_rng = random.Random(3)
+    local.replies = ["Hehe, nope~"]
+    list(core.reply("let's play 20 questions"))
+    secret = core.game.secret
+    list(core.reply("is it alive?"))
+    list(core.reply("i give up"))
+    assert core.game is None
+    local.replies = ["Aww, good luck with it!"]
+    list(core.reply("I have an exam on friday"))
+    clock.advance(601)
+    local.replies = ['{"facts": [], "threads": [], "episode_summary": "They have an exam."}']
+    core.consolidator.run()
+    [prompt] = [m[1]["content"] for m in local.calls if m[0]["content"] == CONSOLIDATE_PROMPT]
+    assert "exam on friday" in prompt and "good luck" in prompt     # ordinary chat is still consolidated
+    for text in ("legacy users", "Migrated", "Psst", "w3", "20 questions", "is it alive", "give up", "Hehe",
+                 secret, "It was"):
+        assert text not in prompt, text
+    assert core.memory.unconsolidated() == []
+    rows = " ".join(r["text"] for r in core.memory.db.execute("select text from transcripts"))
+    assert "Psst~ w3 finished." in rows and "is it alive?" in rows   # still in the transcript view
+
+
+def test_a_greeting_that_carries_reports_is_never_consolidated():
+    from riya.core.initiative import Action
+
+    core, emitted, src, local, clock = focused(local_replies=("Welcome back! Your agent dropped a table.",))
+    core.agent_inbox.put(stop(msg="dropped the legacy users table"))
+    run_ticks(core, clock, 1)
+    core._greet_reports, core._reports = list(core._reports.values()), {}
+    list(core.speak_first(Action("greet", True, None, "came back")))
+    assert "legacy users" in situation(local)
+    assert not any("dropped a table" in r["text"] for r in core.memory.unconsolidated())
+    core._greet_reports = []
+    local.replies = ["Hi again!"]
+    list(core.speak_first(Action("greet", True, None, "came back")))
+    assert [r["text"] for r in core.memory.unconsolidated()] == ["Hi again!"]   # a plain greeting still is
