@@ -179,13 +179,17 @@ class WindowsWindowSource:
             return None
 
     def above(self, hwnd: int) -> list[WindowInfo]:
-        u, out, h = self._user32, [], hwnd
+        """Fails closed: no next window counts as the top only when GetWindow set no error and both the target and
+        the last window walked still exist (a window destroyed mid-walk would hide everything above it)."""
+        u, c, out, prev = self._user32, self._c, [], hwnd
         for _ in range(MAX_Z_WALK):
-            h = u.GetWindow(h, 3)  # GW_HWNDPREV: the next window up, up to the topmost one
+            c.set_last_error(0)
+            h = u.GetWindow(prev, 3)  # GW_HWNDPREV: the next window up, up to the topmost one
             if not h:
-                if not u.IsWindow(hwnd):
-                    raise RuntimeError("the window is gone")
+                if c.get_last_error() or not u.IsWindow(hwnd) or not u.IsWindow(prev):
+                    raise RuntimeError("the z-order walk broke")
                 return out
+            prev = h
             if u.IsWindowVisible(h):  # a window it can't read still covers its frame
                 out.append(self._info(h) or WindowInfo(int(h), "", "", self._frame(h), self._frame(h), False, False,
                                                        cloaked=self._cloaked(h)))

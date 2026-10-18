@@ -232,8 +232,9 @@ def test_windows_desktop_and_taskbar_are_refused_as_no_window(cls):
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 def test_windows_info_reads_class_and_ex_style():
     w = WindowsWindowSource().foreground()
-    if w is not None:
-        assert isinstance(w.cls, str) and w.cls and isinstance(w.ex_style, int) and w.ex_style >= 0
+    if w is None:
+        pytest.skip("no foreground window to read")
+    assert isinstance(w.cls, str) and w.cls and isinstance(w.ex_style, int) and w.ex_style >= 0
 
 
 def test_fake_window_source_stacks():
@@ -255,3 +256,80 @@ def test_windows_above_walks_up_the_real_z_order():
         assert len(src.above(desk)) >= 1                   # at least the taskbar sits above the desktop
     with pytest.raises(RuntimeError):
         src.above(0x7FFFFFF0)                              # not a window: it can't tell
+
+
+class ChainUser32:
+    """A z-order for above(): prev maps a window to the one above it (0 at the top); gone windows aren't windows;
+    errors maps a window to the error GetWindow sets on it."""
+
+    def __init__(self, prev, gone=(), errors=None):
+        self.prev, self.gone, self.errors, self.walked = prev, set(gone), dict(errors or {}), []
+
+    def GetWindow(self, h, cmd):
+        assert cmd == 3
+        self.walked.append(h)
+        if h in self.gone or h in self.errors:
+            Errors.last = 1400 if h in self.gone else self.errors[h]
+            return 0
+        return self.prev.get(h, 0)
+
+    def IsWindow(self, h):
+        return h not in self.gone
+
+    def IsWindowVisible(self, h):
+        return True
+
+
+class Errors:
+    last = 0
+
+    @staticmethod
+    def set_last_error(v):
+        Errors.last = v
+
+    @staticmethod
+    def get_last_error():
+        return Errors.last
+
+
+def chain_source(user32):
+    """A WindowsWindowSource over a fake user32 (no real window is touched)."""
+    src = object.__new__(WindowsWindowSource)
+    src._user32, src._c = user32, Errors
+    src._info = lambda h: info(hwnd=h, title=f"w{h}", rect=(900, 0, 1000, 100))  # beside the target: not covering
+    return src
+
+
+def test_above_walks_to_the_top():
+    src = chain_source(ChainUser32({1: 2, 2: 3, 3: 0}))
+    assert [w.hwnd for w in src.above(1)] == [2, 3]
+
+
+@pytest.mark.parametrize("user32", [
+    ChainUser32({1: 2, 2: 3, 3: 4}, gone={3}),           # a window mid-walk is destroyed: the rest is unknown
+    ChainUser32({1: 2, 2: 0}, gone={1}),                 # the target itself is gone
+    ChainUser32({1: 2, 2: 3, 3: 0}, errors={2: 5}),      # GetWindow fails with any error
+])
+def test_above_fails_closed_when_the_walk_breaks(user32):
+    with pytest.raises(RuntimeError):
+        chain_source(user32).above(1)
+
+
+def test_a_walk_broken_mid_way_means_no_grab():
+    """The engine over the broken chain: the password manager higher up is never seen, so she must not look."""
+    from riya.core.clock import FakeClock
+    from tests.fakes import FakeModel, make_core
+
+    clock, grabs = FakeClock(), []
+    source = FakeWindowSource(info(rect=(0, 0, 800, 600)))
+    source.above = chain_source(ChainUser32({1: 2, 2: 3, 3: 4}, gone={3})).above
+    core, *_ = make_core(clock, vision=FakeModel("vision", ["{}"]), window_source=source,
+                         grab=lambda w: grabs.append(w) or b"")
+    for _ in range(10):
+        clock.advance(1)
+        core.tick()
+        if core._glance_thread is not None:
+            core._glance_thread.join(5)
+    assert grabs == []
+    list(core.reply("what's on my screen?"))
+    assert grabs == []
