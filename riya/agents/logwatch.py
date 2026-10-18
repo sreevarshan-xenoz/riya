@@ -10,6 +10,8 @@ import logging
 import os
 import re
 
+from riya.agents.hub import summarize
+
 log = logging.getLogger("riya.logwatch")
 
 PREFIX = "agents.logwatch."
@@ -160,7 +162,7 @@ class LogWatch:
                         for kind in ("lost", "fail", "done"):
                             rx = res[f"{kind}_re"]
                             if rx and rx.search(line):
-                                hits[kind] = line.strip()[:LINE_MAX]
+                                hits[kind] = summarize(line, LINE_MAX)   # redacted before the cut
                                 break
             grew = grew or size > st["size"]
             st["size"] = size

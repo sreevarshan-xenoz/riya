@@ -28,6 +28,10 @@ _SECRETS = [  # (pattern, replacement): a secret-looking value becomes ***, its 
 ]
 
 
+SUMMARY_SCAN = 4096  # visible chars summarize looks at (whitespace and control chars don't count)
+SUMMARY_MAX = 1000   # the longest summary: well under what SUMMARY_SCAN chars can shrink to when all redacted
+
+
 def redact(text: str) -> str:
     """Secret-looking values (API keys and tokens, Bearer/Authorization values, password=/token=/--password ...)
     replaced with ***."""
@@ -37,19 +41,25 @@ def redact(text: str) -> str:
 
 
 def summarize(text, n: int = 80) -> str:
-    """One clean line of at most n chars: control chars stripped, whitespace collapsed, secrets redacted (before the
-    cut), ellipsis on a cut."""
+    """One clean line of at most n chars (n at most 1000): control chars stripped, then secrets redacted, then
+    whitespace collapsed, then the cut (ellipsis on a cut). At most 4096 visible chars are looked at; a secret cut
+    there can't survive, since even fully redacted they hold far more than n chars."""
+    n = min(n, SUMMARY_MAX)
     if n <= 0:
         return ""
     s = text if isinstance(text, str) else str(text)
-    out = []
-    for ch in s[:4096]:
+    out, kept = [], 0
+    for ch in s:
         cat = unicodedata.category(ch)
         if ch.isspace() or cat in ("Zl", "Zp"):
-            out.append(" ")
+            if out and out[-1] != " ":  # a run of whitespace is one space either way: keeps a flood of it small
+                out.append(" ")
         elif cat[0] != "C":
+            if kept >= SUMMARY_SCAN:
+                break
             out.append(ch)
-    s = redact(" ".join("".join(out).split()))
+            kept += 1
+    s = " ".join(redact("".join(out)).split())
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
@@ -194,6 +204,8 @@ class AgentHub:
         a.tool_errors = 0
         if a.status in ("waiting", "unknown"):
             self._set(a, "busy", "")
+        elif a.detail.endswith(" tool errors in a row"):
+            a.detail = ""  # recovered: the errors aren't news anymore
 
     def _ev_PostToolUseFailure(self, a, p):
         """Stays busy, never an event: a red test run is routine. 3 in a row only changes the detail."""
@@ -225,7 +237,8 @@ class AgentHub:
         return []
 
     def snapshot(self) -> list[dict]:
-        """At most 20 items, attention first, newest first."""
-        items = sorted(self._agents.values(), key=lambda a: (not a.needs_attention, -a.last_event_at))
+        """At most 20 items, attention first, then the latest status change first (never the latest event: the
+        order mustn't move on every tool call)."""
+        items = sorted(self._agents.values(), key=lambda a: (not a.needs_attention, -a.since))
         return [{"id": a.id, "kind": a.kind, "name": a.name, "status": a.status, "since": a.since,
                  "detail": a.detail, "needs_attention": a.needs_attention} for a in items[:SNAPSHOT_MAX]]

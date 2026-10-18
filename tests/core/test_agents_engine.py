@@ -718,3 +718,54 @@ def test_the_runner_keeps_the_receiver_up_and_hands_it_to_the_core():
     assert made == [receiver] and receiver.started and core.receiver is receiver
     receiver.enqueue({"x": 1})
     assert core.agent_inbox.get_nowait() == {"x": 1}
+
+
+# --- re-review N1, N4 ------------------------------------------------------------------------------------------------
+
+def test_a_post_tool_use_flood_sends_no_agents_churn():
+    core, emitted, src, local, clock = focused()
+    core.agent_inbox.put(hook("UserPromptSubmit", prompt="go"))
+    run_ticks(core, clock, 1)
+    seen = core._hooks_seen_at
+    writes, real = [], core.kv.set
+
+    def counting(key, value):
+        if key == engine.HOOKS_SEEN_KEY:
+            writes.append(value)
+        real(key, value)
+
+    core.kv.set = counting
+    agents = lambda: [m for m in emitted if isinstance(m, AgentsMsg)]  # noqa: E731
+    before = len(agents())
+    for _ in range(30):
+        core.agent_inbox.put(hook("PostToolUse", tool_name="Read"))
+        run_ticks(core, clock, 1)
+    assert len(agents()) - before <= 1 and len(writes) <= 1
+    for _ in range(31):                                        # a minute on: refreshed (settings need 24 h only)
+        core.agent_inbox.put(hook("PostToolUse", tool_name="Read"))
+        run_ticks(core, clock, 1)
+    assert core._hooks_seen_at > seen and agents()[-1].hooks_seen_at == core._hooks_seen_at
+    assert len(agents()) - before <= 2 and len(writes) <= 2
+
+
+def test_the_first_hook_ever_shows_at_once():
+    core, emitted, src, local, clock = focused()
+    core.agent_inbox.put(hook("PostToolUse", tool_name="Read"))
+    run_ticks(core, clock, 1)
+    assert core._agents_sent.hooks_seen_at == clock.now() and core.kv.get(engine.HOOKS_SEEN_KEY) == clock.now()
+
+
+@pytest.mark.parametrize("patch", [{"quiet_hours": "11:00-13:00"}, {"may_start_conversations": False}])
+def test_restricted_came_back_never_speaks_the_reports_they_go_as_the_bubble(patch):
+    core, emitted, src, local, clock = away_with_news(["Welcome back!"])
+    core.handle(SetSettings(patch=patch))
+    spoken = run_ticks(core, clock, 2)
+    assert not any("waiting" in s for s in situations(local))
+    if patch.get("quiet_hours"):
+        assert spoken == [["Welcome back!"]]                  # the greeting itself is v0.1's (quiet hours don't gate it)
+    [say] = reports(emitted)
+    assert say.spoken is False and say.text == "Psst~ riya abc123 is waiting for approval."
+
+
+def situations(local):
+    return [p for call in local.calls for p in call[0]["content"].split("\n\n") if p.startswith("[Situation]")]
