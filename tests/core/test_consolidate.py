@@ -104,3 +104,80 @@ def test_remember_intent():
     assert remember_intent("remember I hate mornings") == "I hate mornings"
     assert remember_intent("do you remember me?") is None
     assert remember_intent("remember that I like tea?") is None
+
+
+# --- final review ---------------------------------------------------------------------------------------------------
+
+def test_threads_are_due_from_when_the_conversation_happened():
+    clock, mem = setup()
+    mem.append_transcript("user", "I have a calculus exam on Thursday")
+    said_at = clock.now()
+    clock.advance(2 * 86400)                       # consolidation only runs two days later
+    Consolidator(mem, lambda: FakeModel(replies=[json.dumps(PROPOSAL)]), clock).run()
+    assert mem.due_threads()[0].due_at == said_at + 20 * 3600
+
+
+def run_chunks(mem, clock):
+    model = FakeModel(replies=[json.dumps(PROPOSAL)])
+    c = Consolidator(mem, lambda: model, clock)
+    sizes = []
+    while mem.unconsolidated():
+        c.run()
+        sizes.append(len(model.calls[-1][1]["content"].splitlines()))
+    return sizes
+
+
+def test_consolidates_at_most_60_rows_per_run_oldest_first():
+    clock, mem = setup()
+    for i in range(70):
+        mem.append_transcript("user", f"line {i}")
+        clock.advance(10)
+    model = FakeModel(replies=[json.dumps(PROPOSAL)])
+    Consolidator(mem, lambda: model, clock).run()
+    sent = model.calls[0][1]["content"].splitlines()
+    assert len(sent) == 60 and sent[0] == "user: line 0" and len(mem.unconsolidated()) == 10
+    clock2, mem2 = setup()
+    for i in range(70):
+        mem2.append_transcript("user", f"line {i}")
+    assert run_chunks(mem2, clock2) == [60, 10]
+
+
+def test_consolidation_chunks_split_at_long_gaps_and_8000_characters():
+    clock, mem = setup()
+    mem.append_transcript("user", "morning chat")
+    mem.append_transcript("assistant", "hi")
+    clock.advance(31 * 60)
+    mem.append_transcript("user", "evening chat")
+    assert run_chunks(mem, clock) == [2, 1]
+    clock, mem = setup()
+    for _ in range(5):
+        mem.append_transcript("user", "x" * 3000)
+    assert run_chunks(mem, clock) == [2, 2, 1]
+
+
+def test_a_chunk_that_fails_three_times_becomes_a_minimal_episode():
+    from datetime import datetime
+    clock, mem = setup()
+    mem.append_transcript("user", "something the model chokes on")
+    c = Consolidator(mem, lambda: FakeModel(replies=["not json"]), clock)
+    c.run()
+    c.model_getter = lambda: FakeModel(fail=ModelUnavailable("down"))
+    c.run()
+    assert mem.recent_episodes(5) == [] and len(mem.unconsolidated()) == 1
+    c.run()
+    (ep,) = mem.recent_episodes(5)
+    day = datetime.fromtimestamp(clock.now()).strftime("%Y-%m-%d")
+    assert ep.summary == f"Conversation on {day}: summary unavailable" and mem.unconsolidated() == []
+
+
+def test_a_success_resets_the_failure_count():
+    clock, mem = setup()
+    mem.append_transcript("user", "first")
+    c = Consolidator(mem, lambda: FakeModel(replies=["not json"]), clock)
+    c.run(); c.run()
+    c.model_getter = lambda: FakeModel(replies=[json.dumps(PROPOSAL)])
+    c.run()
+    mem.append_transcript("user", "second")
+    c.model_getter = lambda: FakeModel(replies=["not json"])
+    c.run()
+    assert len(mem.unconsolidated()) == 1
