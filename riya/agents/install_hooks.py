@@ -58,6 +58,21 @@ def _is_riya(h) -> bool:
     return isinstance(h, dict) and h.get("url") == HOOK_URL
 
 
+def riya_events(data: dict | None) -> list[str]:
+    """The EVENTS names (in EVENTS order) whose groups hold a Riya handler. Read-only; tolerates malformed settings."""
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return []
+    out = []
+    for event, _ in EVENTS:
+        groups = hooks.get(event)
+        if isinstance(groups, list) and any(
+                isinstance(g, dict) and isinstance(g.get("hooks"), list) and any(map(_is_riya, g["hooks"]))
+                for g in groups):
+            out.append(event)
+    return out
+
+
 def read_settings(path: Path) -> dict | None:
     """The parsed settings, or None when the file is missing. Raises SettingsError if unusable."""
     try:

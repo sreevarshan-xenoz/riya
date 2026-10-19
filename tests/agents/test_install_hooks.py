@@ -296,3 +296,17 @@ def test_group_without_hooks_list_is_left_alone_and_riya_group_added(env):
     assert load(env)["hooks"]["Stop"] == [odd, "weird", {"hooks": "nope"}, {"hooks": [HANDLER]}]
     assert run(env, "--remove") == 0
     assert load(env) == {"hooks": {"Stop": [odd, "weird", {"hooks": "nope"}]}}
+
+
+def test_riya_events():
+    assert ih.riya_events(None) == []
+    assert ih.riya_events({}) == []
+    data = {}
+    ih.merge(data)
+    assert ih.riya_events(data) == [event for event, _ in ih.EVENTS]
+    foreign = {"hooks": {"Stop": [{"hooks": [{"type": "http", "url": "http://example.com/hook"}]}],
+                         "SessionEnd": [{"hooks": [MINE]}]}}
+    assert ih.riya_events(foreign) == []
+    partial = {"hooks": {"SessionEnd": [{"hooks": [MINE, HANDLER]}], "Stop": [{"hooks": [HANDLER]}], "Other": [{"hooks": [HANDLER]}]}}
+    assert ih.riya_events(partial) == ["Stop", "SessionEnd"]  # EVENTS order; unknown events are not counted
+    assert ih.riya_events({"hooks": {"Stop": "junk", "SessionEnd": [None, {"hooks": "x"}]}}) == []  # malformed: no raise
