@@ -274,10 +274,12 @@ def test_read_local_adapter_other_shapes(tmp_path):
 
 
 def test_print_lora(tmp_path, adapter, capsys, monkeypatch):
-    def no_popen(*a, **k):
-        raise AssertionError("--print-lora must start nothing")
+    def no_server(*a, **k):
+        raise AssertionError("--print-lora must not even build a server")
 
-    monkeypatch.setattr(subprocess, "Popen", no_popen)
+    # RiyaServer's default popen is bound when the class is defined, so patching subprocess.Popen would guard nothing:
+    # the server can't be built at all, and nothing can launch.
+    monkeypatch.setattr(server, "RiyaServer", no_server)
     monkeypatch.setattr(server, "free_vram_mb", lambda: pytest.fail("no GPU probe"))
 
     def run(db):
@@ -402,3 +404,195 @@ def test_start_script_passes_the_adapter_through():
     for needle in ("--print-lora", '"--follow-settings"', '"--lora"', brain.DEFAULT_MODEL):
         assert needle in text
     assert "riya.server" in text and '"--model"' in text  # the no-adapter launch is unchanged
+
+
+# ---- fix round 1: snapshot, orphans, move through stop(), mid-move fallback, watch wiring ----
+
+class MutatingPopen(Popen):
+    """A popen that changes the adapter file while llama-server 'loads' it."""
+
+    def __init__(self, action, *procs):
+        super().__init__(*procs)
+        self.action = action
+
+    def __call__(self, cmd, **kw):
+        proc = super().__call__(cmd, **kw)
+        if len(self.cmds) == 1:
+            self.action()
+        return proc
+
+
+def test_an_adapter_that_vanishes_while_loading_falls_back_to_base(tmp_path, adapter):
+    srv, popen = make(tmp_path, MutatingPopen(adapter.unlink), lora=str(adapter))
+    srv.start()  # never a FileNotFoundError
+    assert len(popen.cmds) == 2 and lora_of(popen.cmds[1]) is None and srv.lora is None
+    assert srv.lora_failed == os.path.abspath(adapter) and slot_of(popen.cmds[1]).endswith("base")
+    assert popen.procs[0].calls[:2] == ["terminate", "wait"]
+
+
+def test_an_adapter_replaced_while_loading_falls_back_to_base(tmp_path, adapter):
+    srv, popen = make(tmp_path, MutatingPopen(lambda: os.utime(adapter, ns=(7, 7))), lora=str(adapter))
+    srv.start()
+    assert len(popen.cmds) == 2 and lora_of(popen.cmds[1]) is None and srv.lora_failed == os.path.abspath(adapter)
+
+
+def test_the_slot_dir_is_pinned_once_per_launch(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path, lora=str(adapter))
+    srv.start()
+    pinned = slot_of(popen.cmds[0])
+    assert srv.slot_dir == pinned and os.path.isdir(pinned)  # the dir the command named was the one created
+    stats = []
+    real = brain.slot_key
+    monkeypatch.setattr(server, "slot_key", lambda p: stats.append(p) or real(p))
+    assert srv.slot_dir == pinned and stats == []  # reading it does not stat the adapter again
+    adapter.unlink()
+    assert srv.slot_dir == pinned
+
+
+def test_a_stat_failure_never_escapes_as_an_oserror(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path, lora=str(adapter))
+
+    def vanished(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(server, "slot_key", lambda p: vanished(p) if p else "base")
+    srv.start()
+    assert lora_of(popen.cmds[0]) is None and srv.lora is None and srv.lora_failed == os.path.abspath(adapter)
+    srv.switch(str(adapter))  # the same through a switch
+    assert srv.lora is None and len(popen.cmds) == 2 and srv.lora_failed == os.path.abspath(adapter)
+
+
+def test_a_launch_that_never_gets_ready_is_stopped(tmp_path):
+    popen = Popen(None)
+    srv = RiyaServer("m", slot_dir=str(tmp_path / "s"), popen=popen, healthy=lambda port: False, ready_timeout_s=0)
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        srv.start()
+    assert popen.procs[0].calls[:2] == ["terminate", "wait"]  # alive but never ready: no orphan
+
+
+def test_a_failed_fallback_is_stopped_too(tmp_path, adapter):
+    popen = Popen(1, None)
+    srv = RiyaServer("m", slot_dir=str(tmp_path / "s"), popen=popen, healthy=lambda port: False, ready_timeout_s=0,
+                     lora=str(adapter))
+    with pytest.raises(RuntimeError):
+        srv.start()
+    assert len(popen.cmds) == 2 and popen.procs[1].calls[:2] == ["terminate", "wait"]
+
+
+def patched_main(monkeypatch, popen, **extra):
+    real_init = RiyaServer.__init__
+
+    def init(self, *a, **kw):
+        real_init(self, *a, **{**kw, "popen": popen, **extra})
+
+    monkeypatch.setattr(RiyaServer, "__init__", init)
+    monkeypatch.setattr(server, "free_vram_mb", lambda: 4000)
+
+
+def test_main_stops_a_launch_that_never_gets_ready(tmp_path, monkeypatch):
+    popen = Popen(None)
+    patched_main(monkeypatch, popen, healthy=lambda port: False, ready_timeout_s=0)
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        server.main(["--model", "m.gguf", "--db", str(tmp_path / "x.db")])
+    assert popen.procs[0].calls[:2] == ["terminate", "wait"]
+
+
+def test_move_stops_through_stop_and_kills_a_hung_server(tmp_path, monkeypatch):
+    srv, popen = make(tmp_path)
+    monkeypatch.setattr(srv, "_post", lambda path, body: {})
+    srv.start()
+    popen.procs[0].wait_raises = [subprocess.TimeoutExpired("llama-server", 30)]
+    srv.move(False)
+    assert popen.procs[0].calls == ["terminate", "wait", "kill", "wait"] and len(popen.cmds) == 2
+
+
+def test_a_fallback_in_the_middle_of_a_move_does_not_restore(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path, Popen(None, 1, None), lora=str(adapter))  # the CPU relaunch can't load the adapter
+    posts = []
+    monkeypatch.setattr(srv, "_post", lambda path, body: posts.append(path) or {})
+    srv.start()
+    srv.move(False)
+    assert srv.lora is None and srv.lora_failed == os.path.abspath(adapter) and len(popen.cmds) == 3
+    assert posts == ["/slots/0?action=save"]  # the base variant's slot dir never gets this conversation
+    assert lora_of(popen.cmds[2]) is None and popen.cmds[2][popen.cmds[2].index("-ngl") + 1] == "0"
+
+
+def test_a_failed_save_never_restores(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path, lora=str(adapter))
+    posts = []
+
+    def post(path, body):
+        posts.append(path)
+        if "save" in path:
+            raise OSError("down")
+        return {}
+
+    monkeypatch.setattr(srv, "_post", post)
+    srv.start()
+    srv.move(False)
+    assert posts == ["/slots/0?action=save"] and len(popen.cmds) == 2
+
+
+def test_switch_while_on_cpu_stays_on_cpu(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path)
+    monkeypatch.setattr(srv, "_post", lambda path, body: {})
+    srv.start(False)
+    srv.switch(str(adapter))
+    srv.move(True)
+    srv.move(False)
+    srv.switch(None)
+    assert [c[c.index("-ngl") + 1] for c in popen.cmds] == ["0", "0", "99", "0", "0"]
+    assert [lora_of(c) is not None for c in popen.cmds] == [False, True, True, True, False]
+    assert srv.on_gpu is False
+
+
+def test_switch_to_a_broken_adapter_after_a_working_one_ends_on_base(tmp_path, adapter, capsys):
+    broken = tmp_path / "broken.gguf"
+    broken.write_bytes(b"junk")
+    srv, popen = make(tmp_path, Popen(None, 1, None), lora=str(adapter))
+    srv.start()
+    assert srv.lora == os.path.abspath(adapter)
+    srv.switch(str(broken))
+    assert len(popen.cmds) == 3 and lora_of(popen.cmds[1]) == os.path.abspath(broken) and lora_of(popen.cmds[2]) is None
+    assert srv.lora is None and srv.lora_failed == os.path.abspath(broken) and srv.wanted == str(broken)  # not adapter
+    assert popen.procs[0].calls[:2] == ["terminate", "wait"] and popen.procs[1].calls[:2] == ["terminate", "wait"]
+    policy = GameModePolicy()
+    for _ in range(2):
+        srv.step(policy, lambda: str(broken), free_mb=lambda: 4000, now=lambda: 0.0)
+    assert len(popen.cmds) == 3  # and it isn't retried
+    assert "switched to the base model" in capsys.readouterr().out
+
+
+def test_watch_ticks_follow_the_setting(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path)
+    srv.start()
+    sleeps = []
+
+    def sleep(s):
+        sleeps.append(s)
+        if len(sleeps) >= 2:
+            srv.proc.exit_code = 1  # the server goes away: watch ends
+
+    monkeypatch.setattr(server.time, "sleep", sleep)
+    monkeypatch.setattr(server, "free_vram_mb", lambda: 4000)
+    srv.watch(GameModePolicy(), every_s=3.0, desired=lambda: str(adapter))
+    assert sleeps == [3.0, 3.0] and len(popen.cmds) == 2 and lora_of(popen.cmds[1]) == os.path.abspath(adapter)
+
+
+def test_main_watches_the_setting_through_real_ticks(tmp_path, adapter, monkeypatch):
+    db = settings_db(tmp_path / "w.db")  # nothing chosen yet
+    popen = Popen(None)
+    patched_main(monkeypatch, popen, healthy=lambda port: True)
+    ticks = []
+
+    def sleep(s):
+        ticks.append(s)
+        if len(ticks) == 1:  # the user picks Riya v1 in the settings (written by the "core", not by the wrapper)
+            settings_db(db, local_adapter=str(adapter))
+        else:
+            popen.procs[-1].exit_code = 1
+
+    monkeypatch.setattr(server.time, "sleep", sleep)
+    assert server.main(["--model", "m.gguf", "--follow-settings", "--db", str(db)]) == 0
+    assert ticks == [3.0, 3.0]
+    assert len(popen.cmds) == 2 and lora_of(popen.cmds[0]) is None and lora_of(popen.cmds[1]) == os.path.abspath(adapter)

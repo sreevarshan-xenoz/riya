@@ -66,11 +66,31 @@ class RiyaServer:
         self.fallback_to_base, self.popen, self.ready_timeout_s = fallback_to_base, popen, ready_timeout_s
         self.healthy = healthy or self._health_ok
         self.proc, self.on_gpu, self.lock = None, True, threading.Lock()
+        self._pinned: str | None = None  # the slot dir of the variant launched last
+        self._key = "base"
 
     @property
     def slot_dir(self) -> str:
-        """One slot-cache directory per variant (the base model, or one adapter file as it is now)."""
-        return os.path.join(self.slot_root, slot_key(self.lora))
+        """One slot-cache directory per variant (the base model, or one adapter file as it was when launched)."""
+        if self._pinned:
+            return self._pinned
+        try:
+            return os.path.join(self.slot_root, slot_key(self.lora))
+        except OSError:  # the adapter vanished: _pin will serve base
+            return os.path.join(self.slot_root, slot_key(None))
+
+    def _pin(self):
+        """Fix this launch's variant and slot dir once, so nothing stats the adapter again while it launches. An
+        adapter that vanished since we looked means the base model, never an exception."""
+        key = "base"
+        if self.lora:
+            try:
+                if not os.path.isfile(self.lora):
+                    raise FileNotFoundError(self.lora)
+                key = slot_key(self.lora)
+            except OSError:
+                self.lora_failed, self.lora = self.lora, None
+        self._pinned, self._key = os.path.join(self.slot_root, key), key
 
     def _cmd(self, gpu):
         # -np 1: one conversation slot; KV cache quantised; prompt cache keeps follow-up turns fast.
@@ -105,36 +125,49 @@ class RiyaServer:
             time.sleep(0.25)
 
     def _launch(self, gpu):
-        os.makedirs(self.slot_dir, exist_ok=True)
+        self._pin()
+        os.makedirs(self._pinned, exist_ok=True)
         self.proc = self.popen(self._cmd(gpu), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.on_gpu = gpu
         self._wait_ready()
+        if self.lora:  # the file was replaced or removed while the server loaded it: it isn't the pinned variant
+            try:
+                same = slot_key(self.lora) == self._key
+            except OSError:
+                same = False
+            if not same:
+                raise RuntimeError("the adapter changed while llama-server was loading it")
 
     def start(self, gpu=True):
-        if self.lora and not os.path.isfile(self.lora):  # deleted since we looked
-            self.lora_failed, self.lora = self.lora, None
+        """Launch; an adapter that won't load means one relaunch on the base model. Any failure that is raised leaves
+        no llama-server running."""
         try:
             self._launch(gpu)
         except RuntimeError:
             if not (self.lora and self.fallback_to_base):
+                self.stop()
                 raise
             print(f"[riya] the adapter {self.lora} didn't load; serving the base model", flush=True)
             self.stop()
             self.lora_failed, self.lora = self.lora, None
-            self._launch(gpu)
+            try:
+                self._launch(gpu)
+            except RuntimeError:
+                self.stop()
+                raise
 
     def move(self, gpu):
         """Save the conversation slot, restart on GPU/CPU (same adapter), restore the slot."""
         with self.lock:
+            before = self._pinned
             try:
                 self._post("/slots/0?action=save", {"filename": "riya.bin"})
                 saved = True
             except Exception:
                 saved = False
-            self.proc.terminate()
-            self.proc.wait(timeout=30)
+            self.stop()
             self.start(gpu)
-            if saved:
+            if saved and self._pinned == before:  # another variant (a fallback to base) never restores this slot
                 try:
                     self._post("/slots/0?action=restore", {"filename": "riya.bin"})
                 except Exception:
@@ -155,7 +188,7 @@ class RiyaServer:
         print("[riya] switched to Riya v1" if self.lora else "[riya] switched to the base model", flush=True)
 
     def step(self, policy: GameModePolicy, desired: Callable[[], str | None] | None = None,
-             free_mb: Callable[[], int] = free_vram_mb, now: Callable[[], float] = time.time) -> None:
+             free_mb: Callable[[], int] | None = None, now: Callable[[], float] = time.time) -> None:
         """One watch tick: follow the wanted adapter (a failed read skips the switch this tick), then game mode."""
         if desired is not None:
             try:
@@ -165,7 +198,7 @@ class RiyaServer:
             else:
                 if value != self.wanted:
                     self.switch(value)
-        action = policy.update(free_mb(), now())
+        action = policy.update((free_mb or free_vram_mb)(), now())
         if action:
             self.move(gpu=action == "to_gpu")
 
@@ -194,7 +227,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--high_mb", type=int, default=2500, help="return to GPU when free VRAM stays above this")
     p.add_argument("--lora", help="her fine-tuned adapter (a .gguf LoRA file)")
     p.add_argument("--follow-settings", action="store_true",
-                   help="every 3 s read the local_adapter setting (read-only) and switch to it")
+                   help="every 3 s read the local_adapter setting (read-only) and switch to it (an unset setting "
+                        "means the base model, even with --lora)")
     p.add_argument("--db", default=str(brain.default_db()), help="the settings database for --follow-settings")
     p.add_argument("--print-lora", action="store_true",
                    help="print the adapter named in the settings if its file exists, then exit; starts nothing")
@@ -223,12 +257,12 @@ def main(argv: list[str] | None = None) -> int:
     srv = RiyaServer(a.model, a.port, a.ctx, a.threads, lora=wanted)
     if wanted and not srv.lora:
         print(f"[riya] the adapter {wanted} was not found; serving the base model", flush=True)
-    srv.start(gpu=free_vram_mb() >= a.high_mb)
-    policy = GameModePolicy(a.low_mb, a.high_mb)
-    policy.on_gpu = srv.on_gpu
-    print(f"[riya] serving on :{a.port} ({'GPU' if srv.on_gpu else 'CPU'}, {'Riya v1' if srv.lora else 'base model'})",
-          flush=True)
     try:
+        srv.start(gpu=free_vram_mb() >= a.high_mb)
+        policy = GameModePolicy(a.low_mb, a.high_mb)
+        policy.on_gpu = srv.on_gpu
+        print(f"[riya] serving on :{a.port} ({'GPU' if srv.on_gpu else 'CPU'}, "
+              f"{'Riya v1' if srv.lora else 'base model'})", flush=True)
         srv.watch(policy, desired=setting if a.follow_settings else None)
     finally:
         srv.stop()
