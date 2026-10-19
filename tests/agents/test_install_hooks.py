@@ -1,3 +1,4 @@
+import codecs
 import json
 from types import SimpleNamespace
 
@@ -310,3 +311,17 @@ def test_riya_events():
     partial = {"hooks": {"SessionEnd": [{"hooks": [MINE, HANDLER]}], "Stop": [{"hooks": [HANDLER]}], "Other": [{"hooks": [HANDLER]}]}}
     assert ih.riya_events(partial) == ["Stop", "SessionEnd"]  # EVENTS order; unknown events are not counted
     assert ih.riya_events({"hooks": {"Stop": "junk", "SessionEnd": [None, {"hooks": "x"}]}}) == []  # malformed: no raise
+
+
+def test_riya_events_over_read_settings_shapes(tmp_path):
+    p = tmp_path / "settings.json"
+    ih.merge(d := {})
+    p.write_bytes(codecs.BOM_UTF8 + json.dumps(d).encode())  # a BOM-prefixed file
+    assert ih.riya_events(ih.read_settings(p)) == [e for e, _ in ih.EVENTS]
+    p.write_text("[1, 2]")  # a top-level array
+    with pytest.raises(ih.SettingsError):
+        ih.read_settings(p)
+    p.write_text("[" * 200_000)  # deep nesting: json.loads raises RecursionError, which must not escape
+    with pytest.raises(ih.SettingsError):
+        ih.read_settings(p)
+    assert p.read_text() == "[" * 200_000
