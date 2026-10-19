@@ -76,3 +76,25 @@ python -m jarvis.voice.synth_prompts --n 20000  # teacher requests -> data/voice
   the prompt prefix for assistant-only loss.
 - `synth_prompts.py` + `persona.md`: sampled affect vectors (uniform + extremes) rendered to words
   ("fairly anxious, running low on energy, very curious") and paired with user turns, plus the Jarvis persona sheet.
+
+## Setting Riya up
+
+Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
+
+- **Welcome.** On a new install she opens a short welcome in her own voice: your name, an optional Gemini key, her
+  voice, how she shows up, her eyes, and your agents. Every step is skippable, and Settings opens it again any time.
+- **Settings → Health.** One row per thing (local and online brain, voice, mic, look, eyes, Claude Code, Colab logs,
+  memory, start with Windows), each with at most one fix button. Anything that reaches outside Riya (a key test, the
+  eye test, Connect or Disconnect Claude Code) first shows exactly what it will do and runs only on your Yes.
+- **Where the key lives.** A key pasted in the welcome or in Health is saved to `%LOCALAPPDATA%\Riya\secrets.env`,
+  never in the repo. A key in the repo `.env` still works, but the pasted key wins; Remove in Health only removes the
+  pasted one. The key is only ever shown masked (`••••1a2b`).
+- **Connect Claude Code** merges Riya's hooks into `~/.claude/settings.json` (backed up first, nothing else changed)
+  and sets the `RIYA_HOOK_TOKEN` user variable. Restart Claude Code (and open a new terminal) afterwards. If your
+  Claude Code settings block hooks (`disableAllHooks`, or allow-lists without Riya's entry), Health says so; Riya never
+  edits those keys. The CLI does the same: `python -m riya.agents.install_hooks --print | --apply | --remove`.
+- **A read-only check** of a running core's Health table, which never presses a button or changes anything:
+
+  ```
+  python -m evaluation.health_check
+  ```
