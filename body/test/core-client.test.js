@@ -112,14 +112,27 @@ test("fixtures match the committed protocol schema", () => {
   }
 });
 
+/** Every string in a parsed fixture, keys and values, at any depth. */
+function* allStrings(x) {
+  if (typeof x === "string") yield x;
+  else if (Array.isArray(x)) for (const v of x) yield* allStrings(v);
+  else if (x && typeof x === "object") for (const [k, v] of Object.entries(x)) { yield k; yield* allStrings(v); }
+}
+
 test("no fixture carries a key", () => {
   const dir = path.join(__dirname, "fixtures");
+  const keyShaped = (t) => /AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}/.test(t)
+    || t.split(/\s+/).some((word) => word.length >= 24 && /^[A-Za-z0-9_-]+$/.test(word) && /\d/.test(word) && /[A-Za-z]/.test(word));
   for (const n of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
     const text = fs.readFileSync(path.join(dir, n), "utf8");
     const obj = JSON.parse(text);
     assert.ok(!(obj.type === "setup_request" && obj.action === "online_key_set"), n);
     assert.ok(!text.includes("online_key_set"), n);
+    for (const t of allStrings(obj)) assert.ok(!keyShaped(t), `${n} holds a key-shaped string`);
   }
+  assert.ok(keyShaped("x AIzaSyDUMMYDUMMYDUMMY1234 y") && keyShaped("w sk-abcdefghijklmnop"), "the scan catches what it should");
+  assert.ok(keyShaped("ab12cd34ef56gh78ij90kl12mn34"), "and a long mixed token");
+  assert.ok(!keyShaped("Key ••••1a2b saved in Riya"), "but not the mask");
 });
 
 test("confirm_done validates for all seven outcomes, and an unknown one is refused", () => {
