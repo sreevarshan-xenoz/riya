@@ -27,6 +27,7 @@ from riya.core.hands import online as hands_online
 from riya.core.hands.intent import is_forbidden, match
 from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
 from riya.core.hands.records import HandsDB
+from riya.core.hands.reminders import delivery, gap_ok, reminder_line
 from riya.core.hands.tools import REGISTRY, TIERS, Call, ToolCtx, ToolResult, _q, validate_call
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
@@ -35,8 +36,8 @@ from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
                               build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
-                              hands_situation, remember_situation, report_bubble, report_line, report_situation,
-                              tool_turn)
+                              hands_situation, remember_situation, reminders_block, report_bubble, report_line,
+                              report_situation, tool_turn)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
                                 Confirm, ConfirmDone, ConfirmRequest, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
                                 EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
@@ -152,10 +153,11 @@ def _key(info: WindowInfo) -> tuple[int, str]:
 
 
 class Utterance:
-    """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud."""
+    """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud.
+    on_close runs once on close(), even for one closed before its first step (it releases what tick claimed)."""
 
-    def __init__(self, sentences: Iterator[str], spoken: bool):
-        self._sentences, self.spoken = sentences, spoken
+    def __init__(self, sentences: Iterator[str], spoken: bool, on_close: Callable[[], None] | None = None):
+        self._sentences, self.spoken, self._on_close = sentences, spoken, on_close
 
     def __iter__(self) -> "Utterance":
         return self
@@ -164,7 +166,12 @@ class Utterance:
         return next(self._sentences)
 
     def close(self) -> None:
-        self._sentences.close()
+        try:
+            self._sentences.close()
+        finally:
+            done, self._on_close = self._on_close, None
+            if done is not None:
+                done()
 
 
 class RiyaCore:
@@ -193,8 +200,13 @@ class RiyaCore:
         # them and the command worker's start; it's taken after the core lock and before _eyes_lock and memory
         self._hands_lock = threading.RLock()
         self.confirms = Confirmations(clock)
-        self._results: queue.SimpleQueue = queue.SimpleQueue()  # (summary, ToolResult) for tick to say (Task 8)
+        self._results: queue.SimpleQueue = queue.SimpleQueue()  # (summary, ToolResult): _results_step says them
         self._command_thread: threading.Thread | None = None  # the riya-command worker: one command at a time
+        # reminder ids an Utterance tick returned is about to say (skipped until it ends), and the ones the came-back
+        # greeting about to be said carries in its tail; both under _hands_lock
+        self._reminding: set[int] = set()
+        self._greet_reminders: list = []
+        self._last_remind_at: float | None = None  # the last spoken reminder line (REMIND_GAP_S apart)
         traits, saved = load_traits(), self.kv.get("feelings")
         self.feelings = Feelings.from_dict(saved, clock, traits) if saved else Feelings(clock, traits)
         self.presence = Presence(idle_source, clock, self.kv)
@@ -370,17 +382,33 @@ class RiyaCore:
         return saved
 
     def speak_first(self, action: Action) -> Iterator[str]:
+        """The greeting. Reminders that fell due while they were away (_greet_reminders) are its templated tail, said
+        even when the model fails, and marked fired once it went out (due() and mark_fired() both here, under the
+        core lock); the claim on them ends with the greeting."""
         with self._lock:
-            reports, self._greet_reports = self._greet_reports, []
-            situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
-            if reports:  # what her agents did while they were away
-                situation += " " + greeting_reports([ev for ev, _ in reports])
-            said: list[str] = []
-            yield from self._counted(self._speak(
-                "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
-                threads=_threads(action), after=lambda outcome: self._greeted(action, outcome, reports, bool(said)),
-                consolidate=not reports),
-                said)
+            with self._hands_lock:
+                greet, self._greet_reminders = self._greet_reminders, []
+            ids = {r.id for r in greet}
+            try:
+                reports, self._greet_reports = self._greet_reports, []
+                situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
+                if reports:  # what her agents did while they were away
+                    situation += " " + greeting_reports([ev for ev, _ in reports])
+                now = self.clock.now()
+                due = [r for r in self.hands.due(now) if r.id in ids] if ids else []  # not cancelled meanwhile
+                tail = reminder_line(due, now, self.tz) or None
+                said: list[str] = []
+
+                def after(outcome: str) -> None:
+                    mine = [x for x in said if x != tail]  # the reminder tail isn't the greeting itself
+                    self._greeted(action, outcome if mine or not tail else "failed", reports, bool(mine))
+                    if due:
+                        self._fire([r.id for r in due], self.clock.now())
+                yield from self._counted(self._speak(
+                    "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
+                    threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail), said)
+            finally:
+                self._release(ids)
 
     @staticmethod
     def _counted(sentences: Iterator[str], said: list[str]) -> Iterator[str]:
@@ -451,11 +479,12 @@ class RiyaCore:
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
+            reminders = self._reminders_context()
 
             def build(persona: str, situation: str | None) -> list[dict]:
                 return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
-                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents)
+                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders)
 
             messages = build(self.personas[route], situation)
             if route == "online":
@@ -654,7 +683,8 @@ class RiyaCore:
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=situation,
-                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context())
+                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context(),
+                                      reminders=self._reminders_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip())
         except Exception:
@@ -769,7 +799,7 @@ class RiyaCore:
             yield from self._run_call(text, checked, summary)
             return
         gaming = self.presence.state == "gaming"
-        if gaming and TIERS[checked.tool] >= 2:  # asked once the game ends (Task 8 raises it)
+        if gaming and TIERS[checked.tool] >= 2:  # asked once the game ends (_park_step raises it)
             with self._hands_lock:
                 self.confirms.park(checked, summary)
             yield from self._say_line(AFTER_GAME, user_text=text)
@@ -897,6 +927,10 @@ class RiyaCore:
         return RemindersMsg(items=[ReminderInfo(id=r.id, kind=r.kind, due_at=r.due_at, text=r.text)
                                    for r in self.hands.active()])
 
+    def _reminders_context(self) -> str | None:
+        """The `### Your reminders:` prompt line (the next 3, outside the memory block)."""
+        return reminders_block(self.hands.active(), self.clock.now(), self.tz)
+
     def _emit_reminders(self) -> None:
         try:
             self.emit(self._reminders_msg())
@@ -920,10 +954,16 @@ class RiyaCore:
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
         self._step("agents", lambda: self._agents_step(now))
+        self._step("confirm", self._confirm_step)
         action = self._step("greeting", lambda: self._greeting(events, now))
-        report = None if action else self._step("report", lambda: self._report_step(now))
-        if action is None and report is None:
-            self._step("bid", self._maybe_bid)
+        out = None
+        if action is None:  # a greeting tick runs none of these; otherwise the first that delivers ends the chain
+            for name, fn in (("reminders", self._reminder_step), ("results", self._results_step),
+                             ("park", self._park_step), ("report", self._report_step)):
+                if (out := self._step(name, lambda: fn(now))) is not None:
+                    break
+            else:
+                self._step("bid", self._maybe_bid)
         self._step("reports", self._save_reports)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
         self._step("game", lambda: self._end_idle_game(now))
@@ -935,8 +975,11 @@ class RiyaCore:
         self._step("state", lambda: self._maybe_state(now))
         self._step("expression", self._sync_expression)
         if action:
-            return Utterance(self.speak_first(action), action.spoken)
-        return report if isinstance(report, Utterance) else None
+            with self._hands_lock:  # the greeting's reminders are claimed until it ends
+                ids = {r.id for r in self._greet_reminders}
+                self._reminding |= ids
+            return Utterance(self.speak_first(action), action.spoken, on_close=lambda: self._release(ids))
+        return out if isinstance(out, Utterance) else None
 
     @staticmethod
     def _step(name: str, fn: Callable[[], object]):
@@ -995,6 +1038,7 @@ class RiyaCore:
             self.memory.purge_transcripts()
             self.memory.purge_glances()
             self.memory.resolve_stale_threads()
+            self.hands.purge(now)
 
     def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
@@ -1016,11 +1060,137 @@ class RiyaCore:
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
-            if not self._restricted(self.clock.now()):  # else they stay pending: _report_step's bubble
+            now = self.clock.now()
+            if not self._restricted(now):  # else they stay pending: the report and reminder bubbles
                 self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
                 if self._greet_reports:
-                    self._last_report_at = self.clock.now()
+                    self._last_report_at = now
+                with self._hands_lock:  # overdue reminders: the greeting's tail
+                    self._greet_reminders = [r for r in self.hands.due(now) if r.id not in self._reminding]
         return action
+
+    # ---- hands on the tick ----------------------------------------------------------------------------
+    def _confirm_step(self) -> None:
+        """A pending confirmation past its 60 s: confirm_done "expired" and the log (never an utterance)."""
+        with self._hands_lock:
+            p = self.confirms.expire()
+        if p is not None:
+            self._confirm_done(p, "expired")
+
+    def _release(self, ids) -> None:
+        """Ends tick's claim on reminder ids (and drops them from a greeting that never started)."""
+        with self._hands_lock:
+            self._reminding -= set(ids)
+            self._greet_reminders = [r for r in self._greet_reminders if r.id not in ids]
+
+    def _fire(self, ids, now: float) -> None:
+        self.hands.mark_fired(ids, now)
+        self._emit_reminders()
+
+    def _reminder_step(self, now: float) -> "Utterance | bool | None":
+        """Due reminders with manners, all merged into one line: spoken (focused, talking, break; at most one line
+        every REMIND_GAP_S), a bubble at once while gaming or restricted (quiet hours, may not start conversations),
+        and while away they wait for the came-back greeting. Never dropped: one is marked fired only once its line
+        went out. Ids claimed by an Utterance still to be said are skipped."""
+        with self._hands_lock:
+            claimed = set(self._reminding)
+        due = [r for r in self.hands.due(now) if r.id not in claimed]
+        if not due:
+            return None
+        how = delivery(self.presence.state, self._restricted(now))
+        if how == "wait":
+            return None
+        if how == "bubble":
+            line, uid = reminder_line(due, now, self.tz), uuid4().hex
+            self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
+            self.emit(SayEnd(utterance_id=uid))
+            self._fire([r.id for r in due], now)
+            self._finish_turn(None, line, consolidate=False)
+            return True
+        if not gap_ok(self._last_remind_at, now):
+            return None
+        ids = {r.id for r in due}
+        with self._hands_lock:
+            self._reminding |= ids
+        return Utterance(self._remind(ids), True, on_close=lambda: self._release(ids))
+
+    def _remind(self, ids: set[int]) -> Iterator[str]:
+        """The spoken reminder line (a template): due() is read again and mark_fired() called here, on this thread
+        under the core lock, so a reminder cancelled meanwhile isn't said and none is said twice."""
+        try:
+            with self._lock:
+                now = self.clock.now()
+                items = [r for r in self.hands.due(now) if r.id in ids]
+                if not items:
+                    return
+                line, uid = reminder_line(items, now, self.tz), uuid4().hex
+                try:
+                    self.emit(Say(utterance_id=uid, text=line, spoken=not self.settings.mute_voice, kind="report"))
+                    self.emit(SayEnd(utterance_id=uid))
+                finally:
+                    self._last_remind_at = now
+                    self._fire([r.id for r in items], now)
+                    self._release(ids)
+                try:
+                    self._finish_turn(None, line, consolidate=False)
+                except Exception:
+                    log.exception("couldn't record the reminder")
+                yield line
+        finally:
+            self._release(ids)
+
+    def _results_step(self, now: float) -> "Utterance | bool | None":
+        """A queued command or button result, one per tick, with the report manners (sharing REPORT_GAP_S with the
+        agent reports): it waits while they're away; while gaming or restricted it's the ToolResult.text bubble (no
+        model); otherwise she says it through the local model (the result text is the fallback)."""
+        if self._results.empty():
+            return None
+        how = delivery(self.presence.state, self._restricted(now))
+        if how == "wait" or (self._last_report_at is not None and 0 <= now - self._last_report_at < REPORT_GAP_S):
+            return None
+        summary, result = self._results.get_nowait()
+        self._last_report_at = now
+        if how == "bubble":
+            uid = uuid4().hex
+            self.emit(Say(utterance_id=uid, text=result.text, spoken=False, kind="report"))
+            self.emit(SayEnd(utterance_id=uid))
+            self.memory.append_transcript("assistant", result.text, consolidate=False)
+            self.turns = (self.turns + [{"role": "assistant", "content": tool_turn(result.text)}])[-KEEP_TURNS:]
+            self.last_turn_at = now
+            return True
+        started = {"yes": False}
+
+        def say() -> Iterator[str]:
+            started["yes"] = True
+            with self._lock:
+                yield from self._speak("report", user_text=None, query=summary, spoken=True, threads=[],
+                                       consolidate=False, shape="tool", situation=hands_situation(summary, result),
+                                       tail=result.text, tail_if_silent=True)
+
+        def unsaid() -> None:  # closed before it began: back in the queue for a later tick
+            if not started["yes"]:
+                self._results.put((summary, result))
+        return Utterance(say(), True, on_close=unsaid)
+
+    def _park_step(self, now: float) -> Utterance | None:
+        """A T2 call parked during a game: once they're neither gaming nor away it's asked (spoken, or a bubble in
+        quiet hours), unless it waited over 10 min (dropped, logged expired)."""
+        if self.presence.state in ("gaming", "away"):
+            return None
+        with self._hands_lock:
+            got = self.confirms.unpark()
+        if got is None:
+            return None
+        what, p = got
+        if what == "expired":
+            self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, "expired")
+            return None
+        spoken = not self._quiet(now)
+
+        def ask() -> Iterator[str]:
+            with self._lock:
+                yield from self._raise_confirm(p, spoken, kind="report")
+        return Utterance(ask(), spoken)
 
     # ---- agents -------------------------------------------------------------------------------------
     def _agents_step(self, now: float) -> None:
@@ -1426,9 +1596,15 @@ class RiyaCore:
         return SimpleNamespace(arousal=s.arousal, valence=s.valence), s.energy
 
     def hello_messages(self) -> list[BaseModel]:
+        """Everything a newly connected body needs: settings, state, agents, eyes, look, the reminders, the action
+        log and a confirmation still pending."""
+        with self._hands_lock:
+            p = self.confirms.pending
+        pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else [])]
+                *([self._look] if self._look else []), self._reminders_msg(), self._actions_msg(),
+                *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
     def handle(self, msg: BaseModel) -> None:

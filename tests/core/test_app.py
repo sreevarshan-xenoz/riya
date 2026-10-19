@@ -17,6 +17,15 @@ from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
 
 
+@pytest.fixture(autouse=True)
+def no_real_hands(monkeypatch):
+    """build_core gives the core WindowsEffects and UrlHttp: tests only ever get the fakes."""
+    from riya.core.hands.effects import FakeEffects
+    from riya.core.hands.net import FakeHttp
+    monkeypatch.setattr(runner, "WindowsEffects", FakeEffects)
+    monkeypatch.setattr(runner, "UrlHttp", FakeHttp)
+
+
 def client(replies=("Hi there.",), speak=None, delay=0.0):
     def factory(emit):
         core, _, _, local = make_core(local_replies=list(replies))
@@ -65,7 +74,7 @@ def test_typed_replies_go_through_the_speaker():
 
 def test_other_messages_do_not_wait_behind_a_slow_reply():
     with client(replies=("One two three four five.",), delay=0.1) as c, c.websocket_connect("/ws") as ws:
-        receive_until(ws, "eyes")  # the end of hello
+        receive_until(ws, "actions")  # the end of hello
         ws.send_json({"type": "user_text", "text": "tell me something"})
         ws.send_json({"type": "get_memories"})
         seen = receive_until(ws, "say_end")
@@ -74,7 +83,7 @@ def test_other_messages_do_not_wait_behind_a_slow_reply():
 
 def test_typed_replies_on_one_socket_keep_their_order():
     with client(replies=("First.", "Second."), delay=0.05) as c, c.websocket_connect("/ws") as ws:
-        receive_until(ws, "eyes")  # the end of hello
+        receive_until(ws, "actions")  # the end of hello
         ws.send_json({"type": "user_text", "text": "one"})
         ws.send_json({"type": "user_text", "text": "two"})
         receive_until(ws, "say_end")
@@ -89,7 +98,7 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "eyes") == ["hello", "settings", "state", "agents", "eyes"]
+        assert receive_until(ws, "actions") == ["hello", "settings", "state", "agents", "eyes", "reminders", "actions"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
@@ -100,7 +109,7 @@ def test_every_connection_gets_hub_broadcasts_and_disconnect_is_cleaned_up():
         hub = c.app.state.hub
         with c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
             for ws in (a, b):
-                receive_until(ws, "eyes")  # the end of hello
+                receive_until(ws, "actions")  # the end of hello
             hub.publish(ExpressionMsg(name="happy"))
             assert receive_until(a, "expression") == ["expression"]
             assert receive_until(b, "expression") == ["expression"]
