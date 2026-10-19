@@ -27,21 +27,39 @@ drive.mount("/content/drive")
 %cd /content/drive/MyDrive/jarvis/code
 ```
 
-Build llama.cpp (several minutes the first time; it also downloads candidate GGUFs). Skip this cell when
-`/content/bin/llama-server` already exists from an earlier session.
+Build llama.cpp. `setup_llamacpp` runs the build in the background (several minutes on a fresh session; it also
+downloads candidate GGUFs), so this is three cells. Colab wipes `/content` between sessions, so run them in every new
+session.
 
 ```python
 import os
 os.makedirs("/content/runs", exist_ok=True); os.makedirs("/content/bin", exist_ok=True)
 !python -m colab.setup_llamacpp
-# wait for BUILD_DONE and MODELS_DONE:  !tail -n 3 /content/runs/llamacpp.out
+```
+
+Wait for the build to finish. This cell blocks until `BUILD_DONE` and stops with the log if the build dies first:
+
+```python
+import subprocess, time
+log = "/content/runs/llamacpp.out"
+while "BUILD_DONE" not in open(log).read():
+    running = subprocess.run(["pgrep", "-f", "cmake --build"], capture_output=True).returncode == 0
+    if not running and "BUILD_DONE" not in open(log).read():
+        raise SystemExit("llama.cpp build stopped without BUILD_DONE. End of the log:\n" + open(log).read()[-2000:])
+    time.sleep(10)
+print("llama.cpp built")
+```
+
+Only then install the server binary:
+
+```python
 !cp /content/llama.cpp/build/bin/llama-server /content/bin/llama-server
 ```
 
 Then the training libraries (llama.cpp's LoRA converter needs `gguf`; nothing is quantised, so there is no bitsandbytes):
 
 ```python
-!pip install -q peft gguf sentencepiece huggingface_hub
+!pip install -q peft gguf sentencepiece huggingface_hub "transformers>=4.54"
 ```
 
 ## 3. Colab: run the teacher

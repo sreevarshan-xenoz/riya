@@ -222,3 +222,78 @@ def test_only_full_precision_repos_count_as_the_base():
     assert tr.plain_weights("huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated")
     for bad in ("mradermacher/Huihui-LFM2.5-1.2B-Instruct-abliterated-GGUF", "x/Huihui-LFM2.5-abliterated-MLX-4bit"):
         assert not tr.plain_weights(bad)
+
+
+def test_precision_follows_the_compute_capability_not_bf16_emulation():
+    assert tr.bf16_capable((7, 5)) is False  # a T4: torch.cuda.is_bf16_supported() says True there by emulation
+    assert tr.bf16_capable((7, 0)) is False
+    assert all(tr.bf16_capable(c) for c in ((8, 0), (8, 6), (8, 9), (9, 0)))
+    assert tr.train_settings(tr.bf16_capable((7, 5)))["dtype"] == "float16"
+    assert tr.train_settings(tr.bf16_capable((8, 0)))["dtype"] == "bfloat16"
+
+
+def test_resume_survives_a_broken_trailing_line(tmp_path, monkeypatch, capsys):
+    from riya.train import fmt
+
+    reqs = [{"id": f"r{i}", "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(4)]
+    req_path, out = tmp_path / "requests.jsonl", tmp_path / "teacher.jsonl"
+    req_path.write_text("".join(json.dumps(r) + "\n" for r in reqs), encoding="utf-8")
+    out.write_text(json.dumps({"id": "r0", "response": "a"}) + "\n" + json.dumps({"id": "r1", "response": "b"})
+                   + "\n" + '{"id": "r2", "respo', encoding="utf-8")  # the run was killed mid-write
+    rows, dropped = fmt.read_jsonl_checked(out)
+    assert [r["id"] for r in rows] == ["r0", "r1"] and dropped == 1
+    assert fmt.read_jsonl(out) == rows
+    assert "broken last line" in capsys.readouterr().err
+    monkeypatch.setattr(gen, "_post_chat", lambda url, body, timeout=300: "fresh")
+    monkeypatch.setattr(gen, "validate_request", lambda r: None)
+    assert gen.main(["--requests", str(req_path), "--out", str(out), "--url", "http://x:1"]) == 0
+    rows = fmt.read_jsonl(out)  # r2 and r3 were appended on clean lines
+    assert [(r["id"], r["response"]) for r in rows] == [("r0", "a"), ("r1", "b"), ("r2", "fresh"), ("r3", "fresh")]
+    assert out.read_text(encoding="utf-8").endswith("\n") and len(out.read_text(encoding="utf-8").splitlines()) == 4
+    # a valid last line that merely lacks its newline is fixed too, and a broken middle line still raises
+    out.write_text('{"id": "r0", "response": "a"}', encoding="utf-8")
+    assert gen.resume_ids(out) == {"r0"} and out.read_text(encoding="utf-8") == '{"id": "r0", "response": "a"}\n'
+    out.write_text('{"id": "r0"\n{"id": "r1", "response": "b"}\n', encoding="utf-8")
+    with __import__("pytest").raises(json.JSONDecodeError):
+        fmt.read_jsonl(out)
+    assert gen.resume_ids(tmp_path / "missing.jsonl") == set()
+
+
+def test_an_interrupt_drops_the_queue_and_keeps_the_flushed_rows(tmp_path, monkeypatch):
+    import time
+
+    shutdowns = []
+
+    class Spy(gen.ThreadPoolExecutor):
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            shutdowns.append((wait, cancel_futures))
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(gen, "ThreadPoolExecutor", Spy)
+    out = tmp_path / "t.jsonl"
+    reqs = [{"id": f"r{i}", "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(6)]
+    calls = []
+
+    def chat(body):
+        calls.append(body)
+        if len(calls) == 3:  # Ctrl-C arrives once two rows are answered; each must already be on disk
+            for _ in range(200):
+                if out.exists() and len(out.read_text(encoding="utf-8").splitlines()) >= 2:
+                    break
+                time.sleep(0.01)
+            raise KeyboardInterrupt
+        if len(calls) > 3:
+            time.sleep(0.3)  # a slow teacher: the main thread has time to cancel the queue
+        return "ok"
+
+    with __import__("pytest").raises(KeyboardInterrupt):
+        gen.generate(reqs, out, chat, workers=1)
+    assert shutdowns and shutdowns[-1] == (False, True)
+    assert [json.loads(line)["id"] for line in out.read_text(encoding="utf-8").splitlines()] == ["r0", "r1"]
+    assert len(calls) < 6  # the queued requests were cancelled, not drained
+
+
+def test_filter_sft_reads_the_teacher_file_tolerantly():
+    from riya.train import filter_sft, fmt
+
+    assert filter_sft.read_jsonl is fmt.read_jsonl  # the one loader that skips a cut-off last line
