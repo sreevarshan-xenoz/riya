@@ -4,6 +4,7 @@ Runs that need timers, reminders and notes (Task 5) raise NotImplementedError he
 """
 from __future__ import annotations
 
+import logging
 import math
 import unicodedata
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ TIERS: dict[str, int] = {
 }
 DEFAULT_OFF = frozenset({"run_command", "write_file"})
 MAX_TIMER_S = 24 * 3600
+log = logging.getLogger(__name__)
 WRITE_MAX_CHARS = 65_536
 WRITE_MAX_BYTES = 65_536
 WRITE_TRIES = 5
@@ -95,7 +97,8 @@ def _effect(ctx: ToolCtx, name: str, *a) -> bool:
     try:
         getattr(ctx.effects, name)(*a)
         return True
-    except Exception:
+    except Exception as e:
+        log.debug("effect %s failed: %s", name, type(e).__name__)
         return False
 
 
@@ -106,12 +109,11 @@ def _open_url(args: dict, ctx: ToolCtx) -> ToolResult:
 
 
 def _open_app(args: dict, ctx: ToolCtx) -> ToolResult:
-    app = _named(getattr(ctx.settings, "apps", None), args["name"])
-    if app is None or not isinstance(app.get("target"), str):
-        return ToolResult(False, f"{_q(args['name'], 40)} isn't in your apps list.")
-    if not _effect(ctx, "open_app", app["target"]):
-        return ToolResult(False, f"I couldn't open {_q(app['name'], 40)}.")
-    return ToolResult(True, f"Opened {_q(app['name'], 40)}.")
+    """Open the snapshot's target (captured from the apps list when she asked, not looked up again)."""
+    name = _q(args["name"], 40)
+    if not isinstance(args.get("target"), str) or not _effect(ctx, "open_app", args["target"]):
+        return ToolResult(False, f"I couldn't open {name}.")
+    return ToolResult(True, f"Opened {name}.")
 
 
 _MEDIA = {"play_pause": "Toggled play/pause.", "next": "Skipped to the next track.",
@@ -167,10 +169,12 @@ def _write_file(args: dict, ctx: ToolCtx) -> ToolResult:
             if path is None:
                 break
             try:
-                with open(path, "xb") as f:
-                    f.write(data)
+                f = open(path, "xb")  # exclusive create: from here the file is ours
             except FileExistsError:
                 continue
+            try:
+                with f:
+                    f.write(data)
             except OSError:
                 path.unlink(missing_ok=True)
                 raise
@@ -289,7 +293,9 @@ def validate_call(call: Call, settings: Settings) -> Call | None:
         elif tool.name == "open_app":
             if (app := _named(getattr(settings, "apps", None), args["name"])) is None:
                 return None
-            args["name"] = app["name"]
+            if not isinstance(app.get("target"), str) or not app["target"].strip():
+                return None
+            args["name"], args["target"] = app["name"], app["target"]  # the target is captured, like a command's argv
         elif tool.name == "write_file":  # the confirmed name is the written name
             args["filename"] = safe_filename(args["filename"])
             if args["filename"] is None:

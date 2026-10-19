@@ -73,8 +73,8 @@ class FakeHttp:
 
 
 def _num(v, lo: float, hi: float) -> float:
-    """v as a finite float within [lo, hi], else ValueError (bools and strings that aren't numbers are refused)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+    """v as a finite float within [lo, hi], else an error (only real JSON numbers are accepted, never bools or strings)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise TypeError
     f = float(v)
     if not math.isfinite(f) or not lo <= f <= hi:
@@ -91,7 +91,7 @@ def weather(http, place: str) -> ToolResult:
         except (KeyError, IndexError):
             return ToolResult(False, f"I couldn't find a place called {shown}.")
         lat, lon = _num(hit["latitude"], -90, 90), _num(hit["longitude"], -180, 180)
-        name = summarize(hit.get("name") or place, 40) or shown
+        name = summarize(hit["name"] if isinstance(hit.get("name"), str) else place, 40) or shown
         body = http.get_json(FORECAST_URL, {
             "latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}", "current": "temperature_2m,weather_code",
             "daily": "temperature_2m_max,temperature_2m_min", "timezone": "auto", "forecast_days": "1"}, NET_TIMEOUT_S)

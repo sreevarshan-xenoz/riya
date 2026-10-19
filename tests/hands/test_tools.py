@@ -99,8 +99,10 @@ def test_open_url_is_normalized_or_refused(s):
 
 
 def test_open_app_only_known_names(s):
-    assert v(s, "open_app", name="Notepad").args == {"name": "Notepad"}
-    assert v(s, "open_app", name="notepad").args == {"name": "Notepad"}  # normalized to the stored spelling
+    assert v(s, "open_app", name="Notepad").args == {"name": "Notepad", "target": "notepad.exe"}
+    assert v(s, "open_app", name="notepad").args["name"] == "Notepad"  # normalized to the stored spelling
+    for bad in (None, "", "  ", 5):
+        assert v(Settings(apps=[{"name": "X", "target": bad}]), "open_app", name="X") is None
     assert v(s, "open_app", name="calc") is None
     assert v(Settings(), "open_app", name="Notepad") is None
 

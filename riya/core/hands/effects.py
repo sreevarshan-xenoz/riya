@@ -6,11 +6,13 @@ Windows DLLs are only touched inside the methods. Tool output is untrusted: `out
 from __future__ import annotations
 
 import ctypes
-import locale
 import os
 import re
 import subprocess
+import tempfile
+import time
 import unicodedata
+from pathlib import Path
 from ctypes import wintypes
 from typing import Protocol
 
@@ -26,7 +28,10 @@ _TAIL_SCAN = 200_000  # the most output chars looked at before the cut
 KEYS = {"play_pause": 0xB3, "next": 0xB0, "previous": 0xB1, "volume_up": 0xAF, "volume_down": 0xAE, "mute": 0xAD}
 MAX_PRESSES = 20
 INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 1, 0x0001, 0x0002
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP = 0x08000000, 0x00000200
+OUTPUT_READ_MAX = 64 * 1024  # the most command output ever read back (the end of it)
+KILL_WAIT_S = 5
+CLIPBOARD_TRIES = 5
 CF_UNICODETEXT, GMEM_MOVEABLE = 13, 0x0002
 ULONG_PTR = ctypes.c_size_t
 
@@ -89,13 +94,41 @@ class Effects(Protocol):
     def run(self, argv: list[str], cwd: str | None, timeout_s: float) -> tuple[int | None, str]: ...
 
 
+def _oem_codec() -> str:
+    """The console's OEM code page (what redirected console tools mostly write), e.g. "cp437"."""
+    try:
+        return f"cp{ctypes.WinDLL('kernel32').GetOEMCP()}"
+    except (OSError, AttributeError):
+        return "cp437"
+
+
 def _decode(b) -> str:
+    """Command output as text: the OEM code page first, else UTF-8 with replacement characters."""
     if isinstance(b, str):
         return b
     try:
-        return (b or b"").decode("utf-8")
-    except UnicodeDecodeError:
-        return b.decode(locale.getpreferredencoding(False) or "utf-8", "replace")
+        return b.decode(_oem_codec())
+    except (UnicodeDecodeError, LookupError):
+        return b.decode("utf-8", "replace")
+
+
+def _kill_tree(p) -> None:
+    """Kill the child Riya spawned and everything it started (taskkill /T /F on that pid, fixed argv, no shell)."""
+    exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+    try:
+        subprocess.run([str(exe), "/T", "/F", "/PID", str(p.pid)], shell=False, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=KILL_WAIT_S * 2,
+                       creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        p.kill()  # at least the child itself, if taskkill failed
+    except OSError:
+        pass
+    try:
+        p.wait(timeout=KILL_WAIT_S)
+    except subprocess.SubprocessError:
+        pass
 
 
 class WindowsEffects:
@@ -119,15 +152,21 @@ class WindowsEffects:
         text = re.sub(r"\r?\n", "\r\n", text.replace("\x00", ""))
         data = text.encode("utf-16-le", "replace") + b"\x00\x00"
         u, k = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("kernel32", use_last_error=True)
+        u.GetDesktopWindow.restype = wintypes.HWND  # an owner window: with a NULL owner SetClipboardData can fail
         u.OpenClipboard.argtypes, u.OpenClipboard.restype = (wintypes.HWND,), wintypes.BOOL
         u.SetClipboardData.argtypes, u.SetClipboardData.restype = (wintypes.UINT, wintypes.HANDLE), wintypes.HANDLE
         k.GlobalAlloc.argtypes, k.GlobalAlloc.restype = (wintypes.UINT, ctypes.c_size_t), wintypes.HGLOBAL
         k.GlobalLock.argtypes, k.GlobalLock.restype = (wintypes.HGLOBAL,), wintypes.LPVOID
         k.GlobalUnlock.argtypes, k.GlobalFree.argtypes = (wintypes.HGLOBAL,), (wintypes.HGLOBAL,)
-        if not u.OpenClipboard(None):
+        for _ in range(CLIPBOARD_TRIES):  # another app may hold it for a moment
+            if u.OpenClipboard(u.GetDesktopWindow()):
+                break
+            time.sleep(0.05)
+        else:
             raise OSError("the clipboard is busy")
         try:
-            u.EmptyClipboard()
+            if not u.EmptyClipboard():
+                raise OSError("couldn't clear the clipboard")
             h = k.GlobalAlloc(GMEM_MOVEABLE, len(data))
             if not h:
                 raise OSError("out of memory")
@@ -144,15 +183,25 @@ class WindowsEffects:
             u.CloseClipboard()
 
     def run(self, argv: list[str], cwd: str | None, timeout_s: float) -> tuple[int | None, str]:
-        """(exit code, merged output); (None, reason) on a timeout or when it couldn't start. Never a shell."""
+        """(exit code, the last 64 KB of merged output); (None, reason) on a timeout or when it couldn't start.
+
+        Never a shell. Output goes to a temp file, not a pipe, so a grandchild holding the handle can't block us; on a
+        timeout the child's whole tree is killed and the wait is bounded.
+        """
         try:
-            r = subprocess.run(argv, shell=False, cwd=cwd, timeout=timeout_s, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=CREATE_NO_WINDOW)
-        except subprocess.TimeoutExpired:
-            return None, f"timed out after {format_number(timeout_s)} s"
+            with tempfile.TemporaryFile() as out:
+                p = subprocess.Popen(argv, shell=False, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out,
+                                     stderr=subprocess.STDOUT, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+                try:
+                    code = p.wait(timeout=timeout_s)
+                except subprocess.TimeoutExpired:
+                    _kill_tree(p)
+                    return None, f"timed out after {format_number(timeout_s)} s"
+                out.seek(0, os.SEEK_END)
+                out.seek(max(0, out.tell() - OUTPUT_READ_MAX))
+                return code, _decode(out.read())
         except (OSError, ValueError):
             return None, "couldn't start"
-        return r.returncode, _decode(r.stdout)
 
 
 class FakeEffects:

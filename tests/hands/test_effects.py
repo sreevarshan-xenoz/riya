@@ -51,7 +51,20 @@ def test_open_url_and_app_record_only_validated_targets(s):
     assert run(s, "open_url", e, url="example.com/a").ok
     assert run(s, "open_app", e, name="notepad").ok  # the target comes from settings.apps
     assert e.calls == [("open_url", "https://example.com/a"), ("open_app", "notepad.exe")]
+    assert run(s, "open_app", FakeEffects(), name="Notepad").text == 'Opened "Notepad".'
     assert validate_call(Call("open_url", {"url": "file:///c:/x"}), s) is None
+
+
+def test_open_app_uses_the_snapshot_not_later_settings(s):
+    call = validate_call(Call("open_app", {"name": "notepad"}), s)
+    assert call.args == {"name": "Notepad", "target": "notepad.exe"}
+    s.apps[0]["target"] = "evil.exe"
+    s.apps.clear()
+    e = FakeEffects()
+    r = REGISTRY["open_app"].run(call.args, ToolCtx(settings=s, effects=e))
+    assert r.ok and e.calls == [("open_app", "notepad.exe")]
+    assert not REGISTRY["open_app"].run({"name": "Notepad"}, ToolCtx(settings=s, effects=e)).ok  # no target: no open
+    assert e.calls == [("open_app", "notepad.exe")]
 
 
 def test_clipboard_copy_and_failed_effects(s):
@@ -62,7 +75,13 @@ def test_clipboard_copy_and_failed_effects(s):
     for tool, args in (("clipboard_copy", {"text": "x"}), ("open_url", {"url": "a.com"}), ("volume", {"action": "up"}),
                        ("open_app", {"name": "Notepad"}), ("media", {"action": "next"})):
         assert run(s, tool, bad, **args).ok is False  # a failing effect is a kind result, not an exception
-    assert FakeEffects(fail="boom").fail == "boom"
+    f = FakeEffects(fail="boom")  # a truthy non-exception `fail` raises OSError, after the call is recorded
+    with pytest.raises(OSError, match="boom"):
+        f.copy("x")
+    assert f.calls == [("copy", "x")]
+    with pytest.raises(KeyError):
+        FakeEffects(fail=KeyError).open_url("https://a.com")
+    assert FakeEffects().copy("fine") is None
 
 
 def test_run_command_ok_and_clamped_timeout(s):
@@ -115,31 +134,131 @@ def test_secret_split_by_the_cut_cannot_survive():
 
 
 # ---- WindowsEffects, with every OS call replaced ----
-def test_windows_run_uses_argv_without_a_shell(monkeypatch):
-    seen = {}
+class FakePopen:
+    """Stands in for subprocess.Popen: writes `output` to the stdout file it's given; wait() returns `code` or raises."""
+    made, output, code, hang = [], b"", 0, False
 
-    def fake_run(argv, **kw):
-        seen.update(argv=argv, **kw)
-        return subprocess.CompletedProcess(argv, 3, stdout="héllo".encode("utf-8"))
+    def __init__(self, argv, **kw):
+        self.argv, self.kw, self.pid, self.waits, self.killed = argv, kw, 4242, [], False
+        kw["stdout"].write(self.output)
+        FakePopen.made.append(self)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    assert WindowsEffects().run(ARGV, "C:/a", 60) == (3, "héllo")
-    assert seen["argv"] == ARGV and seen["shell"] is False and seen["cwd"] == "C:/a" and seen["timeout"] == 60
-    assert seen["creationflags"] == fx.CREATE_NO_WINDOW == 0x08000000 and seen["stdin"] == subprocess.DEVNULL
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.hang and not self.killed:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return self.code
+
+    def kill(self):
+        self.killed = True
 
 
-def test_windows_run_timeout_and_start_failure(monkeypatch):
-    def timeout(argv, **kw):
-        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+@pytest.fixture
+def popen(monkeypatch):
+    """Popen and subprocess.run (used for taskkill) faked: nothing real starts. Returns the list of taskkill calls."""
+    FakePopen.made, FakePopen.output, FakePopen.code, FakePopen.hang = [], b"", 0, False
+    kills = []
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: kills.append((argv, kw)))
+    return kills
 
-    monkeypatch.setattr(subprocess, "run", timeout)
+
+def test_windows_run_uses_argv_without_a_shell(popen):
+    FakePopen.output, FakePopen.code = "héllo".encode("cp437"), 3
+    assert WindowsEffects().run(ARGV, "C:/a", 60) == (3, "héllo") and popen == []
+    p, = FakePopen.made
+    assert p.argv == ARGV and p.kw["shell"] is False and p.kw["cwd"] == "C:/a" and p.waits == [60]
+    assert p.kw["creationflags"] == fx.CREATE_NEW_PROCESS_GROUP | fx.CREATE_NO_WINDOW == 0x08000200
+    assert p.kw["stdin"] == subprocess.DEVNULL and p.kw["stderr"] == subprocess.STDOUT
+    assert p.kw["stdout"] is not subprocess.PIPE and hasattr(p.kw["stdout"], "fileno")  # a temp file, never a pipe
+
+
+def test_windows_run_timeout_kills_the_childs_tree_and_returns(popen):
+    FakePopen.hang, FakePopen.output = True, b"partial"
     assert WindowsEffects().run(ARGV, None, 60) == (None, "timed out after 60 s")
+    p, = FakePopen.made
+    (argv, kw), = popen  # exactly one taskkill, on the child Riya spawned, list args, no shell
+    assert argv[0].lower().endswith("taskkill.exe") and argv[1:] == ["/T", "/F", "/PID", "4242"]
+    assert kw["shell"] is False and kw["timeout"] <= 10
+    assert p.killed and p.waits == [60, fx.KILL_WAIT_S]  # the wait after the kill is bounded too
 
+
+def test_windows_run_survives_a_failing_taskkill(monkeypatch):
+    FakePopen.made, FakePopen.hang, FakePopen.output = [], True, b""
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    def boom(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 10)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert WindowsEffects().run(ARGV, None, 7) == (None, "timed out after 7 s") and FakePopen.made[0].killed
+
+
+def test_windows_run_start_failure(monkeypatch):
     def missing(argv, **kw):
         raise FileNotFoundError(argv[0])
 
-    monkeypatch.setattr(subprocess, "run", missing)
+    monkeypatch.setattr(subprocess, "Popen", missing)
     assert WindowsEffects().run(ARGV, None, 5) == (None, "couldn't start")
+
+
+def test_windows_run_reads_only_the_last_64_kb(popen):
+    FakePopen.output = b"a" * 200_000 + b"THE END"
+    code, out = WindowsEffects().run(ARGV, None, 5)
+    assert code == 0 and len(out) == fx.OUTPUT_READ_MAX and out.endswith("THE END")
+
+
+def test_decode_tries_the_oem_page_then_utf8(monkeypatch):
+    monkeypatch.setattr(fx, "_oem_codec", lambda: "cp850")
+    assert fx._decode("é".encode("cp850")) == "é" and fx._decode("plain") == "plain"
+    monkeypatch.setattr(fx, "_oem_codec", lambda: "ascii")  # can't decode it: UTF-8 with replacement
+    assert fx._decode("é".encode("utf-8")) == "é" and fx._decode(b"\xff\xfe ok") == "\ufffd\ufffd ok"
+    monkeypatch.setattr(fx, "_oem_codec", lambda: "cp-nope")
+    assert fx._decode(b"abc") == "abc"
+
+
+def test_the_one_real_smoke_run():
+    """The only real process in the suite: this interpreter printing a word (harmless, can't hang)."""
+    import sys
+    code, out = WindowsEffects().run([sys.executable, "-c", "print('hi')"], None, 30)
+    assert code == 0 and out.strip() == "hi"
+
+
+def fake_dlls(monkeypatch, fail=None):
+    """ctypes.WinDLL replaced by fakes that log each call; `fail` names a function that returns 0. Returns (log, seen)."""
+    import ctypes
+    log, seen = [], {}
+
+    class Dll:
+        def __getattr__(self, name):
+            def call(*a):
+                log.append(name)
+                if name == "SetClipboardData":
+                    seen["fmt"] = a[0]
+                return 0 if name == fail else 1
+            return call
+
+    monkeypatch.setattr(ctypes, "memmove", lambda p, data, n: seen.update(data=bytes(data)))
+    monkeypatch.setattr(fx.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fx.ctypes, "WinDLL", lambda name, **kw: Dll())
+    return log, seen
+
+
+def test_windows_copy_with_everything_faked(monkeypatch):
+    log, seen = fake_dlls(monkeypatch)
+    WindowsEffects().copy("a\nb\x00c")  # CRLF-normalised, NUL removed, UTF-16 with a terminator
+    assert seen["data"] == "a\r\nbc".encode("utf-16-le") + b"\x00\x00" and seen["fmt"] == fx.CF_UNICODETEXT
+    assert log.index("OpenClipboard") < log.index("EmptyClipboard") < log.index("SetClipboardData") and log[-1] == "CloseClipboard"
+
+
+@pytest.mark.parametrize("fail, closed", [("OpenClipboard", False), ("EmptyClipboard", True),
+                                          ("SetClipboardData", True), ("GlobalAlloc", True)])
+def test_windows_copy_failures_close_the_clipboard(monkeypatch, fail, closed):
+    log, _ = fake_dlls(monkeypatch, fail)
+    with pytest.raises(OSError):
+        WindowsEffects().copy("x")
+    assert ("CloseClipboard" in log) is closed
+    assert log.count("OpenClipboard") == (fx.CLIPBOARD_TRIES if fail == "OpenClipboard" else 1)
 
 
 def test_windows_open_and_media(monkeypatch):
