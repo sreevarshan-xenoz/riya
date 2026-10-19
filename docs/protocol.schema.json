@@ -326,7 +326,9 @@
               "hooks_connect",
               "hooks_disconnect",
               "autostart",
-              "onboarding_done"
+              "onboarding_done",
+              "use_base",
+              "use_riya_v1"
             ],
             "title": "Action",
             "type": "string"
@@ -991,7 +993,9 @@
                   "hooks_connect",
                   "hooks_disconnect",
                   "autostart",
-                  "onboarding_done"
+                  "onboarding_done",
+                  "use_base",
+                  "use_riya_v1"
                 ],
                 "type": "string"
               },
@@ -1468,7 +1472,9 @@
               "hooks_connect",
               "hooks_disconnect",
               "autostart",
-              "onboarding_done"
+              "onboarding_done",
+              "use_base",
+              "use_riya_v1"
             ],
             "title": "Action",
             "type": "string"

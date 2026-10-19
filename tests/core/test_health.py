@@ -66,7 +66,7 @@ def test_the_constants_and_the_check_table():
     assert ROWS == ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart")
     assert STATUSES == ("ok", "warn", "off") and health.CHECK_TIMEOUT_S == 5.0 and CONNECTED_S == 86400
     assert FIXES == ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect",
-                     "autostart")
+                     "autostart", "use_base", "use_riya_v1")
     assert tuple(health.CHECKS) == ROWS
 
 
@@ -79,10 +79,10 @@ def test_local(tmp_path):
         calls.append((url, timeout))
         return b'{"data":[{"id":"C:/models/riya-q4.gguf"}]}'
     item = check_local(ctx(tmp_path, local_url="http://127.0.0.1:8090", http_get=get))
-    assert (item.key, item.status, item.detail) == ("local", "ok", "llama-server is up · riya-q4.gguf")
+    assert (item.key, item.status, item.detail) == ("local", "ok", "LFM2.5 base · riya-q4.gguf")
     assert calls[0][0] == "http://127.0.0.1:8090/v1/models"
     item = check_local(ctx(tmp_path, local_url="http://127.0.0.1:8090/", http_get=lambda u, t: b'{"data":[]}'))
-    assert (item.status, item.detail) == ("ok", "llama-server is up")
+    assert (item.status, item.detail) == ("ok", "LFM2.5 base")
 
     def boom(url, timeout):
         raise OSError("refused")
