@@ -195,9 +195,13 @@ def in_quiet_hours(spec: str | None, t: datetime) -> bool:
     return start <= now < end if start < end else now >= start or now < end
 
 
+def default_startup_dir() -> Path:
+    return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+
+
 def set_autostart(enabled: bool, launcher: Path, startup_dir: Path | None = None) -> None:
     if startup_dir is None:
-        startup_dir = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+        startup_dir = default_startup_dir()
     shortcut = startup_dir / "riya.cmd"
     if enabled:
         startup_dir.mkdir(parents=True, exist_ok=True)
