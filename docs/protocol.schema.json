@@ -127,6 +127,18 @@
         "title": "GlanceDelete",
         "type": "object"
       },
+      "HealthGet": {
+        "properties": {
+          "type": {
+            "const": "health_get",
+            "default": "health_get",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "HealthGet",
+        "type": "object"
+      },
       "LearningReset": {
         "description": "Reset to her defaults: the dials, the notes and the twin (the body confirms first).",
         "properties": {
@@ -207,6 +219,19 @@
         "title": "NoteDelete",
         "type": "object"
       },
+      "OnboardingDone": {
+        "description": "The welcome was finished or skipped.",
+        "properties": {
+          "type": {
+            "const": "onboarding_done",
+            "default": "onboarding_done",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "OnboardingDone",
+        "type": "object"
+      },
       "QuitCore": {
         "description": "The user chose Quit in the tray: the core stops too.",
         "properties": {
@@ -257,6 +282,80 @@
           "patch"
         ],
         "title": "SetSettings",
+        "type": "object"
+      },
+      "SetupAction": {
+        "description": "The user's Yes or No to a setup_confirm.",
+        "properties": {
+          "nonce": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Nonce",
+            "type": "string"
+          },
+          "type": {
+            "const": "setup_action",
+            "default": "setup_action",
+            "title": "Type",
+            "type": "string"
+          },
+          "yes": {
+            "title": "Yes",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "nonce",
+          "yes"
+        ],
+        "title": "SetupAction",
+        "type": "object"
+      },
+      "SetupRequest": {
+        "description": "A click on a setup button. The key (online_key_set) is a plain str in args, with no length rule here, so no\nvalidation error can quote it.",
+        "properties": {
+          "action": {
+            "enum": [
+              "online_key_set",
+              "online_key_clear",
+              "online_test",
+              "voice_sample",
+              "voice_choose",
+              "mic_check",
+              "eyes_test",
+              "hooks_connect",
+              "hooks_disconnect",
+              "autostart",
+              "onboarding_done"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "args": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Args",
+            "type": "object"
+          },
+          "type": {
+            "const": "setup_request",
+            "default": "setup_request",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "SetupRequest",
         "type": "object"
       },
       "StyleNoteDelete": {
@@ -385,14 +484,18 @@
         "episode_delete": "#/$defs/EpisodeDelete",
         "get_memories": "#/$defs/GetMemories",
         "glance_delete": "#/$defs/GlanceDelete",
+        "health_get": "#/$defs/HealthGet",
         "learning_reset": "#/$defs/LearningReset",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
         "note_delete": "#/$defs/NoteDelete",
         "note_delete_style": "#/$defs/StyleNoteDelete",
+        "onboarding_done": "#/$defs/OnboardingDone",
         "quit_core": "#/$defs/QuitCore",
         "reminder_cancel": "#/$defs/ReminderCancel",
         "set_settings": "#/$defs/SetSettings",
+        "setup_action": "#/$defs/SetupAction",
+        "setup_request": "#/$defs/SetupRequest",
         "talk_hotkey": "#/$defs/TalkHotkey",
         "thread_resolve": "#/$defs/ThreadResolve",
         "transcript_delete": "#/$defs/TranscriptDelete",
@@ -461,6 +564,18 @@
       },
       {
         "$ref": "#/$defs/LearningReset"
+      },
+      {
+        "$ref": "#/$defs/HealthGet"
+      },
+      {
+        "$ref": "#/$defs/SetupRequest"
+      },
+      {
+        "$ref": "#/$defs/SetupAction"
+      },
+      {
+        "$ref": "#/$defs/OnboardingDone"
       }
     ]
   },
@@ -854,6 +969,101 @@
         "title": "GlanceInfo",
         "type": "object"
       },
+      "HealthItemInfo": {
+        "description": "One Health row: its status, a one-line explanation (never the key, only its mask) and at most one fix.",
+        "properties": {
+          "detail": {
+            "maxLength": 120,
+            "title": "Detail",
+            "type": "string"
+          },
+          "fix": {
+            "anyOf": [
+              {
+                "enum": [
+                  "online_key_set",
+                  "online_key_clear",
+                  "online_test",
+                  "voice_sample",
+                  "voice_choose",
+                  "mic_check",
+                  "eyes_test",
+                  "hooks_connect",
+                  "hooks_disconnect",
+                  "autostart",
+                  "onboarding_done"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fix"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "warn",
+              "off"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "status",
+          "detail"
+        ],
+        "title": "HealthItemInfo",
+        "type": "object"
+      },
+      "HealthMsg": {
+        "description": "The Health checklist, sent only in reply to health_get. key_source: where the online key comes from.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/HealthItemInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "key_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "app",
+                  ".env",
+                  "env"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key Source"
+          },
+          "type": {
+            "const": "health",
+            "default": "health",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "HealthMsg",
+        "type": "object"
+      },
       "Hello": {
         "properties": {
           "expressions": {
@@ -1208,6 +1418,85 @@
         "title": "SettingsMsg",
         "type": "object"
       },
+      "SetupConfirm": {
+        "description": "Asks the body to confirm an outward-facing action with this exact text; the answer is setup_action{nonce}.",
+        "properties": {
+          "action": {
+            "enum": [
+              "online_test",
+              "eyes_test",
+              "hooks_connect",
+              "hooks_disconnect"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "nonce": {
+            "title": "Nonce",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "setup_confirm",
+            "default": "setup_confirm",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nonce",
+          "action",
+          "text"
+        ],
+        "title": "SetupConfirm",
+        "type": "object"
+      },
+      "SetupResult": {
+        "properties": {
+          "action": {
+            "enum": [
+              "online_key_set",
+              "online_key_clear",
+              "online_test",
+              "voice_sample",
+              "voice_choose",
+              "mic_check",
+              "eyes_test",
+              "hooks_connect",
+              "hooks_disconnect",
+              "autostart",
+              "onboarding_done"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "detail": {
+            "maxLength": 120,
+            "title": "Detail",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "type": {
+            "const": "setup_result",
+            "default": "setup_result",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "ok",
+          "detail"
+        ],
+        "title": "SetupResult",
+        "type": "object"
+      },
       "StateMsg": {
         "properties": {
           "expression": {
@@ -1368,6 +1657,34 @@
         ],
         "title": "TwinInfo",
         "type": "object"
+      },
+      "VoicesMsg": {
+        "description": "Her feminine built-in voices ([] until they are loaded) and the chosen one; sent only in reply to health_get.",
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "type": {
+            "const": "voices",
+            "default": "voices",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "current"
+        ],
+        "title": "VoicesMsg",
+        "type": "object"
       }
     },
     "discriminator": {
@@ -1379,6 +1696,7 @@
         "error": "#/$defs/ErrorMsg",
         "expression": "#/$defs/ExpressionMsg",
         "eyes": "#/$defs/EyesMsg",
+        "health": "#/$defs/HealthMsg",
         "hello": "#/$defs/Hello",
         "learning": "#/$defs/LearningMsg",
         "look": "#/$defs/Look",
@@ -1388,7 +1706,10 @@
         "say": "#/$defs/Say",
         "say_end": "#/$defs/SayEnd",
         "settings": "#/$defs/SettingsMsg",
-        "state": "#/$defs/StateMsg"
+        "setup_confirm": "#/$defs/SetupConfirm",
+        "setup_result": "#/$defs/SetupResult",
+        "state": "#/$defs/StateMsg",
+        "voices": "#/$defs/VoicesMsg"
       },
       "propertyName": "type"
     },
@@ -1443,6 +1764,18 @@
       },
       {
         "$ref": "#/$defs/LearningMsg"
+      },
+      {
+        "$ref": "#/$defs/HealthMsg"
+      },
+      {
+        "$ref": "#/$defs/SetupResult"
+      },
+      {
+        "$ref": "#/$defs/SetupConfirm"
+      },
+      {
+        "$ref": "#/$defs/VoicesMsg"
       }
     ]
   },
