@@ -35,9 +35,10 @@ class GlanceNote:
     notable: str | None
 
 
-def vision_messages(jpeg: bytes, text: str, system: str | None = None) -> list[dict]:
-    """Chat messages whose user turn carries the text and the image (OpenAI-style content parts)."""
-    url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+def vision_messages(image: bytes, text: str, system: str | None = None, mime: str = "image/jpeg") -> list[dict]:
+    """Chat messages whose user turn carries the text and the image (OpenAI-style content parts): a screenshot is a
+    JPEG, the bundled eye-test picture a PNG."""
+    url = f"data:{mime};base64," + base64.b64encode(image).decode()
     parts = [{"type": "text", "text": text}, {"type": "image_url", "image_url": {"url": url}}]
     return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": parts}]
 

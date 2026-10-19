@@ -16,11 +16,13 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from riya.agents.hooks import default_token_path, load_or_create_token
 
 HOOK_URL = "http://127.0.0.1:8766/hook"
 ENV_VAR = "RIYA_HOOK_TOKEN"
+RESTART_LINE = "Restart Claude Code (and open a new terminal) afterwards."
 HANDLER = {"type": "http", "url": HOOK_URL, "timeout": 3,
            "headers": {"X-Riya-Token": f"${ENV_VAR}"}, "allowedEnvVars": [ENV_VAR]}
 # (event, matcher or None for "no matcher key"), one group per event
@@ -154,6 +156,30 @@ def strip(data: dict) -> int:
     return removed
 
 
+def preview(mode: Literal["apply", "remove"], settings_path: Path) -> str:
+    """What --apply or --remove would change in settings_path, in one paragraph. Reads only; raises SettingsError when
+    the file is unusable (for apply, also when --apply itself would refuse it)."""
+    data = read_settings(Path(settings_path))
+    have = riya_events(data)
+    if mode == "apply":
+        if data is not None:
+            merge(copy.deepcopy(data))  # a dry run on a copy: the same SettingsError --apply would give
+        events = [event for event, _ in EVENTS if event not in have]
+        if events:
+            return (f"Riya will add her hook to {len(events)} Claude Code event(s) in {settings_path}: "
+                    f"{', '.join(events)}. The file is backed up first, and the {ENV_VAR} user environment variable is "
+                    f"set to her token. {RESTART_LINE}")
+        return (f"Riya's hook is already in all {len(EVENTS)} events in {settings_path}; only the {ENV_VAR} variable is "
+                f"set again. {RESTART_LINE}")
+    if mode == "remove":
+        if have:
+            return (f"Riya will remove her hook from {len(have)} Claude Code event(s) in {settings_path}: "
+                    f"{', '.join(have)}. The file is backed up first; the {ENV_VAR} variable is left alone. "
+                    f"{RESTART_LINE}")
+        return f"Riya's hook isn't in {settings_path}; nothing will change. {RESTART_LINE}"
+    raise ValueError(f"unknown preview mode {mode!r}")
+
+
 def backup(path: Path, now: datetime | None = None) -> Path:
     stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
     dest = path.with_name(f"{path.name}.riya-backup-{stamp}")
@@ -192,6 +218,10 @@ def do_print(token_path: Path, settings_path: Path, out=print) -> int:
     out(json.dumps(snippet(), indent=2))
     out(f"\nToken file: {token_path}")
     out(f"Settings file: {settings_path}")
+    try:
+        out("\n" + preview("apply", settings_path))
+    except SettingsError:
+        pass
     out("\nTo install: merge the 'hooks' entries above into your Claude Code settings.json, or run\n"
         "  python -m riya.agents.install_hooks --apply\n"
         f"and set the {ENV_VAR} user environment variable to the contents of the token file\n"
