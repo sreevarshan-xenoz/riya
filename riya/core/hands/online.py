@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from riya.core.models import ToolReply  # noqa: F401  (re-exported: what call_tools returns)
 
@@ -18,6 +19,7 @@ from .types import Call
 MAX_ARGS_BYTES = 4096
 MAX_TURN = 2000  # characters of the turn that are sent
 MAX_NAMES = 50
+_OWN_WORDS = frozenset({"write_file", "clipboard_copy"})
 log = logging.getLogger(__name__)
 
 _JSON_TYPE = {"str": "string", "int": "integer", "float": "number", "duration": "string"}
@@ -45,6 +47,7 @@ _PARAM_DESC = {
     "when": "When, such as 'at 5 pm', 'tomorrow at 9' or 'in 20 minutes'.",
     "name": "The exact name from the user's list.",
 }
+_FILE = re.compile(r"\bfiles?\b")
 _SYSTEM = ("You route a desktop companion's commands to tools. If the user's message clearly asks for one of the "
            "offered tools, call exactly one tool. Otherwise answer in one short sentence without calling a tool.")
 
@@ -75,7 +78,8 @@ def _enabled(settings, name: str) -> bool:
 
 def _wants_t2(settings, text: str) -> bool:
     low = text.casefold()
-    return "file" in low or any(n.casefold() in low for n in _names(getattr(settings, "commands", None)))
+    return bool(_FILE.search(low)) or any(re.search(rf"(?<!\w){re.escape(n.casefold())}(?!\w)", low)
+                                          for n in _names(getattr(settings, "commands", None)))
 
 
 def _property(spec, key: str) -> dict:
@@ -84,12 +88,6 @@ def _property(spec, key: str) -> dict:
         p["description"] = desc
     if spec.enum is not None:
         p["enum"] = list(spec.enum)
-    if spec.type == "str":
-        p["maxLength"] = spec.max_len
-    if spec.min is not None and spec.type in ("int", "float"):
-        p["minimum"] = spec.min
-    if spec.max is not None and spec.type in ("int", "float"):
-        p["maximum"] = spec.max
     return p
 
 
@@ -136,9 +134,10 @@ def propose(model, text: str, now, settings, tz=None) -> Call | None:
         args = parse_arguments(raw)
         if args is None or name not in {t["function"]["name"] for t in tools}:  # only what was offered
             return None
-        if name == "write_file" and not (isinstance(args.get("text"), str) and _collapse(args["text"])
-                                         and _collapse(args["text"]) in _collapse(text)):
-            return None
+        if name in _OWN_WORDS:  # text that is written or copied must be the user's own words
+            t = args.get("text")
+            if not isinstance(t, str) or not _collapse(t) or _collapse(t) not in _collapse(text):
+                return None
         call = Call(name, args)
         return call if validate_call(call, settings) is not None else None
     except Exception as e:  # incl. ModelUnavailable: the normal reply path just runs
