@@ -8,7 +8,8 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-REQUEST_KEYS = ("id", "kind", "messages", "facts", "expect", "fp")  # fp: build_sft.prompt_fingerprint() at build time
+# fp: build_sft.prompt_fingerprint() at build time; meta: the structured facts and the asked attribute
+REQUEST_KEYS = ("id", "kind", "messages", "facts", "expect", "meta", "fp")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 EXPECT_KEYS = ("must_mention", "must_not_invent", "must_admit_unknown", "must_say_ai", "max_sentences", "max_emoji")
 
@@ -52,7 +53,8 @@ def _int(v, lo: int) -> bool:
 def validate_request(row: dict) -> None:
     """ValueError unless row is a request: exactly REQUEST_KEYS; messages a system message, then user/assistant pairs,
     ending with a user message, all with str content; facts a list of str; expect exactly EXPECT_KEYS (list of str,
-    bool, bool, bool, int >= 1, int >= 0); fp a sha256 hex digest (64 lowercase hex characters)."""
+    bool, bool, bool, int >= 1, int >= 0); meta a record per fact plus the asked attribute; fp a sha256 hex digest (64
+    lowercase hex characters)."""
     if not isinstance(row, dict) or set(row) != set(REQUEST_KEYS) or len(row) != len(REQUEST_KEYS):
         raise ValueError(f"a request has exactly the keys {REQUEST_KEYS}")
     messages = row["messages"]
@@ -73,6 +75,18 @@ def validate_request(row: dict) -> None:
         raise ValueError(f"{row['id']}: must_not_invent, must_admit_unknown and must_say_ai must be bool")
     if not _int(e["max_sentences"], 1) or not _int(e["max_emoji"], 0):
         raise ValueError(f"{row['id']}: max_sentences must be an int >= 1 and max_emoji an int >= 0")
+    meta = row["meta"]
+    if not isinstance(meta, dict) or set(meta) != {"facts", "asks"} or not isinstance(meta["facts"], list):
+        raise ValueError(f"{row['id']}: meta has exactly the keys facts (a list) and asks")
+    if len(meta["facts"]) != len(row["facts"]) or not all(
+            isinstance(r, dict) and set(r) == {"attr", "value_words", "species", "words"}
+            and isinstance(r["value_words"], list) and all(isinstance(w, str) for w in r["value_words"])
+            for r in meta["facts"]):
+        raise ValueError(f"{row['id']}: meta.facts holds one {{attr, value_words, species, words}} record per fact")
+    asks = meta["asks"]
+    if asks is not None and (not isinstance(asks, dict) or set(asks) != {"attr", "words", "values"}
+                             or not all(isinstance(v, str) for v in asks["values"] + asks["words"])):
+        raise ValueError(f"{row['id']}: meta.asks is None or {{attr, words, values}}")
     if not isinstance(row["fp"], str) or not _HEX64.fullmatch(row["fp"]):
         raise ValueError(f"{row['id']}: fp must be a sha256 hex digest")
 

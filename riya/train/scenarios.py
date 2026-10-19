@@ -208,6 +208,54 @@ def fact_attr(fact: str) -> str | None:
     return max(hits)[1] if hits else None
 
 
+# the words that name each attribute in a sentence ("my sister", "where i grew up", "my coffee order"), for the
+# filter's structured checks: lowercase words or phrases
+ATTR_WORDS: dict[str, tuple[str, ...]] = {
+    "sister": ("sister",), "brother": ("brother",), "mother": ("mother", "mum", "mom"), "father": ("father", "dad"),
+    "cousin": ("cousin",), "roommate": ("roommate",), "best_friend": ("best friend",), "dog": ("dog",),
+    "cat": ("cat",), "plant": ("plant",), "hometown": ("hometown", "grew up", "grow up"),
+    "city": ("live", "lives", "living", "city", "town"), "travel": ("visit", "travel", "trip"),
+    "workplace": ("work at", "works at", "work for", "works for", "company"),
+    "food": ("favourite food", "favorite food", "food"), "colour": ("colour", "color"), "job": ("job", "work as"),
+    "degree": ("study", "studied", "degree", "university"), "instrument": ("instrument", "play the", "plays the"),
+    "birthday": ("birthday",), "show": ("watching", "tv show"), "book": ("reading", "book"),
+    "videogame": ("video game",), "language": ("language", "learning"), "allergy": ("allergic", "allergy"),
+    "fear": ("afraid", "scared", "fear"), "sport": ("sport",), "hobby": ("hobby",),
+    "drink": ("coffee",), "ride": ("get around", "bike", "scooter", "moped", "ride"),
+    "bedtime": ("bedtime", "go to bed", "goes to bed", "going to bed"), "team": ("team",), "nickname": ("nickname",)}
+PETS = ("dog", "cat", "plant")  # an attribute whose value is a name, with a kind of thing to name (the "species")
+
+
+def value_words(value: str) -> list[str]:
+    """The distinctive answer tokens of a value: lowercase words and digit runs, no articles or "and"/"of"
+    ("11 pm" -> 11, pm)."""
+    words = re.findall(r"\d+|[a-z]+", value.casefold())
+    return [w for i, w in enumerate(words) if w not in ("a", "an", "the", "and", "of") and w not in words[:i]]
+
+
+def fact_record(fact: str) -> dict:
+    """The structured form of a fact sentence: {attr, value_words, species, words}. A fact that isn't from the pools
+    (a remember turn's saved fact, a follow-up thread) has attr None, no value words and no species."""
+    best = None
+    for a in ATTRS:
+        pre, _, post = a.fact.partition("{v}")
+        if fact.startswith(pre) and fact.endswith(post) and len(fact) >= len(pre) + len(post) and (
+                best is None or len(pre) > len(best[1])):
+            best = (a, pre, post)
+    if best is None:
+        return {"attr": None, "value_words": [], "species": None, "words": []}
+    a, pre, post = best
+    return {"attr": a.key, "value_words": value_words(fact[len(pre):len(fact) - len(post)]),
+            "species": a.key if a.key in PETS else None, "words": list(ATTR_WORDS[a.key])}
+
+
+def ask_record(key: str) -> dict:
+    """What an unknown row asked about: {attr, words, values}. values is the generator's own value pool for that
+    attribute, the candidate answers a made-up reply would draw from."""
+    a = next(x for x in ATTRS if x.key == key)
+    return {"attr": key, "words": list(ATTR_WORDS[key]), "values": list(POOLS[a.pool])}
+
+
 NOTES = ("They like it when I tease them about their snacks.", "They asked me not to call them buddy.",
          "They like it when I say good morning first.", "They don't like it when I bring up work after dinner.",
          "They asked me to always use short sentences.", "They like it when I sound a bit sulky when they leave.",
