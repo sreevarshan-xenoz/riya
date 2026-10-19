@@ -7,6 +7,19 @@ const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 10000];
 const CORE_TYPES = ["hello", "settings", "state", "expression", "say", "say_end", "mouth", "memories", "error", "look",
   "eyes", "agents", "confirm_request", "confirm_done", "reminders", "actions", "learning", "health", "setup_result",
   "setup_confirm", "voices"];
+/** Body -> core types that only mean something now (main-logic.js NOW_ONLY; a test keeps them equal): never queued while
+ *  the socket isn't open, and dropped from the queue when it closes, so a stale setup_request or setup_action can't
+ *  reach the next connection. */
+const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm", "actions_clear", "reminder_cancel", "note_delete",
+  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done"];
+const nowOnly = (data) => {
+  try {
+    const msg = JSON.parse(data);
+    return Boolean(msg) && NOW_ONLY.includes(msg.type);
+  } catch (e) {
+    return false;
+  }
+};
 
 class CoreClient {
   constructor({ url, WebSocketImpl, setTimeoutFn = (fn, ms) => setTimeout(fn, ms) }) {
@@ -58,12 +71,17 @@ class CoreClient {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
+      this.queue = this.queue.filter((data) => !nowOnly(data)); // say, one whose send threw just before the drop
       this._emit("close");
       this._scheduleReconnect();
     };
   }
 
   send(obj) {
+    if (obj && NOW_ONLY.includes(obj.type) && !this._isOpen()) {
+      this.log(`dropped ${obj.type}: the core isn't connected`);
+      return;
+    }
     this.queue.push(JSON.stringify(obj));
     this._flush();
   }
@@ -111,5 +129,5 @@ class CoreClient {
   }
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { CoreClient, BACKOFF_MS, CORE_TYPES };
-else globalThis.RiyaCore = { CoreClient, BACKOFF_MS, CORE_TYPES };
+if (typeof module !== "undefined" && module.exports) module.exports = { CoreClient, BACKOFF_MS, CORE_TYPES, NOW_ONLY };
+else globalThis.RiyaCore = { CoreClient, BACKOFF_MS, CORE_TYPES, NOW_ONLY };

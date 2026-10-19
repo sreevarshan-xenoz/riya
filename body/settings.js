@@ -705,11 +705,11 @@
     $("conn").classList.toggle("off", !connected);
     coreConnected = Boolean(connected);
     renderHooks();
+    if (flow.disconnect()) closeModal(); // on a reconnect too: a gated request or confirm from before never lingers
     if (!connected) { // a stale log or stale dials would pass for live; the core sends them again on change
       renderActions(null);
       renderLearning(null);
       renderHealth(null);
-      if (flow.disconnect()) closeModal();
     }
     updateKeyButtons();
     if (connected) {
