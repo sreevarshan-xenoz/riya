@@ -212,3 +212,20 @@ test("a disconnect forgets the cached look and agents, so a reload never replays
   forgetOnDisconnect(cache);
   assert.deepEqual([...cache.keys()], ["hello", "settings", "state"]);
 });
+
+const { NOW_ONLY } = require("../src/main-logic");
+
+test("reminders and actions are replayed to a new window; a confirm answer is never queued while the core is away", () => {
+  assert.ok(REPLAY_TYPES.includes("reminders") && REPLAY_TYPES.includes("actions"));
+  assert.ok(!REPLAY_TYPES.includes("confirm_request"), "a confirmation expires: it is not replayed");
+  assert.ok(NOW_ONLY.includes("confirm"));
+  assert.equal(shouldSendToCore({ type: "confirm", id: "c", yes: true }, false), false);
+  assert.equal(shouldSendToCore({ type: "confirm", id: "c", yes: true }, true), true);
+  assert.equal(shouldSendToCore({ type: "reminder_cancel", id: 1 }, false), true);
+  const cache = new Map();
+  rememberForReplay(cache, { type: "reminders", items: [] });
+  rememberForReplay(cache, { type: "reminders", items: [{ id: 1 }] });
+  rememberForReplay(cache, { type: "actions", items: [] });
+  assert.equal(cache.size, 2);
+  assert.equal(cache.get("reminders").items.length, 1);
+});

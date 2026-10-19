@@ -103,11 +103,20 @@ test("fixtures match the committed protocol schema", () => {
   const validators = { core: ajv.compile(schema.core_to_body), body: ajv.compile(schema.body_to_core) };
   const dir = path.join(__dirname, "fixtures");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
-  assert.equal(names.filter((n) => n.startsWith("core_")).length, 13);
-  assert.equal(names.filter((n) => n.startsWith("body_")).length, 14);
+  assert.equal(names.filter((n) => n.startsWith("core_")).length, 17);
+  assert.equal(names.filter((n) => n.startsWith("body_")).length, 18);
   for (const n of names) {
     const validate = n.startsWith("core_") ? validators.core : validators.body;
     const obj = JSON.parse(fs.readFileSync(path.join(dir, n), "utf8"));
     assert.ok(validate(obj), `${n}: ${JSON.stringify(validate.errors)}`);
   }
+});
+
+test("confirm_done validates for all seven outcomes, and an unknown one is refused", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "docs", "protocol.schema.json"), "utf8"));
+  const validate = new Ajv({ strict: false }).compile(schema.core_to_body);
+  for (const outcome of ["ran", "started", "failed", "declined", "expired", "replaced", "cancelled"]) {
+    assert.ok(validate({ type: "confirm_done", id: "c1", outcome }), outcome);
+  }
+  assert.equal(validate({ type: "confirm_done", id: "c1", outcome: "exploded" }), false);
 });

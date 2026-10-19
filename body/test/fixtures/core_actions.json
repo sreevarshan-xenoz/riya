@@ -1,0 +1,1 @@
+{"type":"actions","items":[{"id":3,"at":1792327800.0,"tool":"open_app","tier":1,"summary":"Open \"notes\"","outcome":"ran"},{"id":2,"at":1792327700.0,"tool":"run_command","tier":2,"summary":"Run \"backup\" (robocopy C:\\Src D:\\bak /MIR)","outcome":"declined"},{"id":1,"at":1792327600.0,"tool":"calc","tier":0,"summary":"Calculate 2+2","outcome":"ran"}]}

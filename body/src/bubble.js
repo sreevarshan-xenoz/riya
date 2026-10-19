@@ -12,6 +12,7 @@ class BubbleModel {
     this._kind = "reply";
     this.endedAt = null;
     this.dismissed = false;
+    this._confirm = null; // { id, summary, expiresAtMs (epoch ms), answered }
   }
 
   /** A `say` message: the first sentence of a new utterance replaces the old one, later ones append. */
@@ -52,6 +53,41 @@ class BubbleModel {
   hidesAt(nowMs) {
     if (this.endedAt === null || !this.visible(nowMs)) return null;
     return this.endedAt + (this._kind === "bid" ? BID_HIDE_MS : HIDE_AFTER_MS);
+  }
+
+  /** A `confirm_request`: replaces any pending one. `expires_at` is epoch seconds, kept as epoch ms; malformed ones are
+   *  ignored. The summary is shown with textContent only. */
+  onConfirmRequest(msg) {
+    if (!msg || typeof msg.id !== "string" || !msg.id || typeof msg.summary !== "string") return;
+    if (typeof msg.expires_at !== "number" || !Number.isFinite(msg.expires_at)) return;
+    this._confirm = { id: msg.id, summary: msg.summary, expiresAtMs: msg.expires_at * 1000, answered: false };
+  }
+
+  /** A `confirm_done`: only the pending confirmation's own ends it (a stale one must not clear a newer request). */
+  onConfirmDone(id) {
+    if (this._confirm && this._confirm.id === id) this._confirm = null;
+  }
+
+  clearConfirm() {
+    this._confirm = null;
+  }
+
+  /** The confirmation to show at epoch-ms `nowMs` ({ id, summary }), or null: none, answered, or expired. */
+  confirm(nowMs) {
+    const c = this._confirm;
+    return c && !c.answered && nowMs < c.expiresAtMs ? { id: c.id, summary: c.summary } : null;
+  }
+
+  /** A button was pressed: the confirmation to answer, once (the buttons go away at once, so there is no second click). */
+  answerConfirm(nowMs) {
+    const shown = this.confirm(nowMs);
+    if (shown) this._confirm.answered = true;
+    return shown;
+  }
+
+  /** When the pending, unanswered confirmation expires (epoch ms), else null (for a timer). */
+  confirmExpiresAt() {
+    return this._confirm && !this._confirm.answered ? this._confirm.expiresAtMs : null;
   }
 
   text() {

@@ -85,7 +85,7 @@ test("memory fixtures with episodes and threads are tolerated", () => {
   const msg = { type: "memories", facts: [], transcript_days: [], episodes: [{ id: 1, started_at: 1, ended_at: 2, summary: "s" }] };
   assert.deepEqual(L.memoryLists(msg).threads, []);
   assert.equal(L.memoryLists(msg).episodes.length, 1);
-  assert.deepEqual(L.memoryLists({ type: "memories" }), { facts: [], episodes: [], threads: [], days: [] });
+  assert.deepEqual(L.memoryLists({ type: "memories" }), { facts: [], episodes: [], threads: [], days: [], notes: [] });
 });
 
 test("voiceOptions lists the presets and keeps a non-preset current voice as a custom entry", () => {
@@ -190,4 +190,45 @@ test("agent_logs patches are validated like the core and errors route to their c
   const r = new L.ErrorRouter();
   assert.equal(r.route("invalid pattern in agent_logs 'colab' done_re: missing )"), "setting:agent_logs");
   assert.equal(r.route("invalid value for setting 'agent_logs': []"), "setting:agent_logs");
+});
+
+test("memoryLists returns the notes, and tolerates a core without them", () => {
+  const notes = [{ id: 1, at: 5, text: "buy tea" }];
+  assert.deepEqual(L.memoryLists({ type: "memories", facts: [], transcript_days: [], notes }).notes, notes);
+  assert.deepEqual(L.memoryLists({ type: "memories", notes: "x" }).notes, []);
+});
+
+test("hands_online is a boolean setting; weather_place trims, empties to null and is capped at 80", () => {
+  assert.deepEqual(L.settingPatch("hands_online", false), { ok: true, patch: { hands_online: false } });
+  assert.deepEqual(L.settingPatch("hands_online", 1), { ok: true, patch: { hands_online: true } });
+  assert.deepEqual(L.settingPatch("weather_place", "  Chennai "), { ok: true, patch: { weather_place: "Chennai" } });
+  assert.deepEqual(L.settingPatch("weather_place", "  "), { ok: true, patch: { weather_place: null } });
+  assert.equal(L.settingPatch("weather_place", "x".repeat(81)).ok, false);
+  assert.equal(L.settingPatch("weather_place", 5).ok, false);
+});
+
+test("apps and commands go through the hands validators", () => {
+  assert.deepEqual(L.settingPatch("apps", [{ name: "Notes", target: "notepad.exe" }]),
+    { ok: true, patch: { apps: [{ name: "Notes", target: "notepad.exe" }] } });
+  assert.equal(L.settingPatch("apps", [{ name: "", target: "x" }]).ok, false);
+  const r = L.settingPatch("commands", [{ name: "b", line: "robocopy a b", cwd: "", timeout_s: 20 }]);
+  assert.deepEqual(r, { ok: true, patch: { commands: [{ name: "b", argv: ["robocopy", "a", "b"], cwd: null, timeout_s: 20 }] } });
+  assert.equal(L.settingPatch("commands", [{ name: "b", line: 'x "y', cwd: "", timeout_s: 20 }]).ok, false);
+});
+
+test("a core error about a hands setting is routed to its control", () => {
+  for (const key of ["hands_online", "weather_place", "apps", "commands", "tools_enabled", "tools_ask"]) {
+    const r = new L.ErrorRouter();
+    assert.equal(r.route(`invalid value for setting '${key}': 5`), `setting:${key}`, key);
+  }
+});
+
+test("an actions fixture is a valid shape for actionText", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const H = require("../src/hands-logic");
+  const msg = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "core_actions.json"), "utf8"));
+  assert.equal(msg.type, "actions");
+  assert.ok(msg.items.length >= 2);
+  for (const a of msg.items) assert.ok(H.actionText(a).includes(a.summary));
 });
