@@ -83,8 +83,9 @@ def read_settings(path: Path) -> dict | None:
         raise SettingsError(f"cannot read {path}: {e}") from e
     try:
         data = json.loads(text)
-    except ValueError as e:
-        raise SettingsError(f"{path} is not valid JSON ({e}); nothing was changed") from e
+    except (ValueError, RecursionError) as e:  # RecursionError: absurdly deep nesting
+        why = e if isinstance(e, ValueError) else type(e).__name__
+        raise SettingsError(f"{path} is not valid JSON ({why}); nothing was changed") from e
     if not isinstance(data, dict):
         raise SettingsError(f"{path}: the top level is not a JSON object; nothing was changed")
     if "hooks" in data and not isinstance(data["hooks"], dict):

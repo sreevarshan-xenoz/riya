@@ -1,5 +1,7 @@
+import codecs
 import json
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -277,13 +279,18 @@ def test_run_checks_returns_every_row_in_order(tmp_path):
 
 def test_a_hung_check_times_out_and_the_rest_still_report(tmp_path):
     c = ctx(tmp_path)
+    release = threading.Event()
 
     def hang(_):
-        time.sleep(10)
+        release.wait(10)
+
     def boom(_):
         raise RuntimeError(CANARY)
     t0 = time.monotonic()
-    items = run_checks(c, timeout_s=0.2, checks={"local": hang, "look": check_look, "memory": boom})
+    try:
+        items = run_checks(c, timeout_s=0.2, checks={"local": hang, "look": check_look, "memory": boom})
+    finally:
+        release.set()
     assert time.monotonic() - t0 < 1.0
     by = {i.key: i for i in items}
     assert [i.key for i in items] == ["local", "look", "memory"]
@@ -294,10 +301,15 @@ def test_a_hung_check_times_out_and_the_rest_still_report(tmp_path):
 
 
 def test_many_hung_checks_share_one_deadline(tmp_path):
+    release = threading.Event()
+
     def hang(_):
-        time.sleep(10)
+        release.wait(10)
     t0 = time.monotonic()
-    items = run_checks(ctx(tmp_path), timeout_s=0.3, checks={k: hang for k in ROWS})
+    try:
+        items = run_checks(ctx(tmp_path), timeout_s=0.3, checks={k: hang for k in ROWS})
+    finally:
+        release.set()
     assert time.monotonic() - t0 < 1.0  # not 10 x 0.3 s
     assert all(i.status == "warn" and i.detail == "No answer within 0.3 s." for i in items)
     assert health.CHECK_TIMEOUT_S == 5.0
@@ -305,7 +317,6 @@ def test_many_hung_checks_share_one_deadline(tmp_path):
 
 
 def test_checks_run_in_named_daemon_threads(tmp_path):
-    import threading
     seen = []
 
     def probe(_):
@@ -355,3 +366,87 @@ def test_checks_write_nothing(tmp_path):
 def test_default_startup_dir_follows_appdata(tmp_path):
     from riya.core.settings import default_startup_dir
     assert default_startup_dir() == tmp_path / "appdata" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def test_a_stuck_check_gets_one_thread_across_refreshes(tmp_path):
+    release, started = threading.Event(), []
+
+    def hang(_):
+        started.append(1)
+        release.wait(10)
+    before = threading.active_count()
+    try:
+        runs = [run_checks(ctx(tmp_path), timeout_s=0.1, checks={"local": hang, "look": check_look}) for _ in range(3)]
+        assert len(started) == 1 and threading.active_count() <= before + 1
+    finally:
+        release.set()
+    assert runs[0][0].detail == "No answer within 0.1 s."
+    assert all(r[0].status == "warn" and r[0].detail.startswith("No answer yet") for r in runs[1:])
+    assert all(r[1] == check_look(ctx(tmp_path)) for r in runs)  # the other row is unaffected
+    for t in threading.enumerate():
+        if t.name == "riya-health-local":
+            t.join(2)
+    run_checks(ctx(tmp_path), checks={"local": hang})  # finished: the next run starts a fresh thread
+    assert len(started) == 2
+
+
+def test_a_check_returning_another_rows_item_is_a_failed_check(tmp_path):
+    items = run_checks(ctx(tmp_path), checks={"local": lambda c: HealthItem("memory", "ok", "x")})
+    assert (items[0].key, items[0].status, items[0].detail) == ("local", "warn", "This check failed (ValueError).")
+
+
+def test_local_detail_strips_url_credentials(tmp_path):
+    def boom(url, timeout):
+        raise OSError("refused")
+    item = check_local(ctx(tmp_path, local_url="http://user:hunter2@127.0.0.1:8090", http_get=boom))
+    assert "hunter2" not in item.detail and "user" not in item.detail
+    assert item.detail == "llama-server isn't answering at http://127.0.0.1:8090"
+
+
+def test_a_long_look_path_keeps_its_tail(tmp_path):
+    repo = tmp_path / ("deep" * 40) / "repo"
+    pack = repo / "sprites" / "riya-v1"
+    item = check_look(ctx(tmp_path, repo_root=repo))
+    assert item.detail == "No art pack found."
+    (repo / "body" / "placeholder-pack").mkdir(parents=True)
+    (repo / "body" / "placeholder-pack" / "manifest.json").write_text("{}")
+    item = check_look(ctx(tmp_path, repo_root=repo))
+    assert len(item.detail) <= DETAIL_MAX and item.detail.endswith(str(pack)[-60:]) and "…" in item.detail
+    assert item.detail.startswith("Placeholder art · her own pack goes in …")
+    pack.mkdir(parents=True)
+    (pack / "manifest.json").write_text("{}")
+    item = check_look(ctx(tmp_path, repo_root=repo))
+    assert item.detail.startswith("Her own art · …") and item.detail.endswith("riya-v1") and len(item.detail) <= DETAIL_MAX
+
+
+def test_the_backup_glob_escapes_the_db_name(tmp_path):
+    db = tmp_path / "we[ird].db"
+    db.write_bytes(b"x")
+    mine, other = tmp_path / "we[ird].db.pre-v4.bak", tmp_path / "wei.db.pre-v9.bak"
+    mine.write_bytes(b"a")
+    other.write_bytes(b"b")
+    os.utime(mine, (NOW - 5000, NOW - 5000))
+    os.utime(other, (NOW - 10, NOW - 10))  # newer, but another database's: a metacharacter must not match it
+    item = check_memory(ctx(tmp_path, db_path=str(db)))
+    assert f"backup {mine.name}" in item.detail and "wei.db" not in item.detail
+
+
+@pytest.mark.parametrize("content", [codecs.BOM_UTF8 + json.dumps(install_hooks.snippet()).encode(),
+                                     json.dumps(install_hooks.snippet()).encode()])
+def test_claude_code_reads_a_bom_prefixed_file(tmp_path, content):
+    path = tmp_path / "claude" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    item = check_claude_code(ctx(tmp_path))
+    assert (item.status, item.fix) == ("warn", "hooks_disconnect") and item.detail.startswith("Applied")
+
+
+@pytest.mark.parametrize("shape", ["array", "deep", "hooks-list"])
+def test_claude_code_unusable_shapes_are_a_warn_row_not_a_raise(tmp_path, shape):
+    content = {"array": b"[1, 2, 3]", "deep": b"[" * 200_000, "hooks-list": b'{"hooks": []}'}[shape]
+    path = tmp_path / "claude" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    item = check_claude_code(ctx(tmp_path))  # called directly: it must not raise
+    assert (item.status, item.detail) == ("warn", "Couldn't read Claude Code's settings.json.")
+    assert path.read_bytes() == content

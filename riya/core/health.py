@@ -6,7 +6,9 @@ others and `run_checks` never raises. No detail ever holds the key, only its mas
 the protocol."""
 from __future__ import annotations
 
+import glob
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -53,6 +55,24 @@ class HealthItem:
             raise ValueError(f"unknown health fix {self.fix!r}")
         # scrub first: a remembered key inside a detail (say, an error text) must not survive the clip
         object.__setattr__(self, "detail", clip(keystore.scrub(str(self.detail))))
+
+
+def clip_left(text: str, n: int) -> str:
+    """text cut from the left, so its tail stays visible: over n characters it is "…" + the last n - 1."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else "…" + text[-(n - 1):]
+
+
+def _with_path(prefix: str, path) -> str:
+    """prefix + path, the path clipped from the left so the whole fits in DETAIL_MAX."""
+    return prefix + clip_left(str(path), max(DETAIL_MAX - len(prefix), 2))
+
+
+_USERINFO = re.compile(r"(//)[^/@\s]*@")
+
+
+def _no_credentials(url: str) -> str:
+    return _USERINFO.sub("//", url)
 
 
 def default_http_get(url: str, timeout_s: float) -> bytes:
@@ -117,7 +137,7 @@ def check_local(ctx: HealthCtx) -> HealthItem:
     try:
         raw = ctx.http_get(ctx.local_url.rstrip("/") + "/v1/models", 3.0)
     except Exception:
-        return HealthItem("local", "warn", f"llama-server isn't answering at {ctx.local_url}")
+        return HealthItem("local", "warn", f"llama-server isn't answering at {_no_credentials(ctx.local_url)}")
     name = ""
     try:
         data = json.loads(raw)
@@ -180,9 +200,9 @@ def check_look(ctx: HealthCtx) -> HealthItem:
     if pack is None:
         return HealthItem("look", "warn", "No art pack found.")
     if placeholder:
-        return HealthItem("look", "warn",
-                          f"Placeholder art · her own pack goes in {Path(ctx.repo_root) / 'sprites' / 'riya-v1'}")
-    return HealthItem("look", "ok", f"Her own art · {pack}")
+        return HealthItem("look", "warn", _with_path("Placeholder art · her own pack goes in ",
+                                                     Path(ctx.repo_root) / "sprites" / "riya-v1"))
+    return HealthItem("look", "ok", _with_path("Her own art · ", pack))
 
 
 def check_eyes(ctx: HealthCtx) -> HealthItem:
@@ -239,7 +259,7 @@ def check_colab(ctx: HealthCtx) -> HealthItem:
 
 def _newest_backup(db: Path) -> Path | None:
     best, best_key = None, None
-    for p in db.parent.glob(f"{db.name}.pre-v*.bak"):
+    for p in db.parent.glob(glob.escape(db.name) + ".pre-v*.bak"):
         try:
             key = (p.stat().st_mtime, p.name)
         except OSError:
@@ -281,9 +301,15 @@ CHECKS: dict[str, Callable[[HealthCtx], HealthItem]] = {
 }
 
 
+_inflight: dict[tuple, threading.Thread] = {}  # (row, check function) -> its thread while a run is still going
+_inflight_lock = threading.Lock()
+
+
 def run_checks(ctx: HealthCtx, timeout_s: float = CHECK_TIMEOUT_S, checks: dict | None = None) -> list[HealthItem]:
     """Every check in its own daemon thread, all joined against one shared deadline. A check still running gives a warn
-    row, a raise gives a warn row naming only the exception type. Never raises; the result follows `checks` order."""
+    row, a raise gives a warn row naming only the exception type. A check whose previous run is still stuck gets no new
+    thread (the row says "No answer yet"), so a blocked call can't pile up threads across refreshes. Never raises; the
+    result follows `checks` order."""
     checks = CHECKS if checks is None else checks
     done: dict[str, HealthItem] = {}
     lock = threading.Lock()
@@ -293,19 +319,30 @@ def run_checks(ctx: HealthCtx, timeout_s: float = CHECK_TIMEOUT_S, checks: dict 
             item = fn(ctx)
             if not isinstance(item, HealthItem):
                 raise TypeError("a check must return a HealthItem")
+            if item.key != key:
+                raise ValueError("a check returned another row's item")
         except BaseException as e:  # noqa: BLE001 - nothing may escape the thread, and str(e) could hold a secret
             item = HealthItem(key, "warn", f"This check failed ({type(e).__name__}).")
         with lock:
             done[key] = item
 
-    threads = []
+    threads, stuck = [], set()
     for key, fn in checks.items():
-        t = threading.Thread(target=work, args=(key, fn), name=f"riya-health-{key}", daemon=True)
-        t.start()
+        with _inflight_lock:
+            for gk in [gk for gk, th in _inflight.items() if not th.is_alive()]:
+                del _inflight[gk]
+            if (key, fn) in _inflight:
+                stuck.add(key)
+                continue
+            t = threading.Thread(target=work, args=(key, fn), name=f"riya-health-{key}", daemon=True)
+            _inflight[(key, fn)] = t
+            t.start()  # inside the lock, so a concurrent run never sees it as "not alive" and doubles it
         threads.append(t)
     deadline = time.monotonic() + timeout_s
     for t in threads:
         t.join(max(0.0, deadline - time.monotonic()))
     with lock:
         finished = dict(done)
-    return [finished.get(key) or HealthItem(key, "warn", f"No answer within {timeout_s:g} s.") for key in checks]
+    return [finished.get(key) or HealthItem(
+        key, "warn", "No answer yet: the last check is still running." if key in stuck
+        else f"No answer within {timeout_s:g} s.") for key in checks]
