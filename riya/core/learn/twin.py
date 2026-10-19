@@ -1,4 +1,5 @@
 """The decision twin: a decayed Beta(alpha, beta) per kind and bucket, guessing whether she's welcome right now. Pure."""
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
@@ -28,8 +29,8 @@ def bucket(now: float, tz, presence: str, work_stretch_s: float) -> str:
 
 def decayed(cell: Cell | None, now: float) -> Cell:
     """The cell as of now: evidence above the prior fades with the time since updated_at."""
-    if cell is None:
-        return Cell(PRIOR, PRIOR, now)
+    if cell is None or not (math.isfinite(cell.alpha) and math.isfinite(cell.beta)) or cell.alpha + cell.beta <= 0:
+        return Cell(PRIOR, PRIOR, now)  # nothing yet, or a corrupt cell: read as the prior
     f = 0.5 ** (max(0.0, now - cell.updated_at) / HALF_LIFE_S)
     return Cell(PRIOR + (cell.alpha - PRIOR) * f, PRIOR + (cell.beta - PRIOR) * f, now)
 
