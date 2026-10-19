@@ -11,7 +11,7 @@ import logging
 import secrets
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol
@@ -141,8 +141,8 @@ def _no_run(*_args, **_kw) -> SimpleNamespace:
 
 @dataclass
 class SetupDeps:
-    key: OnlineKey
-    environ: Mapping[str, str]
+    key: OnlineKey  # its repr shows only the mask
+    environ: Mapping[str, str] = field(repr=False)  # load_dotenv may have put the .env key in it
     claude_settings: Path
     token_path: Path
     runner: Callable
@@ -189,6 +189,9 @@ class Setup:
         self._key_lock = threading.Lock()  # a key save or clear and its model rebuild happen as one
         self._voices: list[str] = []
         self._voices_lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"Setup(deps={self.deps!r})"  # never the key: deps masks it
 
     # ---- voices ---------------------------------------------------------------------------------------------------
     def voices(self) -> list[str]:

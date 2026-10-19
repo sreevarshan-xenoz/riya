@@ -760,3 +760,17 @@ def test_a_hung_setx_is_reported_as_the_setx_step(tmp_path):
     assert not results[-1].ok and results[-1].detail.startswith("Hooks added, but setx failed")
     s.start("hooks_connect", {})  # the slot was released: a second Connect isn't "Already running."
     assert results[-1].detail != "Already running."
+
+
+def test_repr_and_str_never_hold_the_key(tmp_path):
+    from riya.core.models import OpenAICompatModel
+    saved = "SAVED-k3y-0123456789abcdef"
+    key = OnlineKey(tmp_path / "secrets.env", CANARY, ".env")
+    deps = make_deps(tmp_path, key=key, environ={KEY_VAR: CANARY, "PATH": "x"})
+    deps.key.set(saved)
+    s, host, _, _ = make_setup(tmp_path, deps=deps)
+    model = OpenAICompatModel("online", "https://llm.example.test/v1", CANARY, "gemini")
+    for obj in (deps, s, key, model):
+        for text in (repr(obj), str(obj)):
+            assert CANARY not in text and saved not in text, text
+    assert mask(CANARY) in repr(key) and mask(CANARY) in repr(model) and mask(CANARY) in repr(deps)
