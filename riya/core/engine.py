@@ -1277,8 +1277,8 @@ class RiyaCore:
         talking, break); a finished one waits for a break or a talking turn. While gaming it's a templated bubble and
         the model is never called. In quiet hours, or when she may not start conversations, it's always the bubble
         (no voice, no mic): urgent ones now, finished ones only on a talking turn. While a confirmation waits it's the
-        bubble too. Returns the spoken Utterance, True
-        when a bubble was shown, else None. A bubble (or a muted line) waits until a body is there to show it."""
+        bubble too. A bubble (or a muted line) waits until a body is there to show it. Returns the spoken Utterance,
+        True when a bubble was shown, else None."""
         state = self.presence.state
         if not self._reports or state == "away":
             return None
