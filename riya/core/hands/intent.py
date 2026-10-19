@@ -19,39 +19,67 @@ SITES: dict[str, str] = {
 _I = re.I
 
 # ---- durations ----
-_ONES = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
-         "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
-_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60}
-_WORDS = {w: i + 1 for i, w in enumerate(_ONES)}
-_NUMW = rf"(?:(?:{'|'.join(_TENS)})(?:[\s-](?:{'|'.join(_ONES[:9])}))?|{'|'.join(_ONES[::-1])})"
-_UNITS = {"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "m": 60, "min": 60, "mins": 60,
-          "minute": 60, "minutes": 60, "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1}
+_ONES9 = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+_TEENS = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_WORDS = {w: i + 1 for i, w in enumerate(_ONES9)} | {w: i + 10 for i, w in enumerate(_TEENS)} | {"a": 1, "an": 1}
+
+
+def _alt(ws) -> str:
+    return "|".join(sorted(ws, key=len, reverse=True))  # longest first, so "fourteen" beats "four"
+
+
+_SUB99 = rf"(?:(?:{_alt(_TENS)})(?:[\s-](?:{_alt(_ONES9)}))?|{_alt(_ONES9 + _TEENS)})"
+_NUMW = rf"(?:(?:an?|{_alt(_ONES9)})\s+hundred(?:\s+(?:and\s+)?{_SUB99})?|{_SUB99})"
+_UNIT = r"(?:hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?)"
+_UNITS = {"h": 3600, "hr": 3600, "hour": 3600, "m": 60, "min": 60, "minute": 60, "s": 1, "sec": 1, "second": 1,
+          "d": 86400, "day": 86400, "week": 604800}
 _DUR = re.compile(
-    rf"\b(?:(?P<d>\d+(?:\.\d+)?)(?:\s*(?P<du>hours?|hrs?|minutes?|mins?|seconds?|secs?)|(?P<ds>[hms]))"
-    rf"|(?P<n>{_NUMW})\s*(?P<nu>hours?|hrs?|minutes?|mins?|seconds?|secs?)"
-    rf"|(?P<a>an?|half(?:\s+an?)?)\s*(?P<au>hours?|minutes?|seconds?))\b(?P<half>\s+and\s+a\s+half\b)?", _I)
+    rf"\b(?:(?P<d>\d+(?:\.\d+)?)(?P<dh>\s+and\s+a\s+half)?(?:\s*(?P<du>{_UNIT})|(?P<ds>[hmsd]))"
+    rf"|(?P<w>{_NUMW})(?P<wh>\s+and\s+a\s+half)?\s+(?P<wu>{_UNIT})"
+    rf"|(?P<a>an?\s+half|half(?:\s+an?)?|an?)\s+(?P<au>{_UNIT}))\b(?P<post>\s+and\s+a\s+half\b)?", _I)
+_NUMLEFT = re.compile(rf"\b(?:\d+|{_alt(_TENS)}|{_alt(_ONES9 + _TEENS)}|hundred|thousand|half|quarter)\b", _I)
+MAX_TIMER_S = 24 * 3600
+MAX_REMINDER_S = 366 * 24 * 3600
+MAX_TEXT = 500  # `match` and the other detectors only read this many characters of a turn
 
 
 def _word_num(w: str) -> int:
-    parts = re.split(r"[\s-]+", w.lower())
-    return sum(_TENS.get(p) or _WORDS[p] for p in parts)
+    total = 0
+    for t in re.findall(r"[a-z]+", w.lower()):
+        if t == "hundred":
+            total = (total or 1) * 100
+        elif t != "and":
+            total += _TENS.get(t) or _WORDS[t]
+    return total
+
+
+def _unit(u: str) -> int:
+    u = u.lower()
+    return _UNITS[u.rstrip("s") if len(u) > 1 else u]
 
 
 def _duration(text: str, strict: bool) -> float | None:
-    s = text.lower().strip(" .,!?")
+    """Total seconds of every duration phrase in text; None if none, non-positive, non-finite or garbled.
+
+    A number left unparsed (a stray digit or number word) is a garble: guessing would set the wrong time.
+    `strict` also forbids any other leftover words.
+    """
+    s = text[:MAX_TEXT].lower().strip(" .,!?")
     total, hit = 0.0, False
     for mm in _DUR.finditer(s):
         if mm["d"] is not None:
-            n, unit = float(mm["d"]), _UNITS[(mm["du"] or mm["ds"]).lower()]
-        elif mm["n"] is not None:
-            n, unit = _word_num(mm["n"]), _UNITS[mm["nu"].lower()]
+            n, unit, half = float(mm["d"]), _unit(mm["du"] or mm["ds"]), bool(mm["dh"])
+        elif mm["w"] is not None:
+            n, unit, half = _word_num(mm["w"]), _unit(mm["wu"]), bool(mm["wh"])
         else:
-            n, unit = (0.5 if mm["a"].startswith("half") else 1.0), _UNITS[mm["au"].lower()]
-        total += n * unit + (unit / 2 if mm["half"] else 0)
+            n, unit, half = (0.5 if "half" in mm["a"] else 1.0), _unit(mm["au"]), False
+        total += n * unit + (unit / 2 if half or mm["post"] else 0)
         hit = True
-    if not hit or total <= 0:
+    if not hit or not 0 < total < float("inf"):
         return None
-    if strict and re.sub(r"\band\b|[\s,&]", "", _DUR.sub("", s)):
+    rest = _DUR.sub(" ", s)
+    if _NUMLEFT.search(rest) or (strict and re.sub(r"\band\b|[\s,&]", "", rest)):
         return None
     return float(total)
 
@@ -107,11 +135,11 @@ def parse_when(text: str, now: float, tz=None) -> float | None:
     A clock time is the first occurrence strictly after now ("at 5" at 17:30 is 05:00 tomorrow); "in ..." is
     elapsed time, so it ignores DST.
     """
-    s = re.sub(r"\s+", " ", text.replace("’", "'").strip(" .,!?")).lower()
+    s = re.sub(r"\s+", " ", text[:MAX_TEXT].replace("’", "'").strip(" .,!?")).lower()
     base = now.timestamp() if isinstance(now, datetime) else float(now)
     if (mi := re.match(r"in (.+)$", s)):
         d = _duration(mi.group(1), strict=True)
-        return None if d is None else base + d
+        return None if d is None or d > MAX_REMINDER_S else base + d
     mm = _TIME.match(s)
     if not mm or not (mm["day"] or mm["at"]):
         return None
@@ -138,7 +166,7 @@ _NEG = re.compile(r"^(?:don'?t|do not|never|not|no|stop)\b", _I)
 
 def _prep(text: str, extra: bool = False) -> str:
     """The turn without its trailing punctuation/please and without 'hey riya, can you please' lead-ins."""
-    s = re.sub(r"\s+", " ", text.replace("’", "'").strip())
+    s = re.sub(r"\s+", " ", text[:MAX_TEXT].replace("’", "'").strip())
     s = re.sub(r"[\s.!?,;]+$", "", s)
     s = re.sub(r"[\s,]+please$", "", s, flags=_I)
     s = _LEAD.sub("", s, count=1)
@@ -149,8 +177,11 @@ def _prep(text: str, extra: bool = False) -> str:
 
 # ---- match ----
 _TLD_NOT = {"txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "py", "js", "ts", "json", "csv", "md", "log",
-            "exe", "msi", "bat", "cmd", "ps1", "sh", "dll", "lnk", "zip", "rar", "png", "jpg", "jpeg", "gif", "mp3",
-            "mp4", "wav", "ini", "cfg", "yml", "yaml", "xml", "html", "htm", "css", "tmp", "bak"}
+            "exe", "msi", "bat", "cmd", "ps1", "sh", "dll", "lnk", "zip", "rar", "7z", "png", "jpg", "jpeg", "gif",
+            "mp3", "mp4", "wav", "ini", "cfg", "yml", "yaml", "xml", "html", "htm", "css", "tmp", "bak", "rtf", "php",
+            "odt", "ods", "bmp", "svg", "webp", "mov", "avi", "mkv", "flac", "tar", "gz", "iso", "jar", "rb", "rs",
+            "go", "java", "cs", "cpp", "c", "h", "ps", "toml", "sql", "db", "dat", "bin", "apk", "dmg", "pkg", "tsx",
+            "jsx", "vbs", "lock"}
 _DOMAIN = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/\S*)?$", _I)
 
 
@@ -177,7 +208,7 @@ def _timer(s, now, tz):
             not re.search(r"\btimer\b", s, _I):
         return None
     d = parse_duration(s)
-    return Call("timer_set", {"duration": d}) if d else None
+    return Call("timer_set", {"duration": d}) if d and d <= MAX_TIMER_S else None
 
 
 def _cancel(s, now, tz):
@@ -200,7 +231,7 @@ def _lists(s, now, tz):
 
 
 def _note(s, now, tz):
-    mm = re.match(r"(?:(?:take|make|add) a )?note(?: that|:)? (.+)$", s, _I)
+    mm = re.match(r"(?:(?:take|make|add) a note(?: that |: ?| )|note(?: that |: ?| to self:? ?))(.+)$", s, _I)
     return Call("note_add", {"text": mm.group(1).strip()}) if mm else None
 
 
@@ -226,7 +257,8 @@ def _open(s, now, tz, apps=(), commands=()):
 
 _MEDIA = [
     (r"(?:play )?(?:the )?(?:previous|last) (?:track|song)|previous|go back (?:a |one )?(?:track|song)", "previous"),
-    (r"skip(?: to)?(?: the| this| that| a)?(?: next)?(?: track| song| one)?|next (?:track|song)", "next"),
+    (r"skip(?: (?:to )?(?:the |this |that |a )?(?:next )?(?:track|song|one))?|skip to (?:the )?next|next (?:track|song)",
+     "next"),
     (r"(?:pause|resume|unpause|play)(?: the| my| some)?(?: music| song| songs| track| media| playback| video| audio)?",
      "play_pause"),
 ]
@@ -296,6 +328,9 @@ _OPS = [(r"\bplus\b", "+"), (r"\bminus\b", "-"), (r"\b(?:times|multiplied by)\b"
         (r"\bto the power of\b", "^"), (r"(?<=\d)\s*[x×]\s*(?=\d)", " * "), ("÷", "/")]
 
 
+_DATEISH = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b")
+
+
 def _calc(s, now, tz):
     mm = re.match(r"(?:what(?:'s| is)|how much is|calculate|calc|compute|work out) (.+)$", s, _I)
     if not mm:
@@ -304,6 +339,8 @@ def _calc(s, now, tz):
     for pat, rep in _OPS:
         e = re.sub(pat, rep, e, flags=_I)
     e = re.sub(r"\s+", " ", e).strip()
+    if len(e) > 100 or "**" in e or e.count("^") > 1 or _DATEISH.search(e):  # no power towers; dates aren't sums
+        return None
     if re.fullmatch(r"[\d\s.+\-*/%^()]+", e) and re.search(r"[\d)]\s*[-+*/%^]\s*[\d(]", e):
         return Call("calc", {"expr": e})
     return None
@@ -324,12 +361,17 @@ _GENERIC = {"up", "new", "good", "wrong", "going on", "happening", "the matter",
             "the point", "popping", "next", "cooking", "for dinner"}
 
 
+# status/chat/maths, not a topic: "what's the date today", "what's going on with the build", "what's 9**9**9"
+_NOISE = re.compile(r"^(?:on|in|at|with|for|going on)\b|^(?:date|day|time|score)\b|\bgoing on\b|\b(?:today|tonight|"
+                    r"right now|tomorrow|yesterday)\b|^[\d\s.+\-*/%^()=]+$|\d\s*[*/^+%=]", _I)
+
+
 def _lookup(s, now, tz):
     mm = re.match(r"(?:(?:what|who)(?:'s| is| was| are| were)|tell me about) (.+)$", s, _I)
     if not mm:
         return None
     q = re.sub(r"^(?:an? |the )", "", mm.group(1).strip(), flags=_I).strip()
-    if not q or q.lower() in _GENERIC or _NOT_SUBJECT.search(q) or len(q.split()) > 8:
+    if not q or q.lower() in _GENERIC or _NOT_SUBJECT.search(q) or _NOISE.search(q) or len(q.split()) > 8:
         return None
     return Call("lookup", {"query": q})
 
@@ -366,10 +408,19 @@ _CRED = (r"(?:passwords?|passcodes?|pin (?:number|code)|credit cards?|card numbe
          r"|api keys?|secret keys?|ssh keys?|private keys?|credentials?|2fa codes?|otp)")
 _FILE_NOUN = (r"(?:files?|folders?|director(?:y|ies)|downloads|documents|recycle bin|trash|drives?|disks?|system32|"
               r"everything)")
+_NOT_TARGET = (r"me|us|myself|is|was|are|were|has|have|had|will|would|can|could|should|does|did|doesn't|isn't|wasn't|"
+               r"size|editor|box|field|files?|messages?|received|sent|failed|arrived|notifications?|alerts?|from|settings?|app|and|if|when")
 _FORBIDDEN = [re.compile(p, _I) for p in (
     rf"^(?:delete|remove|erase|wipe|trash|shred|format|empty|rename|move|clean out|clear out)\b.*\b{_FILE_NOUN}\b",
     r"^(?:rm|rmdir|del|mv)\s+\S",
-    r"^(?:send|email|e-mail|dm|whatsapp|sms|tweet)\b",
+    # messaging aimed at someone else; "send me the weather" / "text me when it's done" are fine
+    r"^(?:send|forward|shoot|compose) (?:an? |the |my |some )?(?:quick |short )?(?:e-?mails?|messages?|texts?(?! file)|dms?"
+    r"|sms|whatsapp(?: messages?)?|tweets?)\b(?! (?:to|for) (?:me|myself)\b)(?! me\b)",
+    r"^send (?!me\b|us\b|myself\b)[\w'-]+ (?:an? |the )?(?:e-?mail|message|text|dm|sms)\b",
+    r"^send (?:it|this|that|them|these|those|(?:the|an?|my) [\w ]{1,30}?) to (?!me\b|myself\b|my\b|"
+    r"the (?:clipboard|printer)\b)[a-z]",
+    rf"^(?:e-?mail|text|message|dm|whatsapp|sms)\s+(?!(?:{_NOT_TARGET})\b)[a-z]",
+    r"^tweet\b",
     r"^(?:buy|purchase|checkout|check out|subscribe)\b",
     r"^(?:order|book|reserve) (?:me |us )?(?:an?|some|\d+)\b",
     r"^pay (?:for|my|the|his|her|\d|\$)",
