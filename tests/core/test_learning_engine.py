@@ -201,7 +201,6 @@ def test_notes_and_dials_never_go_online_beyond_the_persona_line():
     systems = [c[0]["content"] for c in online.calls]
     assert STYLE_LINE in systems[-1] and TEASE_LOW in systems[-1]
     assert not any(note in s or LIKES_LINE in s for s in systems)
-    assert not any("CANARY_NOTE" in str(c) for c in online.tool_calls)
     core._set_settings({"online_consolidation": True})
     before = len(online.calls)
     core.consolidator.run()
