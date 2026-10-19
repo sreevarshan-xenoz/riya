@@ -210,6 +210,13 @@ def hands_situation(summary: str, result) -> str:
             f'result: "{quote}". {TOOL_NOTE} Tell them how it went in one or two short sentences, in your style.')
 
 
+def tool_turn(said: str) -> str:
+    """Her line about a tool's result as later prompts see it: quoted (it may hold web or command text), with
+    TOOL_NOTE, never raw."""
+    quote = summarize(said, TOOL_QUOTE_MAX).replace('"', "'")
+    return f'(You told them what your tools found: "{quote}") {TOOL_NOTE}'
+
+
 def greeting_reports(events: list) -> str:
     """The extra greeting line for reports that waited while they were away."""
     return f"Also tell them this news about their agents: {report_line(events)}. {UNTRUSTED_NOTE}"

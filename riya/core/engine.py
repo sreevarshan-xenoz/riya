@@ -35,7 +35,8 @@ from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
                               build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
-                              hands_situation, remember_situation, report_bubble, report_line, report_situation)
+                              hands_situation, remember_situation, report_bubble, report_line, report_situation,
+                              tool_turn)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
                                 Confirm, ConfirmDone, ConfirmRequest, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
                                 EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
@@ -95,7 +96,13 @@ CONFIRM_TIMED_OUT = "That one timed out, so I didn't do it. Ask me again?"
 COMMAND_BUSY = "Something's still running, so I'll wait until it's done."
 TOOL_FAILED = "Something went wrong when I tried that."
 REMINDER_TOOLS = frozenset({"timer_set", "reminder_set", "reminder_cancel"})
-_BUTTON = {"yes": "ran", "no": "declined", "expired": "expired", "replaced": "replaced"}
+_BUTTON = {"no": "declined", "expired": "expired", "replaced": "replaced"}  # a yes reports what then happened
+_NOT_RUN = frozenset({"declined", "expired", "cancelled", "replaced"})  # confirm outcomes logged as themselves
+FRIENDLY = {"time_now": "telling the time", "timer_set": "timers", "reminder_set": "reminders",
+            "reminder_list": "reminders", "reminder_cancel": "reminders", "note_add": "notes", "note_list": "notes",
+            "calc": "the calculator", "weather": "the weather", "lookup": "looking things up",
+            "open_url": "opening websites", "open_app": "opening apps", "media": "media keys", "volume": "volume",
+            "clipboard_copy": "the clipboard", "run_command": "running your commands", "write_file": "writing files"}
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
 
@@ -111,7 +118,7 @@ def default_riya_dir() -> Path:
 
 
 def refusal(tool: str) -> str:
-    return f"\"{tool}\" is switched off in my settings, so I can't do that."
+    return f"\"{FRIENDLY.get(tool, tool)}\" is switched off in my settings, so I can't do that."
 
 
 def _worded(text: str) -> bool:
@@ -191,7 +198,7 @@ class RiyaCore:
         traits, saved = load_traits(), self.kv.get("feelings")
         self.feelings = Feelings.from_dict(saved, clock, traits) if saved else Feelings(clock, traits)
         self.presence = Presence(idle_source, clock, self.kv)
-        self.initiative = Initiative(clock, lambda: self.settings)
+        self.initiative = Initiative(clock, lambda: self.settings, tz)
         self.router = Router(local, online, self.settings.online_enabled)
         self.consolidator = Consolidator(self.memory, self._consolidation_model, clock)
         self.turns: list[dict] = []
@@ -508,7 +515,8 @@ class RiyaCore:
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
-                self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report")
+                self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report",
+                                  quoted=tool)
                 if after:
                     after(outcome)
             except Exception:
@@ -602,13 +610,16 @@ class RiyaCore:
         r = self.memory.retrieve(query)
         return r if threads is None else replace(r, threads=threads)
 
-    def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True) -> None:
-        """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded."""
+    def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True,
+                     quoted: bool = False) -> None:
+        """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded.
+        quoted (her line about a tool's result, which may carry web or command text): later prompts see it only
+        quoted, with the untrusted note (prompt.tool_turn); the transcript keeps what was shown."""
         if said is not None:
             if said:
                 self.memory.append_transcript("assistant", said, consolidate=consolidate)
             new = ([] if user_text is None else [{"role": "user", "content": user_text}]) + (
-                [{"role": "assistant", "content": said}] if said else [])
+                [{"role": "assistant", "content": tool_turn(said) if quoted else said}] if said else [])
             self.turns = (self.turns + new)[-KEEP_TURNS:]
             self.last_turn_at = self.clock.now()
         self._save_feelings()
@@ -703,8 +714,7 @@ class RiyaCore:
         except Exception:
             log.exception("couldn't record the user's turn")
         if answer == "yes":
-            self._confirm_done(p, "ran")
-            yield from self._run_call(text, p.call, p.summary)
+            yield from self._run_call(text, p.call, p.summary, confirmed=p)
         elif answer == "no":
             self._confirm_done(p, "declined")
             yield from self._say_line(CONFIRM_DECLINED, user_text=text)
@@ -715,9 +725,10 @@ class RiyaCore:
         return False
 
     def _confirm_done(self, p: Pending, outcome: str) -> None:
-        """confirm_done for the body; every outcome but "ran" is logged here (a run logs ran or failed itself)."""
+        """confirm_done for the body. An answer that ran nothing is logged here; a run (ran, started, failed) is
+        logged where it happens."""
         self.emit(ConfirmDone(id=p.id, outcome=outcome))
-        if outcome != "ran":
+        if outcome in _NOT_RUN:
             self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, outcome)
 
     def _confirm_button(self, id: str, yes: bool) -> None:
@@ -726,19 +737,14 @@ class RiyaCore:
         with self._hands_lock:
             current = self.confirms.pending
             answer, p = self.confirms.take_button(id, yes)
-            self.emit(ConfirmDone(id=p.id if p else str(id), outcome=_BUTTON[answer]))
-            if p is None:
-                return
-            if answer != "yes":
-                if answer == "no" or (current is not None and current.id == p.id):  # else expiry logged it
+            if p is None or answer != "yes":
+                self.emit(ConfirmDone(id=p.id if p else str(id), outcome=_BUTTON[answer]))
+                if p is not None and (answer == "no" or (current is not None and current.id == p.id)):
                     self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, _BUTTON[answer])
-                return
-            if p.call.tool == "run_command":
-                if not self._start_command(p.call, p.summary):
-                    self._log_action("run_command", 2, p.summary, "refused")
-                    self._results.put((p.summary, ToolResult(False, COMMAND_BUSY)))
-                return
-            self._results.put((p.summary, self._run_tool(p.call, p.summary)))
+                return  # (an expiry the tick saw was logged there)
+            _, result = self._execute(p.call, p.summary, confirmed=p)
+            if result is not None:  # a command that started reports through its worker
+                self._results.put((p.summary, result))
 
     def _hands_turn(self, text: str, call: Call | str) -> Iterator[str]:
         """A turn that asks her to act. Every call (matched or proposed) is validated against the settings first;
@@ -778,19 +784,36 @@ class RiyaCore:
         self.emit(ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at))
         yield from self._say_line(confirm_text(p), user_text=user_text, spoken=spoken, kind=kind)
 
-    def _run_call(self, text: str, call: Call, summary: str) -> Iterator[str]:
+    def _run_call(self, text: str, call: Call, summary: str, confirmed: Pending | None = None) -> Iterator[str]:
         """Runs a validated call for the user's turn: a command goes to the worker ("Running ..." at once, the result
         later through tick); anything else runs here and she says how it went (the result text is the fallback)."""
-        if call.tool == "run_command":
-            if self._start_command(call, summary):
-                yield from self._say_line(f"Running {_q(call.args['name'], 40)}~", user_text=text)
-            else:
-                self._log_action("run_command", 2, summary, "refused")
-                yield from self._say_line(COMMAND_BUSY, user_text=text)
-            return
-        result = self._run_tool(call, summary)
-        yield from self._speak("reply", user_text=text, query=text, spoken=True, consolidate=False, shape="tool",
-                               situation=hands_situation(summary, result), tail=result.text, tail_if_silent=True)
+        how, result = self._execute(call, summary, confirmed)
+        if how == "started":
+            yield from self._say_line(f"Running {_q(call.args['name'], 40)}~", user_text=text)
+        elif how == "refused":
+            yield from self._say_line(result.text, user_text=text)
+        else:
+            yield from self._speak("reply", user_text=text, query=text, spoken=True, consolidate=False, shape="tool",
+                                   situation=hands_situation(summary, result), tail=result.text, tail_if_silent=True)
+
+    def _execute(self, call: Call, summary: str,
+                 confirmed: Pending | None = None) -> tuple[str, ToolResult | None]:
+        """Executes a validated call: ("started", None) when a command went to the worker, ("refused", a templated
+        result) when it can't run now (its tool was switched off since she asked, or a command is still running),
+        else ("ran", the result). A confirmed call's confirm_done says what actually happened."""
+        if confirmed is not None and not self.settings.tools_enabled.get(call.tool, False):
+            how, result = "refused", ToolResult(False, refusal(call.tool))
+        elif call.tool == "run_command":
+            started = self._start_command(call, summary)
+            how, result = ("started", None) if started else ("refused", ToolResult(False, COMMAND_BUSY))
+        else:
+            how, result = "ran", self._run_tool(call, summary)
+        if how == "refused":
+            self._log_action(call.tool, TIERS[call.tool], summary, "refused")
+        if confirmed is not None:
+            ok = how == "started" or (how == "ran" and result.ok)
+            self._confirm_done(confirmed, ("started" if how == "started" else "ran") if ok else "failed")
+        return how, result
 
     def _run_tool(self, call: Call, summary: str) -> ToolResult:
         """Runs one validated, non-command call now; logs it, saves a first weather place, sends the reminders."""

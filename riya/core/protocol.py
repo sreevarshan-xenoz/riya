@@ -150,10 +150,12 @@ class ConfirmRequest(BaseModel):
 
 
 class ConfirmDone(BaseModel):
-    """A confirmation is over: the body drops its bubble and buttons."""
+    """A confirmation is over: the body drops its bubble and buttons. outcome is what actually happened: ran (and
+    worked), started (a command went to the worker), failed (it ran and failed, or couldn't run: the tool was switched
+    off since, or a command is still running), declined, expired, replaced or cancelled."""
     type: Literal["confirm_done"] = "confirm_done"
     id: str
-    outcome: Literal["ran", "declined", "expired", "replaced", "cancelled"]
+    outcome: Literal["ran", "started", "failed", "declined", "expired", "replaced", "cancelled"]
 
 
 class ReminderInfo(BaseModel):
