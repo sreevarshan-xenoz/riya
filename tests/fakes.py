@@ -63,3 +63,13 @@ def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, 
     core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=src, local=local, online=online,
                     emit=emitted.append, effects=FakeEffects(), http=FakeHttp({}), riya_dir=riya_dir, tz=tz, **eyes)
     return core, emitted, src, local
+
+
+class FixedRng:
+    """An rng whose random() always returns the same value."""
+
+    def __init__(self, value: float = 0.0):
+        self.value = value
+
+    def random(self) -> float:
+        return self.value
