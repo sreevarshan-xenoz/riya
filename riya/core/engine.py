@@ -333,6 +333,7 @@ class RiyaCore:
         self.health_http = health.default_http_get
         self.health_timeout_s = health.CHECK_TIMEOUT_S
         self.startup_dir: Path | None = None  # None: the real Startup folder
+        self._session_start = self.clock.now()  # a voice sample before this is no evidence she speaks now
         self._settings_lock = threading.Lock()  # a settings patch: saved, applied and sent as one
         self._health_lock = threading.Lock()  # guards _health_running and _health_again
         self._health_running = self._health_again = False
@@ -2177,7 +2178,7 @@ class RiyaCore:
             claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT, db_path=db_path,
             schema_version=version,
             startup_dir=read("the Startup folder", lambda: self.startup_dir or default_startup_dir()),
-            http_get=self.health_http, tz=self.tz)
+            session_start=self._session_start, http_get=self.health_http, tz=self.tz)
 
     def _start_health(self) -> None:
         """One riya-health thread at a time; a request while it runs makes it run once more when done (any number of

@@ -774,3 +774,16 @@ def test_repr_and_str_never_hold_the_key(tmp_path):
         for text in (repr(obj), str(obj)):
             assert CANARY not in text and saved not in text, text
     assert mask(CANARY) in repr(key) and mask(CANARY) in repr(model) and mask(CANARY) in repr(deps)
+
+
+def test_voice_sample_without_a_voice_samples_the_current_one(tmp_path):
+    """The body sends args {} when it doesn't know her voice yet: the core samples the current voice."""
+    s, host, deps, results = make_setup(tmp_path)
+    host.settings.voice = "alba"
+    assert s.request("voice_sample", {}) is None
+    assert host.samples == [("alba", SAMPLE_TEXT)] and results[-1] == Outcome("voice_sample", True,
+                                                                              "Played a sample of alba.")
+    with pytest.raises(SetupError):
+        s.request("voice_sample", {"voice": "alba", "x": 1})
+    with pytest.raises(SetupError):
+        s.request("voice_choose", {})  # choosing still needs a voice
