@@ -485,3 +485,22 @@ def test_an_unreadable_health_field_warns_only_its_row(tmp_path, monkeypatch):
     assert (rows["autostart"].status, rows["autostart"].detail) == ("warn", "This check failed (KeyError).")
     assert all("This check failed" not in i.detail for k, i in rows.items() if k != "autostart")
     assert rows["memory"].status == "ok" and rows["local"].detail == "No local server is configured."
+
+
+def test_the_voice_row_says_speaking_works_only_after_a_sample_this_session(tmp_path):
+    core, emitted, *_ = make_core(setup_deps=deps(tmp_path))
+    core.voice_sampler = lambda voice, text: None
+    # an earlier session's success is no evidence for this one
+    core.kv.set(TESTS_KEY, {"voice_sample": {"at": core.clock.now() - 3600, "ok": True, "detail": "x", "mask": None}})
+
+    def voice_row():
+        mark = len(emitted)
+        core.handle(HealthGet())
+        h = wait_for(emitted, HealthMsg, after=mark)
+        wait_health_idle(core)
+        return next(i for i in h.items if i.key == "voice")
+
+    assert voice_row().detail == "Voice ready (not tested yet) · voice alba"
+    assert run(core, emitted, "voice_sample").ok  # no voice arg: the current one
+    row = voice_row()
+    assert (row.status, row.detail, row.fix) == ("ok", "Speaking works · voice alba", "voice_sample")

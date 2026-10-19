@@ -137,7 +137,7 @@ def test_voice_mic_eyes_autostart_colab_memory_states(tmp_path):
     assert (item.status, item.fix) == ("warn", "voice_sample")
     assert item.detail == "Voice alba · the last sample failed: no audio"
     item = check_voice(ctx(tmp_path))
-    assert (item.status, item.detail, item.fix) == ("ok", "Voice alba · speaking works", "voice_sample")
+    assert (item.status, item.detail, item.fix) == ("ok", "Voice ready (not tested yet) · voice alba", "voice_sample")
     # mic
     item = check_mic(ctx(tmp_path, settings=settings(mute_mic=True)))
     assert (item.status, item.detail, item.fix) == ("off", "Mic muted in Settings.", None)
@@ -472,3 +472,14 @@ def test_claude_code_names_a_blocking_setting_with_no_fix(tmp_path, data, reason
     assert path.read_bytes() == before
     path.write_text(json.dumps(data))  # not connected yet: Connect is still offered (its preview names the blocker)
     assert check_claude_code(ctx(tmp_path)).fix == "hooks_connect"
+
+
+def test_voice_says_speaking_works_only_after_a_sample_this_session(tmp_path):
+    ok = lambda at: {"voice_sample": {"at": at, "ok": True, "detail": "Played a sample of alba.", "mask": None}}  # noqa: E731
+    untested = ("ok", "Voice ready (not tested yet) · voice alba", "voice_sample")
+    item = check_voice(ctx(tmp_path, session_start=NOW - 60, last_tests=ok(NOW - 30)))
+    assert (item.status, item.detail, item.fix) == ("ok", "Speaking works · voice alba", "voice_sample")
+    item = check_voice(ctx(tmp_path, session_start=NOW - 60, last_tests=ok(NOW - 3600)))  # an earlier session's
+    assert (item.status, item.detail, item.fix) == untested
+    item = check_voice(ctx(tmp_path, session_start=None, last_tests=ok(NOW - 30)))  # no session known: no evidence
+    assert (item.status, item.detail, item.fix) == untested

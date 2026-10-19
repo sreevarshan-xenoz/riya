@@ -100,6 +100,7 @@ class HealthCtx:
     db_path: str  # "" means in memory
     schema_version: int
     startup_dir: Path
+    session_start: float | None = None  # when this core started; None: no test counts as this session's
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
 
@@ -178,7 +179,9 @@ def check_voice(ctx: HealthCtx) -> HealthItem:
     t = _last_test(ctx, "voice_sample")
     if t is not None and not t.get("ok"):
         return HealthItem("voice", "warn", f"Voice {voice} · the last sample failed: {t.get('detail', '')}", "voice_sample")
-    return HealthItem("voice", "ok", f"Voice {voice} · speaking works", "voice_sample")
+    if t is not None and ctx.session_start is not None and t["at"] >= ctx.session_start:  # heard this session
+        return HealthItem("voice", "ok", f"Speaking works · voice {voice}", "voice_sample")
+    return HealthItem("voice", "ok", f"Voice ready (not tested yet) · voice {voice}", "voice_sample")
 
 
 def check_mic(ctx: HealthCtx) -> HealthItem:

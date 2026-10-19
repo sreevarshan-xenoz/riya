@@ -33,6 +33,7 @@ CONFIRM_GATED = ("online_test", "eyes_test", "hooks_connect", "hooks_disconnect"
 PLAIN = tuple(a for a in ACTIONS if a not in CONFIRM_GATED)
 ARGS = {"online_key_set": {"key": str}, "voice_sample": {"voice": str}, "voice_choose": {"voice": str},
         "autostart": {"on": bool}}
+OPTIONAL_ARGS = {"voice_sample": ("voice",)}  # left out: the current voice
 NONCE_TTL_S = 60
 MAX_PENDING = 8
 ACTION_TIMEOUT_S = 30.0
@@ -213,8 +214,9 @@ class Setup:
         if not isinstance(action, str) or action not in ACTIONS:
             raise SetupError("unknown setup action")
         spec = ARGS.get(action, {})
-        if not isinstance(args, dict) or set(args) != set(spec) or any(
-                type(args[k]) is not t for k, t in spec.items()):  # exact types: True is no str, 1 is no bool
+        required = set(spec) - set(OPTIONAL_ARGS.get(action, ()))
+        if not isinstance(args, dict) or not required <= set(args) <= set(spec) or any(
+                type(args[k]) is not t for k, t in spec.items() if k in args):  # exact types: True is no str, 1 no bool
             raise SetupError(f"bad arguments for {action}")
         return dict(args)
 
@@ -419,7 +421,7 @@ class Setup:
         return voice in self.voices() or voice == self.host.settings.voice
 
     def _do_voice_sample(self, args) -> Outcome:
-        voice = args["voice"]
+        voice = args.get("voice", self.host.settings.voice)
         if not self._known_voice(voice):
             return Outcome("voice_sample", False, "Unknown voice.")
         try:
