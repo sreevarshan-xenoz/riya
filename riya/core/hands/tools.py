@@ -1,7 +1,6 @@
 """The tool registry: tiers, ParamSpec validation (`validate_call`), summaries and the runs that need no effects.
 
-Runs that need the OS or the network (Task 4) or timers, reminders and notes (Task 5) raise NotImplementedError here
-until their task fills them in. `Settings` is named only under TYPE_CHECKING: settings.py imports TIERS from here.
+Runs that need timers, reminders and notes (Task 5) raise NotImplementedError here until their task fills them in. `Settings` is named only under TYPE_CHECKING: settings.py imports TIERS from here.
 """
 from __future__ import annotations
 
@@ -9,10 +8,13 @@ import math
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from .effects import VOLUME_PRESSES, output_tail
 from .intent import parse_duration
-from .safe import calc, format_number, safe_filename, valid_url
+from .net import lookup, weather
+from .safe import calc, format_number, safe_filename, unique_path, valid_url
 from .types import RESULT_MAX, Call, ParamSpec, ToolResult
 
 if TYPE_CHECKING:
@@ -30,6 +32,8 @@ TIERS: dict[str, int] = {
 DEFAULT_OFF = frozenset({"run_command", "write_file"})
 MAX_TIMER_S = 24 * 3600
 WRITE_MAX_CHARS = 65_536
+WRITE_MAX_BYTES = 65_536
+WRITE_TRIES = 5
 
 
 @dataclass
@@ -86,6 +90,111 @@ def _q(s: str, n: int = 60) -> str:
     return '"' + _ctl(s.replace("\\", "\\\\").replace('"', '\\"')) + '"'
 
 
+def _effect(ctx: ToolCtx, name: str, *a) -> bool:
+    """Call one effect; False if it raised (a failed effect is a kind result, never an exception)."""
+    try:
+        getattr(ctx.effects, name)(*a)
+        return True
+    except Exception:
+        return False
+
+
+def _open_url(args: dict, ctx: ToolCtx) -> ToolResult:
+    if not _effect(ctx, "open_url", args["url"]):
+        return ToolResult(False, "I couldn't open that.")
+    return ToolResult(True, f"Opened {_ctl(args['url'])[:150]}.")
+
+
+def _open_app(args: dict, ctx: ToolCtx) -> ToolResult:
+    app = _named(getattr(ctx.settings, "apps", None), args["name"])
+    if app is None or not isinstance(app.get("target"), str):
+        return ToolResult(False, f"{_q(args['name'], 40)} isn't in your apps list.")
+    if not _effect(ctx, "open_app", app["target"]):
+        return ToolResult(False, f"I couldn't open {_q(app['name'], 40)}.")
+    return ToolResult(True, f"Opened {_q(app['name'], 40)}.")
+
+
+_MEDIA = {"play_pause": "Toggled play/pause.", "next": "Skipped to the next track.",
+          "previous": "Back to the previous track."}
+_VOLUME = {"up": ("volume_up", VOLUME_PRESSES, "Volume up."), "down": ("volume_down", VOLUME_PRESSES, "Volume down."),
+           "mute": ("mute", 1, "Toggled mute.")}
+
+
+def _media(args: dict, ctx: ToolCtx) -> ToolResult:
+    if not _effect(ctx, "media_key", args["action"], 1):
+        return ToolResult(False, "I couldn't press the media key.")
+    return ToolResult(True, _MEDIA[args["action"]])
+
+
+def _volume(args: dict, ctx: ToolCtx) -> ToolResult:
+    key, presses, said = _VOLUME[args["action"]]
+    if not _effect(ctx, "media_key", key, presses):
+        return ToolResult(False, "I couldn't change the volume.")
+    return ToolResult(True, said)
+
+
+def _clipboard_copy(args: dict, ctx: ToolCtx) -> ToolResult:
+    if not _effect(ctx, "copy", args["text"]):
+        return ToolResult(False, "I couldn't reach the clipboard.")
+    return ToolResult(True, f"Copied {len(args['text'])} characters to the clipboard.")
+
+
+def _run_command(args: dict, ctx: ToolCtx) -> ToolResult:
+    """Run the snapshot's argv (never a shell); ok only for exit code 0. The output tail is cut to fit the 200 chars."""
+    name, timeout = _q(args["name"], 40), min(args["timeout_s"], 60)
+    try:
+        code, out = ctx.effects.run(args["argv"], args["cwd"], timeout)
+    except Exception:
+        return ToolResult(False, f"{name} couldn't start.")
+    if code is None:  # the effect says why, e.g. "timed out after 60 s"
+        return ToolResult(False, f"{name} {output_tail(out, RESULT_MAX - len(name) - 1)}")
+    head = f"{name} finished:" if code == 0 else f"{name} failed (exit {code}):"
+    tail = output_tail(out, RESULT_MAX - len(head) - 1)
+    return ToolResult(code == 0, f"{head} {tail}" if tail else head.rstrip(":") + " (no output).", {"exit": code})
+
+
+def _write_file(args: dict, ctx: ToolCtx) -> ToolResult:
+    """Write into the Riya folder: at most 64 KB of UTF-8, exclusive create, a numeric suffix instead of overwriting."""
+    data = args["text"].encode("utf-8", "replace")
+    if len(data) > WRITE_MAX_BYTES:
+        return ToolResult(False, "That's too long to save (the limit is 64 KB).")
+    if ctx.riya_dir is None:
+        return ToolResult(False, "I don't have a folder to save into.")
+    try:
+        Path(ctx.riya_dir).mkdir(parents=True, exist_ok=True)
+        for _ in range(WRITE_TRIES):  # unique_path then open is racy: "x" decides, and a loser takes the next suffix
+            path = unique_path(ctx.riya_dir, args["filename"])
+            if path is None:
+                break
+            try:
+                with open(path, "xb") as f:
+                    f.write(data)
+            except FileExistsError:
+                continue
+            except OSError:
+                path.unlink(missing_ok=True)
+                raise
+            return ToolResult(True, f"Saved {_q(path.name, 60)} in your Riya folder.", {"path": str(path)})
+    except OSError:
+        return ToolResult(False, "I couldn't save that file.")
+    return ToolResult(False, "I couldn't find a free file name.")
+
+
+def _weather(args: dict, ctx: ToolCtx) -> ToolResult:
+    saved = getattr(ctx.settings, "weather_place", None)
+    place = args.get("place") or saved
+    if not place:
+        return ToolResult(False, "Which city should I check the weather for?")
+    r = weather(ctx.http, place)
+    if r.ok and "place" in args and not saved:  # the first named city becomes the default (the engine saves it)
+        r.data = {**(r.data or {}), "save_place": args["place"].strip()}
+    return r
+
+
+def _lookup(args: dict, ctx: ToolCtx) -> ToolResult:
+    return lookup(ctx.http, args["query"])
+
+
 def _P(type, **kw) -> ParamSpec:
     return ParamSpec(type, **kw)
 
@@ -115,16 +224,17 @@ REGISTRY: dict[str, Tool] = dict([
     _tool("note_list", {}, lambda a: "list your notes"),
     _tool("calc", {"expr": _P("str")}, lambda a: f"work out {a['expr']}", _calc),
     _tool("weather", {"place": _P("str", required=False, max_len=80)},
-          lambda a: f"check the weather in {a['place']}" if "place" in a else "check the weather"),
-    _tool("lookup", {"query": _P("str")}, lambda a: f"look up {_q(a['query'])}"),
-    _tool("open_url", {"url": _P("str", max_len=2000)}, lambda a: f"open {_ctl(a['url'])}"),
-    _tool("open_app", _NAME, lambda a: f"open {_q(a['name'])}"),
-    _tool("media", _action("play_pause", "next", "previous"), lambda a: f"media: {a['action'].replace('_', '/')}"),
-    _tool("volume", _action("up", "down", "mute"), lambda a: f"volume {a['action']}"),
-    _tool("clipboard_copy", {"text": _P("str", max_len=4000)}, lambda a: f"copy {_q(a['text'])} to the clipboard"),
-    _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({_ctl(' '.join(map(str, a['argv'])))})"),
+          lambda a: f"check the weather in {a['place']}" if "place" in a else "check the weather", _weather),
+    _tool("lookup", {"query": _P("str")}, lambda a: f"look up {_q(a['query'])}", _lookup),
+    _tool("open_url", {"url": _P("str", max_len=2000)}, lambda a: f"open {_ctl(a['url'])}", _open_url),
+    _tool("open_app", _NAME, lambda a: f"open {_q(a['name'])}", _open_app),
+    _tool("media", _action("play_pause", "next", "previous"), lambda a: f"media: {a['action'].replace('_', '/')}", _media),
+    _tool("volume", _action("up", "down", "mute"), lambda a: f"volume {a['action']}", _volume),
+    _tool("clipboard_copy", {"text": _P("str", max_len=4000)}, lambda a: f"copy {_q(a['text'])} to the clipboard", _clipboard_copy),
+    _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({_ctl(' '.join(map(str, a['argv'])))})", _run_command),
     _tool("write_file", {"filename": _P("str"), "text": _P("str", max_len=WRITE_MAX_CHARS)},
-          lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8', 'replace'))} bytes): {_q(a['text'], 80)}"),
+          lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8', 'replace'))} bytes): {_q(a['text'], 80)}",
+          _write_file),
 ])
 assert set(REGISTRY) == set(TIERS)
 
