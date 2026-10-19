@@ -334,3 +334,23 @@ def test_lookup_forms(text, query):
 @pytest.mark.parametrize("text", ["search my files for taxes", "look up my password", "look it up", "search for it"])
 def test_lookup_keeps_its_guards(text):
     assert m(text) is None or m(text).tool != "lookup"
+
+
+# ---- final review: I4, the 500-char window bounds only the detection --------------------------------------------
+def words(n):
+    s = " ".join(f"word{i}" for i in range(n))
+    return s
+
+
+@pytest.mark.parametrize("size", [501, 3000, 5000])
+def test_write_file_text_is_the_whole_turn(size):
+    text = words(2000)[:size].rstrip()
+    assert m(f"write a file called essay.txt saying {text}") == Call("write_file",
+                                                                     {"filename": "essay.txt", "text": text})
+
+
+def test_note_and_copy_text_is_the_whole_turn():
+    text = words(400)[:900].rstrip()
+    assert m(f"note that {text}") == Call("note_add", {"text": text})
+    big = words(1000)[:3000].rstrip()
+    assert m(f"copy {big} to the clipboard") == Call("clipboard_copy", {"text": big})
