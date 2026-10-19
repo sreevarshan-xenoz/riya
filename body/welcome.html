@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to Riya</title>
+<link rel="stylesheet" href="welcome.css">
+</head>
+<body>
+<header>
+  <h1>Welcome to Riya</h1>
+  <span id="conn" class="conn off" aria-live="polite">connecting…</span>
+</header>
+<main>
+  <p id="progress" class="progress"></p>
+  <p id="line" class="line" aria-live="polite"></p>
+  <div id="controls" class="controls"></div>
+  <p id="result" class="note" role="status" aria-live="polite"></p>
+</main>
+<footer>
+  <button id="skip-setup" type="button" class="link">Skip setup</button>
+  <div class="nav">
+    <button id="back" type="button">Back</button>
+    <button id="skip" type="button">Skip</button>
+    <button id="next" type="button" class="primary">Next</button>
+  </div>
+</footer>
+
+<template id="key-template">
+  <input id="online-key" type="password" autocomplete="off" maxlength="200" spellcheck="false" placeholder="paste a key" aria-label="Online API key">
+  <div class="inline">
+    <button id="online-key-save" type="button">Save key</button>
+    <button id="online-key-page" type="button">Get a free key</button>
+  </div>
+  <p id="online-key-source" class="note"></p>
+  <p id="online-key-err" class="err" role="alert" hidden></p>
+  <p class="note">The key goes to her core once and is never shown again, only its last four characters.</p>
+</template>
+
+<script src="src/health-logic.js"></script>
+<script src="src/welcome-logic.js"></script>
+<script src="welcome.js"></script>
+</body>
+</html>

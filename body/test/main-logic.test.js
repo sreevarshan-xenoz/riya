@@ -279,3 +279,77 @@ test("health is never replayed and is forgotten on disconnect; setup messages ar
     assert.equal(shouldSendToCore({ type }, true), true, type);
   }
 });
+
+const M = require("../src/main-logic");
+const readBody = (f) => require("node:fs").readFileSync(require("node:path").join(__dirname, "..", f), "utf8");
+
+test("shouldOpenWelcome only for onboarded false, once", () => {
+  assert.equal(M.shouldOpenWelcome({ onboarded: false }, false), true);
+  assert.equal(M.shouldOpenWelcome({ onboarded: false }, true), false);
+  for (const s of [{ onboarded: true }, {}, null, undefined, { onboarded: "false" }, { onboarded: 0 }]) {
+    assert.equal(M.shouldOpenWelcome(s, false), false, JSON.stringify(s));
+  }
+});
+
+test("KEY_URL is the one fixed page the main process opens", () => {
+  assert.equal(M.KEY_URL, "https://aistudio.google.com/apikey");
+});
+
+test("welcomeClosedMessage: closing counts as skipping, quitting sends nothing, onboarded sends nothing", () => {
+  const Ajv = require("ajv");
+  const schema = JSON.parse(readBody("../docs/protocol.schema.json"));
+  const validate = new Ajv({ strict: false }).compile(schema.body_to_core);
+  for (const arg of [{ quitting: false, onboarded: false }, { quitting: false }, { onboarded: false }, {}]) {
+    const m = M.welcomeClosedMessage(arg);
+    assert.deepEqual(m, { type: "onboarding_done" }, JSON.stringify(arg));
+    assert.ok(validate(m));
+  }
+  assert.equal(M.welcomeClosedMessage({ quitting: true, onboarded: false }), null);
+  assert.equal(M.welcomeClosedMessage({ quitting: true }), null);
+  assert.equal(M.welcomeClosedMessage({ quitting: false, onboarded: true }), null);
+});
+
+test("ipcAllowed holds the welcome's IPC rules", () => {
+  assert.equal(M.ipcAllowed("welcome:open", "settings"), true);
+  assert.equal(M.ipcAllowed("welcome:open", "welcome"), false);
+  assert.equal(M.ipcAllowed("welcome:open", "other"), false);
+  assert.equal(M.ipcAllowed("welcome:key-page", "welcome"), true);
+  assert.equal(M.ipcAllowed("welcome:key-page", "settings"), true);
+  assert.equal(M.ipcAllowed("welcome:key-page", "other"), false);
+  assert.equal(M.ipcAllowed("core:send", "settings"), false);
+  assert.equal(M.ipcAllowed("welcome:open", undefined), false);
+  assert.equal(M.ipcAllowed("toString", "settings"), false);
+});
+
+test("the quit-mid-welcome and close-once rules, as the closed handler applies them", () => {
+  // The handler is `const m = welcomeClosedMessage({quitting, onboarded}); if (m) sendToCore(m);` on each close.
+  const sent = [];
+  const closed = (state) => {
+    const m = M.welcomeClosedMessage({ quitting: state.quitting, onboarded: state.settings.onboarded });
+    if (m) sent.push(m);
+  };
+  closed({ quitting: true, settings: { onboarded: false } }); // Riya quitting mid-welcome: before-quit destroyed the window
+  assert.deepEqual(sent, []);
+  const state = { quitting: false, settings: { onboarded: false } };
+  closed(state); // Finish, Skip or the window's own X
+  assert.deepEqual(sent, [{ type: "onboarding_done" }]);
+  state.settings.onboarded = true; // the core's settings message answers
+  closed(state); // reopened from Settings and closed again: nothing
+  assert.equal(sent.length, 1);
+});
+
+test("main.js wires the welcome through the pure rules, and the renderer can never pass a URL", () => {
+  const main = readBody("main.js");
+  const preload = readBody("preload.js");
+  assert.match(main, /welcomeClosedMessage\(\{ quitting: state\.quitting, onboarded: state\.settings\.onboarded \}\)/);
+  assert.match(main, /ipcAllowed\("welcome:open", senderKind\(event\.sender\)\)/);
+  assert.match(main, /ipcAllowed\("welcome:key-page", senderKind\(event\.sender\)\)/);
+  assert.match(main, /shouldOpenWelcome\(msg\.settings, state\.welcomeShown\)/);
+  assert.equal((main.match(/openExternal\(/g) || []).length, 1, "the one fixed link is the only openExternal");
+  assert.match(main, /shell\.openExternal\(KEY_URL\)/);
+  assert.doesNotMatch(main, /onboarding_done/, "main.js reaches onboarding_done only through welcomeClosedMessage");
+  assert.match(main, /--riya-mode=welcome/);
+  assert.match(preload, /openWelcome: \(\) => ipcRenderer\.send\("welcome:open"\)/);
+  assert.match(preload, /openKeyPage: \(\) => ipcRenderer\.send\("welcome:key-page"\)/);
+  assert.match(main, /contextIsolation: true,\s*nodeIntegration: false,\s*sandbox: true,[\s\S]*?welcome\.html/);
+});

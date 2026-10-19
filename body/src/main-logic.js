@@ -115,7 +115,32 @@ function forgetOnDisconnect(cache) {
   for (const type of FORGET_ON_DISCONNECT) cache.delete(type);
 }
 
+/** The one page "Get a free key" opens, from the main process. The renderer asks by channel only, never with a URL. */
+const KEY_URL = "https://aistudio.google.com/apikey";
+
+/** Open the welcome once per session, and only for a core that says the user is not onboarded (an older core without
+ *  the field never opens it). */
+function shouldOpenWelcome(settings, alreadyShown) {
+  return !alreadyShown && !!settings && settings.onboarded === false;
+}
+
+/** What to send when the welcome window closes: `onboarding_done`, unless Riya is quitting (before-quit destroyed the
+ *  window, so a new user who quits mid-welcome stays not onboarded) or the user is onboarded already. Closing the
+ *  welcome yourself counts as skipping. */
+function welcomeClosedMessage({ quitting, onboarded } = {}) {
+  return quitting === true || onboarded === true ? null : { type: "onboarding_done" };
+}
+
+const WELCOME_IPC = { "welcome:open": ["settings"], "welcome:key-page": ["welcome", "settings"] };
+
+/** Which window kind may use a main-process channel of the welcome: open it only from Settings, the key page from
+ *  either window. Any other channel or sender is refused. */
+function ipcAllowed(channel, senderKind) {
+  return Object.prototype.hasOwnProperty.call(WELCOME_IPC, channel) && WELCOME_IPC[channel].includes(senderKind);
+}
+
 module.exports = {
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
-  quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter,
+  quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
+  welcomeClosedMessage, ipcAllowed,
 };
