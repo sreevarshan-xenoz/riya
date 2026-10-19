@@ -36,7 +36,13 @@ function Test-CorePort {
 Set-Location $Root
 
 if (-not (Test-ModelServer)) {
-    Start-Process -FilePath $Python -ArgumentList @("-m", "riya.server", "--model", "`"$Model`"") `
+    # Riya v1's adapter, when the local_adapter setting names a file that exists (prints nothing otherwise). The server
+    # also follows that setting live (--follow-settings); a missing or broken adapter only means the base model.
+    $Lora = ""
+    try { $Lora = (& $Python -m riya.server --print-lora | Out-String).Trim() } catch { $Lora = "" }
+    $ServerArgs = @("-m", "riya.server", "--model", "`"$Model`"", "--follow-settings")
+    if ($Lora) { $ServerArgs += @("--lora", "`"$Lora`"") }
+    Start-Process -FilePath $Python -ArgumentList $ServerArgs `
         -WorkingDirectory $Root -WindowStyle Minimized
     $deadline = (Get-Date).AddSeconds(120)
     while (-not (Test-ModelServer)) {

@@ -21,6 +21,7 @@ AGENT_LOG_KEYS = ("name", "glob", "done_re", "fail_re", "lost_re")
 MAX_APPS, MAX_COMMANDS, MAX_HANDS_NAME, MAX_TARGET, MAX_ARGV, MAX_PLACE = 50, 20, 40, 500, 20, 80
 COMMAND_KEYS = ("name", "argv", "cwd", "timeout_s")
 TIMEOUT_RANGE = (1, 60)  # seconds
+MAX_ADAPTER_PATH = 260
 
 
 def _default_tools() -> dict[str, bool]:
@@ -56,6 +57,7 @@ class Settings:
     hands_online: bool = True
     learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
     onboarded: bool = False  # the welcome was finished or skipped (true for users from before v0.7)
+    local_adapter: str | None = None  # her fine-tuned LoRA (.gguf) for the local model; None serves the base model
 
 
 def load_settings(kv: KV) -> Settings:
@@ -133,6 +135,11 @@ def _check_commands(v) -> bool:
     return len({c["name"].casefold() for c in v}) == len(v)
 
 
+def _check_adapter_path(v) -> bool:
+    return (isinstance(v, str) and bool(v.strip()) and len(v) <= MAX_ADAPTER_PATH and os.path.isabs(v)
+            and v.lower().endswith(".gguf") and not any(c in v for c in "\r\n\t\x00"))
+
+
 def _check(key: str, v) -> None:
     ok: bool
     if key == "mode":
@@ -166,6 +173,8 @@ def _check(key: str, v) -> None:
         ok = _check_apps(v)
     elif key == "commands":
         ok = _check_commands(v)
+    elif key == "local_adapter":
+        ok = v is None or _check_adapter_path(v)
     elif key == "weather_place":
         ok = v is None or _text(v, MAX_PLACE)
     else:
