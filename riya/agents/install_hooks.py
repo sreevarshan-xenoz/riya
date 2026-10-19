@@ -23,6 +23,7 @@ from riya.agents.hooks import default_token_path, load_or_create_token
 HOOK_URL = "http://127.0.0.1:8766/hook"
 ENV_VAR = "RIYA_HOOK_TOKEN"
 RESTART_LINE = "Restart Claude Code (and open a new terminal) afterwards."
+SETX_TIMEOUT_S = 10
 HANDLER = {"type": "http", "url": HOOK_URL, "timeout": 3,
            "headers": {"X-Riya-Token": f"${ENV_VAR}"}, "allowedEnvVars": [ENV_VAR]}
 # (event, matcher or None for "no matcher key"), one group per event
@@ -172,6 +173,22 @@ def strip(data: dict) -> int:
     return removed
 
 
+def _strip_plan(data: dict | None) -> tuple[list[str], int]:
+    """What strip would delete, on a copy: the events losing a Riya handler (EVENTS order, then any other event in file
+    order) and how many handlers in all."""
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return [], 0
+    hooks = data["hooks"]
+    order = [e for e, _ in EVENTS if e in hooks] + [e for e in hooks if e not in dict(EVENTS)]
+    events, handlers = [], 0
+    for event in order:
+        n = strip({"hooks": {event: copy.deepcopy(hooks[event])}})
+        if n:
+            events.append(event)
+            handlers += n
+    return events, handlers
+
+
 def preview(mode: Literal["apply", "remove"], settings_path: Path) -> str:
     """What --apply or --remove would change in settings_path, in one paragraph. Reads only; raises SettingsError when
     the file is unusable (for apply, also when --apply itself would refuse it)."""
@@ -190,9 +207,11 @@ def preview(mode: Literal["apply", "remove"], settings_path: Path) -> str:
         return (f"Riya's hook is already in all {len(EVENTS)} events in {settings_path}; only the {ENV_VAR} variable is "
                 f"set again. {note}{RESTART_LINE}")
     if mode == "remove":
-        if have:
-            return (f"Riya will remove her hook from {len(have)} Claude Code event(s) in {settings_path}: "
-                    f"{', '.join(have)}. The file is backed up first; the {ENV_VAR} variable is left alone. "
+        events, handlers = _strip_plan(data)
+        if events:
+            count = f" ({handlers} handlers)" if handlers != len(events) else ""
+            return (f"Riya will remove her hook from {len(events)} Claude Code event(s){count} in {settings_path}: "
+                    f"{', '.join(events)}. The file is backed up first; the {ENV_VAR} variable is left alone. "
                     f"{RESTART_LINE}")
         return f"Riya's hook isn't in {settings_path}; nothing will change. {RESTART_LINE}"
     raise ValueError(f"unknown preview mode {mode!r}")
@@ -291,14 +310,17 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None,
     out(f"Settings updated: {settings_path} ({added} event(s) added, {len(EVENTS) - added} already present)")
     for line in warnings(data):
         out(line)
+    reason = "setx failed"
     try:
-        res = runner(["setx", ENV_VAR, token], capture_output=True, text=True)
+        res = runner(["setx", ENV_VAR, token], capture_output=True, text=True, timeout=SETX_TIMEOUT_S)
         ok = res.returncode == 0
+    except subprocess.TimeoutExpired:  # say, antivirus holding it: never let a hung setx hold the caller
+        ok, reason = False, f"setx timed out after {SETX_TIMEOUT_S:g} s"
     except OSError:
         ok = False
     if not ok:
         out(f"Warning: setx failed. Set the {ENV_VAR} user environment variable to the contents of {token_path} yourself.")
-        _failed(why, "setx", "setx failed")
+        _failed(why, "setx", reason)
         return 1
     out(f"Set the {ENV_VAR} user environment variable.")
     out("Restart your Claude Code sessions (and open a new terminal) for the variable to take effect.")

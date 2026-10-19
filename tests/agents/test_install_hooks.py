@@ -429,3 +429,37 @@ def test_the_apply_preview_names_the_blocker(env, data, reason):
     assert load(env) == data  # never edited
     put(env, {})
     assert "block" not in ih.preview("apply", env.settings)
+
+
+def test_the_remove_preview_lists_exactly_what_remove_deletes(env):
+    """strip takes Riya's handler out of any event, not only EVENTS: the preview must name every one of them."""
+    data = {"hooks": {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [MINE, HANDLER]}],  # not one of EVENTS
+        "Stop": [{"hooks": [HANDLER]}, {"hooks": [HANDLER, MINE]}],  # two handlers in one event
+        "SessionEnd": [{"hooks": [MINE]}],
+    }}
+    put(env, data)
+    text = ih.preview("remove", env.settings)
+    assert ("Riya will remove her hook from 2 Claude Code event(s) (3 handlers) in "
+            f"{env.settings}: Stop, PreToolUse. ") in text and text.endswith(ih.RESTART_LINE)
+    assert load(env) == data  # the preview wrote nothing
+    assert run(env, "--remove") == 0
+    assert any(line.startswith("Removed 3 Riya handler(s)") for line in env.out)
+    assert load(env) == {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [MINE]}], "Stop": [{"hooks": [MINE]}],
+                                   "SessionEnd": [{"hooks": [MINE]}]}}
+
+
+def test_setx_gets_a_10_s_timeout_and_a_timeout_is_the_failing_step(env):
+    import subprocess
+    assert ih.SETX_TIMEOUT_S == 10
+    assert run(env, "--apply") == 0
+    assert env.runner.calls[-1][1]["timeout"] == 10
+
+    def hangs(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    why = []
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=hangs, token_path=env.token,
+                   out=env.out.append, why=why) == 1
+    assert why == [("setx", "setx timed out after 10 s")]
+    assert any("setx failed" in line for line in env.out)

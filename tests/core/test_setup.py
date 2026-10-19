@@ -744,3 +744,19 @@ def test_connect_says_when_claude_code_will_block_the_hooks(tmp_path, data, reas
     saved = json.loads(deps.claude_settings.read_text(encoding="utf-8"))
     assert ih.riya_events(saved) and all(saved[k] == v for k, v in data.items())  # Riya never edits those keys
     assert host.rows[-1] == ("setup", 2, "Connected Claude Code", "ran")
+
+
+def test_a_hung_setx_is_reported_as_the_setx_step(tmp_path):
+    import subprocess
+
+    def hangs(cmd, **kw):
+        assert kw["timeout"] == 10
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    deps = make_deps(tmp_path)
+    deps.runner = hangs
+    s, host, _, results = make_setup(tmp_path, deps=deps)
+    s.answer(s.request("hooks_connect", {}).nonce, True)
+    assert not results[-1].ok and results[-1].detail.startswith("Hooks added, but setx failed")
+    s.start("hooks_connect", {})  # the slot was released: a second Connect isn't "Already running."
+    assert results[-1].detail != "Already running."
