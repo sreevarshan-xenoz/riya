@@ -601,3 +601,57 @@ def test_main_lists_her_voices_when_text_only(monkeypatch):
     monkeypatch.setattr(uvicorn, "Server", Server)
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert wait_for(made["emitted"], VoicesMsg).items == ["alba"]  # the sandboxed list, read on riya-voices
+
+
+def test_setup_confirms_and_results_go_only_to_the_asking_connection(tmp_path):
+    """Each nonce is bound to the socket that sent the setup_request: another socket never sees it, can't use it, and
+    never gets the result."""
+    import json
+    from types import SimpleNamespace
+
+    from riya.core.secrets import OnlineKey
+    from riya.core.setup import NONCE_REFUSED, SetupDeps
+
+    runs = []
+
+    def run(cmd, **kw):
+        runs.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    settings = tmp_path / "claude" / "settings.json"
+    setup_deps = SetupDeps(OnlineKey(tmp_path / "secrets.env", None, None), {}, settings, tmp_path / "hook_token",
+                           run, lambda: ["alba"])
+
+    def factory(emit):
+        core, *_ = make_core(setup_deps=setup_deps)
+        core.emit = emit
+        return core
+
+    with TestClient(create_app(factory)) as c, c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
+        for ws in (a, b):
+            receive_until(ws, "actions")
+        a.send_json({"type": "setup_request", "action": "hooks_connect", "args": {}})
+        receive_until(a, "setup_confirm")
+        b.send_json({"type": "get_memories"})
+        assert "setup_confirm" not in receive_until(b, "memories")
+
+        # a's nonce from the other socket: refused there, nothing runs, and a can still use it
+        sent = []
+
+        def grab(ws, type_):
+            while True:
+                m = ws.receive_json()
+                sent.append(m)
+                if m["type"] == type_:
+                    return m
+        a.send_json({"type": "setup_request", "action": "hooks_connect", "args": {}})
+        nonce = grab(a, "setup_confirm")["nonce"]
+        b.send_json({"type": "setup_action", "nonce": nonce, "yes": True})
+        assert grab(b, "error")["message"] == NONCE_REFUSED
+        assert runs == [] and not settings.exists()
+        a.send_json({"type": "setup_action", "nonce": nonce, "yes": True})
+        result = grab(a, "setup_result")
+        assert (result["action"], result["ok"]) == ("hooks_connect", True) and len(runs) == 1
+        b.send_json({"type": "get_memories"})
+        assert "setup_result" not in receive_until(b, "memories")
+        assert json.loads(settings.read_text(encoding="utf-8"))["hooks"]

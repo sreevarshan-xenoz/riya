@@ -787,3 +787,18 @@ def test_voice_sample_without_a_voice_samples_the_current_one(tmp_path):
         s.request("voice_sample", {"voice": "alba", "x": 1})
     with pytest.raises(SetupError):
         s.request("voice_choose", {})  # choosing still needs a voice
+
+
+def test_a_nonce_is_good_only_from_the_connection_it_was_issued_to(tmp_path):
+    s, host, deps, results = make_setup(tmp_path)
+    mine, theirs, got = [], [], []
+    s.on_result = lambda o, to=None: got.append((o, to))
+    to_a, to_b = mine.append, theirs.append
+    ask = s.request("hooks_connect", {}, to=to_a)
+    assert s.answer(ask.nonce, True, to=to_b) is False  # the other socket: refused, nothing runs
+    assert s.answer(ask.nonce, True) is False  # nor in-process without the owner
+    assert deps.runner.calls == [] and host.rows[-1][3] == "refused"
+    assert s.answer(ask.nonce, True, to=to_a) is True  # still good for its own socket
+    assert len(deps.runner.calls) == 1 and got[-1][1] is to_a and got[-1][0].action == "hooks_connect"
+    s.request("mic_check", {}, to=to_b)  # a plain action's result goes back to whoever asked
+    assert got[-1][1] is to_b and got[-1][0].action == "mic_check"

@@ -1978,7 +1978,10 @@ class RiyaCore:
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
-    def handle(self, msg: BaseModel) -> None:
+    def handle(self, msg: BaseModel, reply: Callable[[BaseModel], None] | None = None) -> None:
+        """A body message. `reply` sends to the connection it came from (None: every connection, for in-process
+        callers): a setup_confirm with its nonce, every setup result and an error go only there."""
+        send = reply or self.emit
         try:
             if isinstance(msg, GetMemories):  # the settings page opened: what she learned, then the memories
                 self._emit_learning()
@@ -2034,20 +2037,20 @@ class RiyaCore:
                 self._start_health()
                 return
             elif isinstance(msg, SetupRequest):  # a SetupError (a ValueError) names the action, never the args
-                if ask := self.setup.request(msg.action, msg.args):
-                    self.emit(SetupConfirm(nonce=ask.nonce, action=ask.action, text=ask.text))
+                if ask := self.setup.request(msg.action, msg.args, to=reply):
+                    send(SetupConfirm(nonce=ask.nonce, action=ask.action, text=ask.text))
                 return
             elif isinstance(msg, SetupAction):
-                if not self.setup.answer(msg.nonce, msg.yes):
-                    self.emit(ErrorMsg(message=NONCE_REFUSED))
+                if not self.setup.answer(msg.nonce, msg.yes, to=reply):
+                    send(ErrorMsg(message=NONCE_REFUSED))
                 return
             elif isinstance(msg, OnboardingDone):  # idempotent: nothing happens once onboarded
-                self.setup.request("onboarding_done", {})
+                self.setup.request("onboarding_done", {}, to=reply)
                 return
             else:  # BodyReady (the socket sends hello on connect) and UserText (goes through reply)
                 return
         except (KeyError, ValueError) as e:
-            self.emit(ErrorMsg(message=str(e)))
+            send(ErrorMsg(message=str(e)))
             return
         self.emit(self._memories_msg())
 
@@ -2125,10 +2128,11 @@ class RiyaCore:
         self._log_action(tool, tier, summary, outcome)
 
     # ---- Health and setup ------------------------------------------------------------------------------------------
-    def _setup_result(self, o: Outcome) -> None:
-        """A setup action's outcome to the body (and the voices after a new choice); never raises."""
+    def _setup_result(self, o: Outcome, to: Callable[[BaseModel], None] | None = None) -> None:
+        """A setup action's outcome to the connection that asked (`to`; None: every one), and after a new voice
+        choice the voices to everyone; never raises."""
         try:
-            self.emit(SetupResult(action=o.action, ok=o.ok, detail=o.detail))
+            (to or self.emit)(SetupResult(action=o.action, ok=o.ok, detail=o.detail))
             if o.ok and o.action == "voice_choose":
                 self.emit(self._voices_msg())
         except Exception:

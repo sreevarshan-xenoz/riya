@@ -83,34 +83,37 @@ class SetupError(ValueError):
 
 class Nonces:
     """Single-use confirmation tokens: each names one action and its args, and is good while
-    clock.now() - issued_at < ttl_s. At most MAX_PENDING wait at once; a new one drops the oldest."""
+    clock.now() - issued_at < ttl_s, and only for the connection (`to`) it was issued to. At most MAX_PENDING wait at
+    once; a new one drops the oldest."""
 
     def __init__(self, clock, ttl_s: float = NONCE_TTL_S, make: Callable[[], str] = lambda: secrets.token_urlsafe(16)):
         self.clock, self.ttl_s, self.make = clock, ttl_s, make
-        self._pending: dict[str, tuple[str, dict, float]] = {}  # insertion order is issue order
+        self._pending: dict[str, tuple[str, dict, float, object]] = {}  # insertion order is issue order
         self._lock = threading.Lock()
 
-    def issue(self, action: str, args: dict) -> str:
+    def issue(self, action: str, args: dict, to: object = None) -> str:
         with self._lock:
             now = self.clock.now()
-            for n in [n for n, (_, _, at) in self._pending.items() if now - at >= self.ttl_s]:
+            for n in [n for n, (_, _, at, _) in self._pending.items() if now - at >= self.ttl_s]:
                 del self._pending[n]
             nonce = self.make()
             self._pending.pop(nonce, None)
-            self._pending[nonce] = (action, dict(args), now)
+            self._pending[nonce] = (action, dict(args), now, to)
             while len(self._pending) > MAX_PENDING:
                 del self._pending[next(iter(self._pending))]
             return nonce
 
-    def take(self, nonce) -> tuple[str, dict] | None:
-        """(action, args), removing the nonce; None when it is unknown, already taken or expired."""
+    def take(self, nonce, to: object = None) -> tuple[str, dict] | None:
+        """(action, args), removing the nonce; None when it is unknown, already taken or expired. From another
+        connection than the one it was issued to it is None too, and it stays good for its own."""
         if not isinstance(nonce, str):
             return None
         with self._lock:
-            entry = self._pending.pop(nonce, None)
-            if entry is None:
+            entry = self._pending.get(nonce)
+            if entry is None or entry[3] is not to:
                 return None
-            action, args, at = entry
+            del self._pending[nonce]
+            action, args, at, _ = entry
             if self.clock.now() - at >= self.ttl_s:
                 return None
             return action, args
@@ -220,8 +223,10 @@ class Setup:
             raise SetupError(f"bad arguments for {action}")
         return dict(args)
 
-    def request(self, action: str, args: dict) -> ConfirmAsk | None:
-        """A body click. Plain actions start at once; a gated one only gets a ConfirmAsk (its nonce) and runs nothing."""
+    def request(self, action: str, args: dict, to: object = None) -> ConfirmAsk | None:
+        """A body click. Plain actions start at once; a gated one only gets a ConfirmAsk (its nonce) and runs nothing.
+        `to` is the asking connection (None in-process): its nonce is good only from there, and every result of this
+        request goes only there."""
         args = self._validate(action, args)
         if action == "onboarding_done" and getattr(self.host.settings, "onboarded", False) is True:
             return None  # idempotent: no thread, no Outcome, no second "Finished the welcome" row
@@ -229,10 +234,10 @@ class Setup:
             try:
                 text = self.confirm_text(action)
             except SetupError as e:
-                self._report(Outcome(action, False, str(e)))
+                self._report(Outcome(action, False, str(e)), to)
                 return None
-            return ConfirmAsk(self.nonces.issue(action, args), action, text)
-        self.start(action, args)
+            return ConfirmAsk(self.nonces.issue(action, args, to), action, text)
+        self.start(action, args, to)
         return None
 
     def confirm_text(self, action: str) -> str:
@@ -258,32 +263,33 @@ class Setup:
         return (f"Riya will send her built-in test picture (not your screen) to {host} with your key {key_mask} and "
                 f"ask what number it shows.")
 
-    def answer(self, nonce: str, yes: bool) -> bool:
-        """The user's Yes or No to a ConfirmAsk. False (and nothing runs) for a nonce that is unknown, reused, expired
-        or not for a gated action."""
-        taken = self.nonces.take(nonce)
+    def answer(self, nonce: str, yes: bool, to: object = None) -> bool:
+        """The user's Yes or No to a ConfirmAsk, from connection `to`. False (and nothing runs) for a nonce that is
+        unknown, reused, expired, issued to another connection or not for a gated action."""
+        taken = self.nonces.take(nonce, to)
         if taken is None or taken[0] not in CONFIRM_GATED:
             self._log(REFUSED_SUMMARY, 2, "refused")
             return False
         action, args = taken
         if yes is not True:
             self._log(SUMMARIES[action], 2, "declined")
-            self._report(Outcome(action, False, CANCELLED))
+            self._report(Outcome(action, False, CANCELLED), to)
             return True
-        self.start(action, args)
+        self.start(action, args, to)
         return True
 
-    def start(self, action: str, args: dict) -> None:
-        """Run perform on a riya-setup thread, watched for timeout_s; one run of each action at a time."""
+    def start(self, action: str, args: dict, to: object = None) -> None:
+        """Run perform on a riya-setup thread, watched for timeout_s; one run of each action at a time. Its result goes
+        to `to` (None: on_result's default)."""
         with self._running_lock:
             busy = action in self._running
             if not busy:
                 self._running.add(action)
         if busy:
-            self._report(Outcome(action, False, "Already running."))
+            self._report(Outcome(action, False, "Already running."), to)
             return
         try:
-            self._spawn(lambda: self._watch(action, args))
+            self._spawn(lambda: self._watch(action, args, to))
         except Exception:
             self._release(action)
             raise
@@ -292,7 +298,7 @@ class Setup:
         with self._running_lock:
             self._running.discard(action)
 
-    def _watch(self, action: str, args: dict) -> None:
+    def _watch(self, action: str, args: dict, to: object = None) -> None:
         box: list[Outcome] = []
         done = threading.Event()
 
@@ -309,13 +315,13 @@ class Setup:
         else:  # too slow (a late result is dropped) or perform broke its never-raises promise
             outcome = Outcome(action, False, f"No answer within {self.timeout_s:g} s." if not done.is_set()
                               else "Something went wrong.")
-        self._finish(action, outcome)
+        self._finish(action, outcome, to)
 
-    def _finish(self, action: str, outcome: Outcome) -> None:
+    def _finish(self, action: str, outcome: Outcome, to: object = None) -> None:
         if action in TESTED:
             self._record_test(action, outcome)
         self._log(SUMMARIES[action], 2 if action in CONFIRM_GATED else 0, "ran" if outcome.ok else "failed")
-        self._report(outcome)
+        self._report(outcome, to)
 
     def _record_test(self, action: str, outcome: Outcome) -> None:
         try:
@@ -335,9 +341,12 @@ class Setup:
         except Exception as e:
             log.warning("couldn't write the action log (%s)", type(e).__name__)
 
-    def _report(self, outcome: Outcome) -> None:
+    def _report(self, outcome: Outcome, to: object = None) -> None:
         try:
-            self.on_result(outcome)
+            if to is None:
+                self.on_result(outcome)
+            else:
+                self.on_result(outcome, to)  # only the connection that asked hears it
         except Exception as e:
             log.warning("couldn't report the %s result (%s)", outcome.action, type(e).__name__)
 
