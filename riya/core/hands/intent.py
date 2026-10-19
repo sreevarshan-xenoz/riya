@@ -366,12 +366,27 @@ _NOISE = re.compile(r"^(?:on|in|at|with|for|going on)\b|^(?:date|day|time|score)
                     r"right now|tomorrow|yesterday)\b|^[\d\s.+\-*/%^()=]+$|\d\s*[*/^+%=]", _I)
 
 
+# a question asking for an opinion, a comparison or a how-to, or about what something is doing: chat, not a lookup
+_OPINION = re.compile(r"\b(?:good|best|better|worse|worst|difference|differences|way|ways|how|why|should|can|could|"
+                      r"would|some|any|favou?rite|recommend\w*|vs|versus|or|doing|going|happening|odds|point)\b", _I)
+WHAT_MAX_WORDS = 4  # "what is X" looks X up only when X is a short noun phrase
+
+
 def _lookup(s, now, tz):
-    mm = re.match(r"(?:(?:what|who)(?:'s| is| was| are| were)|tell me about) (.+)$", s, _I)
-    if not mm:
+    """Only "who is|was X", "what is|was|are X" (a short noun phrase), "tell me about X", "look up X", "search (for)
+    X"; never an opinion, comparison or how-to question (the normal reply answers those)."""
+    if (mm := re.match(r"(?:look up|search(?: for)?) (.+)$", s, _I)):
+        form = "look"
+    elif (mm := re.match(r"(?:who(?:'s| is| was)|tell me about) (.+)$", s, _I)):
+        form = "ask"
+    elif (mm := re.match(r"what(?:'s| is| was| are) (.+)$", s, _I)):
+        form = "what"
+    else:
         return None
     q = re.sub(r"^(?:an? |the )", "", mm.group(1).strip(), flags=_I).strip()
     if not q or q.lower() in _GENERIC or _NOT_SUBJECT.search(q) or _NOISE.search(q) or len(q.split()) > 8:
+        return None
+    if form != "look" and _OPINION.search(q) or form == "what" and len(q.split()) > WHAT_MAX_WORDS:
         return None
     return Call("lookup", {"query": q})
 

@@ -660,3 +660,69 @@ def test_agent_words_mid_game_stay_chat():
     list(core.reply("remind me to check on my agent at 5"))
     assert core.hands.active() == [] and logged(core) == []
     assert core.game is not None and core.game.kind == "riddles"
+
+
+# ---- final review: I3, lookup only on its own forms; a miss is a normal reply; online off makes no request -------
+def user_turns(core):
+    return core.memory.db.execute("select count(*) from transcripts where role='user'").fetchone()[0]
+
+
+@pytest.mark.parametrize("turn", ["what's a good name for a cat", "what's the difference between TCP and UDP"])
+def test_opinion_and_comparison_questions_never_call_lookup(turn):
+    core, emitted, _, local, _ = hands_core(local_replies=("Hmm~",))
+    core.http.responses.update(LOOKUP)
+    assert list(core.reply(turn)) == ["Hmm~"]
+    assert core.http.requests == [] and logged(core) == []
+
+
+@pytest.mark.parametrize("turn, query", [("look up Alan Turing", "Alan Turing"),
+                                         ("search for Ada Lovelace", "Ada Lovelace")])
+def test_look_up_and_search_for_call_lookup(turn, query):
+    core, *_ = hands_core()
+    core.http.responses.update(LOOKUP)
+    list(core.reply(turn))
+    assert core.http.requests[0][0] == net.WIKI_API_URL and core.http.requests[0][1]["search"] == query
+    assert [t for t, *_ in logged(core)] == ["lookup"]
+
+
+@pytest.mark.parametrize("miss", ["empty", "unreachable", "ambiguous"])
+def test_a_lookup_miss_falls_through_to_the_normal_reply(miss):
+    core, emitted, _, local, _ = hands_core(local_replies=("I think it's a made-up word~",))
+    core.http.responses.update({
+        "empty": {net.WIKI_API_URL: ["Zorblax", [], [], []]},
+        "unreachable": {},
+        "ambiguous": {net.WIKI_API_URL: ["Zorblax", ["Zorblax"], [""], [""]],
+                      net.WIKI_SUMMARY_URL + "Zorblax": {"type": "disambiguation", "extract": ""}},
+    }[miss])
+    out = list(core.reply("who is Zorblax"))
+    assert out == ["I think it's a made-up word~"]
+    assert "### Reply rules:" in local.calls[-1][0]["content"]       # the normal reply, not her line about a tool
+    assert "found nothing" in situation(local)
+    assert not any("couldn't" in t or "could mean" in t for t in says(emitted))
+    assert user_turns(core) == 1
+    assert logged(core) == [("lookup", 0, "failed")]
+
+
+@pytest.mark.parametrize("turn, line", [
+    ("what's the weather in Pune", "weather"), ("look up Alan Turing", "lookup"), ("search for Ada Lovelace", "lookup"),
+    ("who is Ada Lovelace", None), ("what's the weather", "weather"),
+])
+def test_online_off_makes_no_request(turn, line):
+    core, emitted, _, local, _ = hands_core(local_replies=("She was a mathematician~",), online_enabled=False,
+                                            weather_place="Pune")
+    core.http.responses.update({**LOOKUP, **WEATHER})
+    out = list(core.reply(turn))
+    assert core.http.requests == []
+    if line:
+        assert out == [engine.ONLINE_OFF[line]] and logged(core) == [(line, 0, "refused")]
+    else:                                                        # a question she may answer from what she knows
+        assert out == ["She was a mathematician~"] and logged(core) == []
+
+
+def test_the_network_tools_never_request_with_online_off():
+    from riya.core.hands.tools import REGISTRY, ToolCtx
+    from riya.core.settings import Settings
+    http = net.FakeHttp({**LOOKUP, **WEATHER})
+    ctx = ToolCtx(settings=Settings(online_enabled=False, weather_place="Pune"), http=http)
+    assert not REGISTRY["weather"].run({}, ctx).ok and not REGISTRY["lookup"].run({"query": "Ada Lovelace"}, ctx).ok
+    assert http.requests == []

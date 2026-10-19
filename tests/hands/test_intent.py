@@ -307,3 +307,30 @@ def test_note_forms(text, saved):
                                   "what's 2020-01-05", "what's on screen", "skip this", "skip a"])
 def test_noise_is_not_a_tool(text):
     assert m(text) is None
+
+
+# ---- final review: I3, lookup takes only its own forms ------------------------------------------------------------
+@pytest.mark.parametrize("text", [
+    "what's a good name for a cat", "what's the difference between TCP and UDP", "what is the best way to learn python",
+    "what are some good movies", "who is the best football player", "what is claude doing",
+    "what's the capital of the united kingdom", "what's better, tea or coffee", "what is a good laptop",
+    "what are the odds", "who was the better player",
+])
+def test_question_and_opinion_turns_are_not_lookups(text):
+    assert m(text) is None
+
+
+@pytest.mark.parametrize("text, query", [
+    ("look up Alan Turing", "Alan Turing"), ("search for Ada Lovelace", "Ada Lovelace"),
+    ("search Ada Lovelace", "Ada Lovelace"), ("can you look up black holes", "black holes"),
+    ("who was Alan Turing", "Alan Turing"), ("what is a black hole", "black hole"),
+    ("what was the Ming dynasty", "Ming dynasty"), ("what are quasars", "quasars"),
+    ("tell me about Ada Lovelace", "Ada Lovelace"),
+])
+def test_lookup_forms(text, query):
+    assert m(text) == Call("lookup", {"query": query})
+
+
+@pytest.mark.parametrize("text", ["search my files for taxes", "look up my password", "look it up", "search for it"])
+def test_lookup_keeps_its_guards(text):
+    assert m(text) is None or m(text).tool != "lookup"

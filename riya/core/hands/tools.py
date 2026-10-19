@@ -37,6 +37,13 @@ log = logging.getLogger(__name__)
 WRITE_MAX_CHARS = 65_536
 WRITE_MAX_BYTES = 65_536
 WRITE_TRIES = 5
+# online_enabled is the master no-network switch: with it off the network tools make no request and say so plainly
+ONLINE_OFF = {"weather": "Online access is switched off in my settings, so I can't check the weather.",
+              "lookup": "Online access is switched off in my settings, so I can't look that up."}
+
+
+def online_off(ctx: "ToolCtx") -> bool:
+    return getattr(ctx.settings, "online_enabled", True) is False
 
 
 @dataclass
@@ -186,6 +193,8 @@ def _write_file(args: dict, ctx: ToolCtx) -> ToolResult:
 
 
 def _weather(args: dict, ctx: ToolCtx) -> ToolResult:
+    if online_off(ctx):
+        return ToolResult(False, ONLINE_OFF["weather"])
     saved = getattr(ctx.settings, "weather_place", None)
     place = args.get("place") or saved
     if not place:
@@ -197,6 +206,8 @@ def _weather(args: dict, ctx: ToolCtx) -> ToolResult:
 
 
 def _lookup(args: dict, ctx: ToolCtx) -> ToolResult:
+    if online_off(ctx):
+        return ToolResult(False, ONLINE_OFF["lookup"])
     return lookup(ctx.http, args["query"])
 
 
