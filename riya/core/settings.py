@@ -8,6 +8,7 @@ from pathlib import Path
 
 from riya.agents.logwatch import DEFAULT_ENTRIES
 from riya.core.eyes.policy import validate_patterns
+from riya.core.hands.tools import DEFAULT_OFF, TIERS
 from riya.core.store import KV
 
 MODES = ("buddy", "panel", "window")
@@ -17,6 +18,13 @@ GLANCE_GAP_RANGE = (10, 86400)  # seconds
 MAX_DENY_PATTERNS, MAX_PATTERN_LEN = 100, 300
 MAX_AGENT_LOGS, MAX_LOG_NAME = 20, 40
 AGENT_LOG_KEYS = ("name", "glob", "done_re", "fail_re", "lost_re")
+MAX_APPS, MAX_COMMANDS, MAX_HANDS_NAME, MAX_TARGET, MAX_ARGV, MAX_PLACE = 50, 20, 40, 500, 20, 80
+COMMAND_KEYS = ("name", "argv", "cwd", "timeout_s")
+TIMEOUT_RANGE = (1, 60)  # seconds
+
+
+def _default_tools() -> dict[str, bool]:
+    return {n: n not in DEFAULT_OFF for n in TIERS}
 
 
 @dataclass
@@ -40,12 +48,21 @@ class Settings:
     eyes_deny_processes: list[str] = field(default_factory=list)
     dont_look: bool = False
     agent_logs: list[dict] = field(default_factory=lambda: copy.deepcopy(DEFAULT_ENTRIES))  # the Colab log watcher
+    tools_enabled: dict[str, bool] = field(default_factory=_default_tools)  # her hands; the two T2 tools start off
+    tools_ask: list[str] = field(default_factory=list)  # T1 tools raised to "ask first"
+    apps: list[dict] = field(default_factory=list)  # {name, target}: what "open <name>" may launch
+    commands: list[dict] = field(default_factory=list)  # {name, argv, cwd, timeout_s}: what "run <name>" may run
+    weather_place: str | None = None
+    hands_online: bool = True
 
 
 def load_settings(kv: KV) -> Settings:
     stored = kv.get("settings", {})
     known = {f.name for f in fields(Settings)}
-    return Settings(**{k: v for k, v in stored.items() if k in known})
+    out = Settings(**{k: v for k, v in stored.items() if k in known})
+    if isinstance(stored.get("tools_enabled"), dict):  # tools added later keep their defaults
+        out.tools_enabled = _default_tools() | stored["tools_enabled"]
+    return out
 
 
 def save_settings(kv: KV, s: Settings) -> None:
@@ -77,6 +94,43 @@ def _check_agent_logs(v) -> bool:
     return True
 
 
+def _text(v, n: int) -> bool:
+    return isinstance(v, str) and bool(v.strip()) and len(v) <= n
+
+
+def _check_tools_enabled(v) -> bool:
+    return isinstance(v, dict) and all(k in TIERS and isinstance(b, bool) for k, b in v.items())
+
+
+def _check_tools_ask(v) -> bool:
+    return isinstance(v, list) and all(isinstance(n, str) and TIERS.get(n) == 1 for n in v)  # only T1 may ask
+
+
+def _check_apps(v) -> bool:
+    if not isinstance(v, list) or len(v) > MAX_APPS:
+        return False
+    if not all(isinstance(a, dict) and set(a) == {"name", "target"} and _text(a["name"], MAX_HANDS_NAME)
+               and _text(a["target"], MAX_TARGET) for a in v):
+        return False
+    return len({a["name"].casefold() for a in v}) == len(v)
+
+
+def _check_commands(v) -> bool:
+    if not isinstance(v, list) or len(v) > MAX_COMMANDS:
+        return False
+    for c in v:
+        if not isinstance(c, dict) or set(c) != set(COMMAND_KEYS) or not _text(c["name"], MAX_HANDS_NAME):
+            return False
+        argv, t = c["argv"], c["timeout_s"]
+        if not isinstance(argv, list) or not 1 <= len(argv) <= MAX_ARGV or not all(_text(a, MAX_TARGET) for a in argv):
+            return False
+        if not (c["cwd"] is None or _text(c["cwd"], MAX_TARGET)):
+            return False
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not TIMEOUT_RANGE[0] <= t <= TIMEOUT_RANGE[1]:
+            return False
+    return len({c["name"].casefold() for c in v}) == len(v)
+
+
 def _check(key: str, v) -> None:
     ok: bool
     if key == "mode":
@@ -102,6 +156,16 @@ def _check(key: str, v) -> None:
             raise ValueError(f"invalid pattern in {key!r}: {', '.join(map(repr, bad))}")
     elif key == "agent_logs":
         ok = _check_agent_logs(v)
+    elif key == "tools_enabled":
+        ok = _check_tools_enabled(v)
+    elif key == "tools_ask":
+        ok = _check_tools_ask(v)
+    elif key == "apps":
+        ok = _check_apps(v)
+    elif key == "commands":
+        ok = _check_commands(v)
+    elif key == "weather_place":
+        ok = v is None or _text(v, MAX_PLACE)
     else:
         ok = isinstance(v, bool)
     if not ok:
@@ -114,6 +178,8 @@ def apply_patch(s: Settings, patch: dict) -> Settings:
         if key not in known:
             raise ValueError(f"unknown setting {key!r}")
         _check(key, value)
+    if "tools_enabled" in patch:  # a partial map toggles just those tools
+        patch = {**patch, "tools_enabled": {**s.tools_enabled, **patch["tools_enabled"]}}
     return replace(s, **patch)
 
 
