@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _V1 = """
 create table facts(id integer primary key, text text not null, key text, source text not null
@@ -28,7 +28,18 @@ create table glances(id integer primary key, at real not null, app text not null
 create index glances_at on glances(at);
 """
 
-_MIGRATIONS = [_V1, _V2]
+# v0.5: her hands (reminders and timers, the user's notes, the action log)
+_V3 = """
+create table reminders(id integer primary key, kind text not null check(kind in ('timer','reminder')),
+  due_at real not null, text text not null, created_at real not null, fired_at real, cancelled_at real);
+create index reminders_due on reminders(due_at);
+create table notes(id integer primary key, at real not null, text text not null);
+create table actions(id integer primary key, at real not null, tool text not null, tier integer not null,
+  summary text not null, outcome text not null);
+create index actions_at on actions(at);
+"""
+
+_MIGRATIONS = [_V1, _V2, _V3]
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:

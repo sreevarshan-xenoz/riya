@@ -1,6 +1,6 @@
 """The tool registry: tiers, ParamSpec validation (`validate_call`), summaries and the runs that need no effects.
 
-Runs that need timers, reminders and notes (Task 5) raise NotImplementedError here until their task fills them in. `Settings` is named only under TYPE_CHECKING: settings.py imports TIERS from here.
+`Settings` is named only under TYPE_CHECKING: settings.py imports TIERS from here.
 """
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .effects import VOLUME_PRESSES, output_tail
-from .intent import parse_duration
+from .intent import parse_duration, parse_when
 from .net import lookup, weather
+from .reminders import duration_parts, fmt_clock, fmt_when
 from .safe import calc, format_number, safe_filename, unique_path, valid_url
 from .types import RESULT_MAX, Call, ParamSpec, ToolResult
 
@@ -199,6 +200,70 @@ def _lookup(args: dict, ctx: ToolCtx) -> ToolResult:
     return lookup(ctx.http, args["query"])
 
 
+def _store_full() -> ToolResult:
+    return ToolResult(False, "I'm already keeping track of 50 reminders, so I can't add another.")
+
+
+def _timer_set(args: dict, ctx: ToolCtx) -> ToolResult:
+    now = ctx.clock.now()
+    due = now + args["duration"]
+    rid = ctx.db.add_reminder("timer", due, "timer", now)
+    if rid is None:
+        return _store_full()
+    n, unit = duration_parts(args["duration"])
+    return ToolResult(True, f"Timer set for {n} {unit}{'' if n == 1 else 's'} (done at {fmt_clock(due, ctx.tz)}).",
+                      {"id": rid, "due_at": due})
+
+
+def _reminder_set(args: dict, ctx: ToolCtx) -> ToolResult:
+    now = ctx.clock.now()
+    due = parse_when(args["when"], now, ctx.tz)
+    if due is None:
+        return ToolResult(False, f"I couldn't work out when {_q(args['when'], 40)} is. Try \"at 5 pm\" or \"in 20 minutes\".")
+    text = args["text"].strip()
+    rid = ctx.db.add_reminder("reminder", due, text, now)
+    if rid is None:
+        return _store_full()
+    return ToolResult(True, f"Okay, I'll remind you at {fmt_when(due, now, ctx.tz)}: {_q(text, 80)}.",
+                      {"id": rid, "due_at": due})
+
+
+def _reminder_list(args: dict, ctx: ToolCtx) -> ToolResult:
+    items = ctx.db.active()
+    if not items:
+        return ToolResult(True, "You have no reminders.", {"count": 0})
+    now = ctx.clock.now()
+    shown = [f"{fmt_when(r.due_at, now, ctx.tz)} {'timer' if r.kind == 'timer' else _q(r.text, 30)}" for r in items[:3]]
+    more = f" and {len(items) - 3} more" if len(items) > 3 else ""
+    return ToolResult(True, f"You have {len(items)} reminder{'' if len(items) == 1 else 's'}: {'; '.join(shown)}{more}.",
+                      {"count": len(items)})
+
+
+def _reminder_cancel(args: dict, ctx: ToolCtx) -> ToolResult:
+    if "id" in args:
+        found = next((r for r in ctx.db.active() if r.id == args["id"]), None)
+    else:
+        found = ctx.db.find_active(args["text"])
+    if found is None or not ctx.db.cancel(found.id, ctx.clock.now()):
+        return ToolResult(False, "I couldn't find a reminder like that.")
+    what = "timer" if found.kind == "timer" else f"reminder {_q(found.text, 60)}"
+    return ToolResult(True, f"Cancelled the {what}.", {"id": found.id})
+
+
+def _note_add(args: dict, ctx: ToolCtx) -> ToolResult:
+    text = args["text"].strip()
+    return ToolResult(True, f"Noted: {_q(text, 80)}.", {"id": ctx.db.add_note(text, ctx.clock.now())})
+
+
+def _note_list(args: dict, ctx: ToolCtx) -> ToolResult:
+    notes = ctx.db.notes()
+    if not notes:
+        return ToolResult(True, "You haven't asked me to note anything.", {"count": 0})
+    more = f" and {len(notes) - 3} more" if len(notes) > 3 else ""
+    return ToolResult(True, f"You have {len(notes)} note{'' if len(notes) == 1 else 's'}: "
+                            f"{'; '.join(_q(n.text, 40) for n in notes[:3])}{more}.", {"count": len(notes)})
+
+
 def _P(type, **kw) -> ParamSpec:
     return ParamSpec(type, **kw)
 
@@ -217,15 +282,15 @@ def _action(*values) -> dict:
 REGISTRY: dict[str, Tool] = dict([
     _tool("time_now", {}, lambda a: "tell the time", _time_now),
     _tool("timer_set", {"duration": _P("duration", min=1, max=MAX_TIMER_S)},
-          lambda a: f"set a timer for {format_number(a['duration'])} seconds"),
+          lambda a: f"set a timer for {format_number(a['duration'])} seconds", _timer_set),
     _tool("reminder_set", {"when": _P("str", max_len=100), "text": _P("str")},
-          lambda a: f"remind you {a['when']}: {a['text']}"),
-    _tool("reminder_list", {}, lambda a: "list your reminders"),
+          lambda a: f"remind you {a['when']}: {a['text']}", _reminder_set),
+    _tool("reminder_list", {}, lambda a: "list your reminders", _reminder_list),
     _tool("reminder_cancel", {"id": _P("int", required=False, min=1, max=2**31 - 1), "text": _P("str", required=False)},
           lambda a: f"cancel reminder {a['id']}" if "id" in a else f"cancel the reminder about {a['text']}",
-          one_of=("id", "text")),
-    _tool("note_add", {"text": _P("str", max_len=1000)}, lambda a: f"note down {_q(a['text'])}"),
-    _tool("note_list", {}, lambda a: "list your notes"),
+          _reminder_cancel, one_of=("id", "text")),
+    _tool("note_add", {"text": _P("str", max_len=1000)}, lambda a: f"note down {_q(a['text'])}", _note_add),
+    _tool("note_list", {}, lambda a: "list your notes", _note_list),
     _tool("calc", {"expr": _P("str")}, lambda a: f"work out {a['expr']}", _calc),
     _tool("weather", {"place": _P("str", required=False, max_len=80)},
           lambda a: f"check the weather in {a['place']}" if "place" in a else "check the weather", _weather),
