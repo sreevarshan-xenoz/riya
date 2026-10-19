@@ -146,7 +146,7 @@ def detect_feedback(text: str) -> Feedback | None:
 ACKS: dict[tuple[str, int], str] = {
     ("teasing", -1): "Okay~ less teasing, got it.", ("teasing", 1): "Ooh, more teasing? You asked for it~",
     ("verbosity", -1): "Got it, I'll keep it short.", ("verbosity", 1): "Okay, I'll tell you a bit more~",
-    ("emoji", -1): "Okay, fewer emojis.", ("emoji", 1): "Yay, more emojis then~",
+    ("emoji", -1): "Okay, I'll go easy on the emojis.", ("emoji", 1): "Yay, more emojis then~",
     ("sweetness", -1): "Okay, I'll tone down the cute.", ("sweetness", 1): "Hehe, sweeter it is~",
     ("clinginess", -1): "Okay… I'll give you a little more space.",
     ("clinginess", 1): "Aww, then I'll keep missing you~",
