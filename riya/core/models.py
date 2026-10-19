@@ -46,6 +46,10 @@ class OpenAICompatModel:
         self.first_token_timeout_s, self.stop = first_token_timeout_s, stop
         self.finish_reason: str | None = None  # the last stream's ("length" means it ran out of tokens)
 
+    def __repr__(self) -> str:  # never the key itself
+        from riya.core.secrets import mask
+        return f"OpenAICompatModel({self.name!r}, {self.base_url!r}, key={mask(self.api_key)!r}, model={self.model!r})"
+
     def stream(self, messages, max_tokens=300, temperature=0.8) -> Iterator[str]:
         self.finish_reason = None
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "stream": True}

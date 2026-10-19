@@ -231,6 +231,9 @@ class OnlineKey:
         remember(load(path))
         return cls(path, base, source)
 
+    def __repr__(self) -> str:  # the base key's mask only, and no file read
+        return f"OnlineKey(path={str(self.path)!r}, base={mask(self.base)!r}, base_source={self.base_source!r})"
+
     def current(self) -> tuple[str | None, Source | None]:
         saved = load(self.path)
         if saved is not None:
