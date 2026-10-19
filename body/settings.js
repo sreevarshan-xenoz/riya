@@ -164,7 +164,10 @@
 
   function changeTool(name, field, value) {
     const patch = toolsPatch(latest, name, field, value);
-    if (patch) act(`setting:${field === "ask" ? "tools_ask" : "tools_enabled"}`, { type: "set_settings", patch });
+    if (!patch) return;
+    // the next toggle builds on this one even before the core's echo arrives (the core replaces both with its own)
+    latest = { ...latest, ...patch, ...(patch.tools_enabled ? { tools_enabled: { ...latest.tools_enabled, ...patch.tools_enabled } } : {}) };
+    act(`setting:${field === "ask" ? "tools_ask" : "tools_enabled"}`, { type: "set_settings", patch });
   }
 
   function showTools(s) {
@@ -526,6 +529,7 @@
     $("conn").classList.toggle("off", !connected);
     coreConnected = Boolean(connected);
     renderHooks();
+    if (!connected) renderActions(null); // a stale log would pass for live; the core sends it again on change
     if (connected) send({ type: "get_memories" });
   });
 
@@ -548,6 +552,8 @@
     } else if (msg.type === "error") {
       const target = router.route(msg.message);
       if (target === "setting:agent_logs") logsDirty = true; // the core refused them: keep what was typed
+      if (target === "setting:apps") appsDirty = true;
+      if (target === "setting:commands") commandsDirty = true;
       showError(target, String(msg.message));
     }
   });

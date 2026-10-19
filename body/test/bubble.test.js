@@ -161,3 +161,25 @@ test("every confirm_done outcome takes the buttons away, and none of them can be
     assert.equal(b.confirmExpiresAt(), null, outcome);
   }
 });
+
+test("a click answers only the confirmation its buttons were drawn for", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1"));
+  b.onConfirmRequest(conf("c2", "two", 2000));
+  assert.equal(b.answerConfirm(0, "c1"), null, "the old buttons can't answer the new question");
+  assert.equal(b.confirm(0).id, "c2", "and it stays pending");
+  assert.deepEqual(b.answerConfirm(0, "c2"), { id: "c2", summary: "two" });
+  assert.equal(b.answerConfirm(0, "c2"), null);
+});
+
+test("a click just after a swap is ignored, and the new question stays answerable after the guard", () => {
+  const { CONFIRM_SWAP_GUARD_MS } = require("../src/bubble");
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1", "one", 1000), 10_000);
+  assert.equal(b.answerConfirm(10_000, "c1")?.id, "c1", "a first confirmation is answerable at once");
+  b.onConfirmRequest(conf("c3", "three", 1000), 10_000);
+  b.onConfirmRequest(conf("c4", "four", 1000), 20_000);
+  assert.equal(b.answerConfirm(20_000 + CONFIRM_SWAP_GUARD_MS - 1, "c4"), null);
+  assert.equal(b.confirm(20_000 + CONFIRM_SWAP_GUARD_MS).id, "c4");
+  assert.equal(b.answerConfirm(20_000 + CONFIRM_SWAP_GUARD_MS, "c4").id, "c4");
+});
