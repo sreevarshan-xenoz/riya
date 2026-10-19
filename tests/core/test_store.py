@@ -52,7 +52,7 @@ def test_a_v1_database_migrates_to_current_keeping_its_data(tmp_path):
     p = tmp_path / "riya.db"
     _v1_db(p)
     db = open_db(p)
-    assert SCHEMA_VERSION == 3 and db.execute("pragma user_version").fetchone()[0] == 3
+    assert SCHEMA_VERSION == 4 and db.execute("pragma user_version").fetchone()[0] == 4
     mem = Memory(db, HashEmbedder(), FakeClock())
     assert [f.text for f in mem.list_facts()] == ["The user likes tea"]
     assert [r["text"] for r in mem.unconsolidated()] == ["hi"]
@@ -110,18 +110,18 @@ def _v2_db(path):
     conn.close()
 
 
-def test_a_v2_database_migrates_to_v3_keeping_its_rows(tmp_path):
+def test_a_v2_database_migrates_to_current_keeping_its_rows(tmp_path):
     p = tmp_path / "riya.db"
     _v2_db(p)
     db = open_db(p)
-    assert db.execute("pragma user_version").fetchone()[0] == 3
+    assert db.execute("pragma user_version").fetchone()[0] == 4
     assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
     assert db.execute("select count(*) from glances").fetchone()[0] == 1
     assert KV(db).get("settings") == {"mode": "panel"}
     names = {r[0] for r in db.execute("select name from sqlite_master")}
     assert {"reminders", "notes", "actions", "reminders_due", "actions_at"} <= names
     db.close()
-    assert open_db(p).execute("pragma user_version").fetchone()[0] == 3        # a second open doesn't migrate again
+    assert open_db(p).execute("pragma user_version").fetchone()[0] == 4        # a second open doesn't migrate again
 
 
 def test_a_failed_v3_migration_leaves_the_v2_database_untouched(tmp_path, monkeypatch):
@@ -192,3 +192,83 @@ def test_an_existing_backup_is_never_overwritten(tmp_path):
     bak.write_bytes(b"the first backup")
     open_db(p).close()
     assert bak.read_bytes() == b"the first backup"
+
+
+# ---- v0.6: schema v4 on a populated v3 database -------------------------------------------------------------------
+def _v3_db(path):
+    """A database exactly as v0.5 left it: schema 3 with a fact, a setting, a glance, a reminder, a note and an action."""
+    import sqlite3
+
+    from riya.core import store
+    conn = sqlite3.connect(str(path))
+    conn.executescript(store._V1 + store._V2 + store._V3 + "pragma user_version=3;")
+    conn.execute("insert into facts(text, source, confidence, valid_from, status, created_at) "
+                 "values('The user likes tea', 'user_said', 1.0, 1.0, 'active', 1.0)")
+    conn.execute("""insert into kv(key, value) values('settings', '{"mode": "panel"}')""")
+    conn.execute("insert into glances(at, app, title, activity, details) values(3.0, 'Code', 't', 'coding', '')")
+    conn.execute("insert into reminders(kind, due_at, text, created_at) values('timer', 9.0, 'tea', 4.0)")
+    conn.execute("insert into notes(at, text) values(5.0, 'buy milk')")
+    conn.execute("insert into actions(at, tool, tier, summary, outcome) values(6.0, 'open_app', 1, 'opened x', 'ran')")
+    conn.commit()
+    conn.close()
+
+
+_V3_ROWS = {"facts": 1, "glances": 1, "reminders": 1, "notes": 1, "actions": 1, "kv": 1}
+
+
+def _counts(conn):
+    return {t: conn.execute(f"select count(*) from {t}").fetchone()[0] for t in _V3_ROWS}
+
+
+def test_a_populated_v3_db_migrates_to_v4(tmp_path):
+    import sqlite3
+
+    from riya.core.learn.records import LearnDB
+    from riya.core.persona import load_traits
+    p = tmp_path / "riya.db"
+    _v3_db(p)
+    db = open_db(p)
+    assert db.execute("pragma user_version").fetchone()[0] == 4
+    assert _counts(db) == _V3_ROWS
+    assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
+    assert KV(db).get("settings") == {"mode": "panel"}
+    assert db.execute("select text from notes").fetchone()[0] == "buy milk"
+    assert tuple(db.execute("select tool, outcome from actions").fetchone()) == ("open_app", "ran")
+    assert tuple(db.execute("select text, due_at from reminders").fetchone()) == ("tea", 9.0)
+    names = {r[0] for r in db.execute("select name from sqlite_master")}
+    assert {"trait_history", "style_notes", "twin", "events", "events_at"} <= names
+    assert LearnDB(db).dials() == load_traits()
+    db.close()
+    bak = tmp_path / "riya.db.pre-v4.bak"
+    old = sqlite3.connect(str(bak))
+    assert old.execute("pragma user_version").fetchone()[0] == 3
+    assert _counts(old) == _V3_ROWS
+    assert old.execute("select count(*) from sqlite_master where name='twin'").fetchone()[0] == 0
+    old.close()
+    mtime = bak.stat().st_mtime_ns
+    again = open_db(p)                                    # already current: no second migration, no new backup
+    assert again.execute("pragma user_version").fetchone()[0] == 4 and _counts(again) == _V3_ROWS
+    assert bak.stat().st_mtime_ns == mtime
+    again.close()
+
+
+def test_a_failed_v4_migration_leaves_the_v3_database_untouched(tmp_path, monkeypatch):
+    import sqlite3
+
+    import pytest
+
+    from riya.core import store
+    p = tmp_path / "riya.db"
+    _v3_db(p)
+    monkeypatch.setattr(store, "_MIGRATIONS", [store._V1, store._V2, store._V3,
+                                               "create table trait_history(id integer primary key);"
+                                               "create table broken(;"])
+    with pytest.raises(sqlite3.Error):
+        open_db(p)
+    monkeypatch.undo()
+    conn = sqlite3.connect(str(p))
+    assert conn.execute("pragma user_version").fetchone()[0] == 3
+    assert conn.execute("select count(*) from sqlite_master where name='trait_history'").fetchone()[0] == 0
+    assert _counts(conn) == _V3_ROWS
+    conn.close()
+    assert open_db(p).execute("select count(*) from facts").fetchone()[0] == 1
