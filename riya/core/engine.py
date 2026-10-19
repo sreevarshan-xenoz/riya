@@ -697,7 +697,8 @@ class RiyaCore:
             return None
         now = self.clock.now()
         if fb.dial:
-            old, new = self.learn.nudge(fb.dial, fb.delta, f'they said "{summarize(text, 60)}"', "explicit", now)
+            reason = f"they asked for {'more' if fb.delta > 0 else 'less'} {fb.dial}"  # templated: never their words
+            old, new = self.learn.nudge(fb.dial, fb.delta, reason, "explicit", now)
             changed = old != new
         else:
             self.learn.add_note(fb.note, fb.polarity, now)
