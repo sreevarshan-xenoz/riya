@@ -17,5 +17,11 @@ function toImageCoords(rect, imgW, imgH, clientX, clientY) {
   return { x: ((clientX - rect.left) / rect.width) * imgW, y: ((clientY - rect.top) / rect.height) * imgH };
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { isOpaqueAt, toImageCoords };
-else globalThis.RiyaHitTest = { isOpaqueAt, toImageCoords };
+/** Should the buddy window take the mouse? Over her opaque pixels or her bubble, and over the confirmation's buttons only
+ *  while a confirmation is shown (otherwise the hidden buttons' spot stays click-through). */
+function buddyClickable({ onBubble, onConfirm, confirmShown, overSprite } = {}) {
+  return Boolean(onBubble || (confirmShown && onConfirm) || overSprite);
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { isOpaqueAt, toImageCoords, buddyClickable };
+else globalThis.RiyaHitTest = { isOpaqueAt, toImageCoords, buddyClickable };

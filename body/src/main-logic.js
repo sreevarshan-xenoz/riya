@@ -3,9 +3,9 @@
 const { boundsFor } = require("./geometry");
 
 const MODES = ["buddy", "panel", "window"];
-const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents"];
+const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents", "reminders", "actions"];
 const DONT_LOOK_HOTKEYS = ["Control+Alt+H", "Control+Alt+F10"]; // first one that registers wins
-const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core"]; // never queued for replay after a reconnect
+const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm"]; // never queued for replay after a reconnect
 const QUIT_FLUSH_MS = 300; // the tray's Quit: time for quit_core to reach the core before the body exits
 
 /** First accelerator for which `register` returns true (a throw counts as a failure), or null. */
@@ -32,7 +32,7 @@ function repositionTarget({ mode, dragging, userDragged, current, savedPos, work
   return target.x === current[0] && target.y === current[1] ? null : target;
 }
 
-/** A talk or don't-look press, or quitting, is only meaningful now: never queue it for replay after a reconnect. */
+/** A talk, don't-look or confirm press, or quitting, is only meaningful now: never queue it for replay after a reconnect. */
 function shouldSendToCore(msg, connected) {
   return connected || !NOW_ONLY.includes(msg.type);
 }
@@ -115,6 +115,6 @@ function forgetOnDisconnect(cache) {
 }
 
 module.exports = {
-  MODES, REPLAY_TYPES, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
+  MODES, REPLAY_TYPES, NOW_ONLY, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
   quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter,
 };

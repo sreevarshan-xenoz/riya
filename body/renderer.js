@@ -7,7 +7,8 @@
  *  silence, bubble or error expiry). Everything pauses while the page is hidden; gaming freezes the idle motion. */
 (() => {
   const { frameFor, leanFor, BlinkScheduler } = RiyaSprite;
-  const { isOpaqueAt, toImageCoords } = RiyaHitTest;
+  const { isOpaqueAt, toImageCoords, buddyClickable } = RiyaHitTest;
+  const { reminderItems, reminderDue } = RiyaHands;
   const { BubbleModel } = RiyaBubble;
   const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
   const {
@@ -28,7 +29,9 @@
     box: $("sprite-box"), sprite: $("sprite"), bubble: $("bubble"), status: $("status"),
     log: $("log"), form: $("composer"), input: $("input"), layers: [$("layer-a"), $("layer-b")],
     agents: $("agents"), agentList: $("agents-list"), badge: $("agent-badge"),
+    confirm: $("confirm"), confirmText: $("confirm-text"), reminders: $("reminders"), reminderList: $("reminders-list"),
   };
+  if (mode !== "buddy") $("side").insertBefore(els.confirm, els.form); // buddy: over the bubble's spot; else above the input
 
   const bubble = new BubbleModel();
   const expression = new ExpressionModel();
@@ -153,15 +156,26 @@
     window.riya.dragEnd();
   }
 
+  const within = (el, selector) => el instanceof Element && el.closest(selector) !== null;
+  const confirmShown = () => !els.confirm.hidden;
+  let lastPointer = null; // where the mouse last was, to re-decide click-through when the confirmation goes away
+
+  function updateClickable(el, clientX, clientY) {
+    setClickable(buddyClickable({
+      onBubble: within(el, "#bubble"), onConfirm: within(el, "#confirm"), confirmShown: confirmShown(),
+      overSprite: overSprite(clientX, clientY),
+    }));
+  }
+
   if (mode === "buddy") {
     document.addEventListener("mousemove", (e) => {
+      lastPointer = { x: e.clientX, y: e.clientY };
       if (dragging) return;
-      const onBubble = e.target instanceof Element && e.target.closest("#bubble") !== null;
-      setClickable(onBubble || overSprite(e.clientX, e.clientY));
+      updateClickable(e.target, e.clientX, e.clientY);
     });
     document.addEventListener("mousedown", (e) => {
       if (e.button !== 0 || dragging) return;
-      if (e.target instanceof Element && e.target.closest("#bubble")) return;
+      if (within(e.target, "#bubble") || within(e.target, "#confirm")) return; // text and buttons never start a drag
       if (!overSprite(e.clientX, e.clientY)) return;
       dragging = true;
       setClickable(true);
@@ -205,6 +219,80 @@
     els.input.value = "";
     refresh();
   });
+
+  // ---- confirmation: her question with Yes/No (the summary is core text: textContent only) ---------------------------
+
+  let shownConfirm = null; // { id, summary } on screen
+
+  function renderConfirm() {
+    const c = bubble.confirm(Date.now());
+    if ((c && c.id) === (shownConfirm && shownConfirm.id) && (c && c.summary) === (shownConfirm && shownConfirm.summary)) return;
+    shownConfirm = c;
+    els.confirmText.textContent = c ? c.summary : "";
+    els.confirm.hidden = !c;
+    document.body.classList.toggle("confirming", c !== null);
+    if (c === null && mode === "buddy" && lastPointer && !dragging) { // its buttons are gone: don't leave their spot clickable
+      updateClickable(document.elementFromPoint(lastPointer.x, lastPointer.y), lastPointer.x, lastPointer.y);
+    }
+  }
+
+  function answer(yes) {
+    const c = bubble.answerConfirm(Date.now()); // once: the buttons vanish below, so a second click finds nothing
+    if (c) window.riya.send({ type: "confirm", id: c.id, yes: yes === true });
+    refresh();
+  }
+
+  $("confirm-yes").addEventListener("click", () => answer(true));
+  $("confirm-no").addEventListener("click", () => answer(false));
+
+  // ---- reminders (panel and window: a list under the agents; buddy hears them as bubbles) -------------------------
+
+  let reminders = [];
+  let dueEls = []; // { el, item } of the rows on screen
+  let dueTimer = null;
+  const REMINDER_REFRESH_MS = 30_000;
+
+  function reminderRow(item) {
+    const li = document.createElement("li");
+    li.className = "reminder";
+    const text = document.createElement("span");
+    text.className = "reminder-text";
+    text.textContent = item.text;
+    text.title = item.text;
+    const due = document.createElement("span");
+    due.className = "reminder-due";
+    due.textContent = reminderDue(item, Date.now());
+    dueEls.push({ el: due, item });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.setAttribute("aria-label", `Cancel ${item.kind}: ${item.text}`);
+    cancel.addEventListener("click", () => {
+      cancel.disabled = true;
+      window.riya.send({ type: "reminder_cancel", id: item.id });
+    });
+    li.append(text, due, cancel);
+    return li;
+  }
+
+  function refreshDue() {
+    for (const { el, item } of dueEls) el.textContent = reminderDue(item, Date.now());
+  }
+
+  function scheduleDue() {
+    clearTimeout(dueTimer);
+    dueTimer = null;
+    if (mode === "buddy" || dueEls.length === 0 || document.hidden) return;
+    dueTimer = setTimeout(() => { dueTimer = null; refreshDue(); scheduleDue(); }, REMINDER_REFRESH_MS);
+  }
+
+  function renderReminders() {
+    if (mode === "buddy") return;
+    dueEls = [];
+    els.reminderList.replaceChildren(...reminders.map(reminderRow));
+    els.reminders.classList.toggle("empty", reminders.length === 0);
+    scheduleDue();
+  }
 
   // ---- agents (panel and window: a list; buddy: a needs-attention badge) ---------------------------------------
   // Names, details and statuses come from hook payloads, so they only ever reach the DOM through textContent and the
@@ -300,6 +388,16 @@
         agents = Array.isArray(msg.items) ? msg.items.filter((a) => a && typeof a === "object") : [];
         renderAgents();
         break;
+      case "confirm_request":
+        bubble.onConfirmRequest(msg);
+        break;
+      case "confirm_done":
+        bubble.onConfirmDone(msg.id);
+        break;
+      case "reminders":
+        reminders = reminderItems(msg);
+        renderReminders();
+        break;
       case "error":
         if (!isSettingsError(msg.message)) errorLine.show(msg.message, t); // the settings window shows those
         break;
@@ -315,6 +413,7 @@
     if (!connected) {
       look = null; // the core sends a fresh look when it comes back
       bubble.endCurrent(now());
+      bubble.clearConfirm(); // an answer couldn't reach her now, and the core forgets a pending one when it restarts
     }
     const shown = agentsWhileConnected(agents, connected); // a stale list or badge would pass for live; hello re-sends
     if (shown !== agents) {
@@ -394,6 +493,7 @@
   function refresh() {
     const t = now();
     renderBubble(t);
+    renderConfirm();
     renderStatus(t);
     renderFrame(t);
     updateMotionTimer();
@@ -405,8 +505,15 @@
       mouth.closesAt(),
       bubble.hidesAt(t),
       errorLine.clearsAt(t),
+      confirmDeadline(t),
     ]);
     if (next !== null) wakeTimer = setTimeout(refresh, next - t + 1);
+  }
+
+  /** When the shown confirmation expires, on the performance clock the other deadlines use (it expires on Date.now()). */
+  function confirmDeadline(t) {
+    const at = bubble.confirmExpiresAt();
+    return at === null ? null : t + (at - Date.now());
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -415,6 +522,8 @@
       setClickable(false);
     }
     if (mode !== "buddy") {
+      if (!document.hidden) refreshDue();
+      scheduleDue();
       if (!document.hidden && ageRefreshDue({ last: lastAgeRefresh, now: Date.now(), hidden: false, count: ageEls.length })) refreshAges();
       scheduleAges();
     }

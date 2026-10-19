@@ -156,11 +156,57 @@
     <p class="note">The API key is not set here. Put <code>RIYA_ONLINE_API_KEY</code> in <code>.env</code>; it is never sent over the socket or shown in this window.</p>
   </section>
 
+  <section aria-labelledby="h-hands">
+    <h2 id="h-hands">Hands</h2>
+    <p class="note">She can do small things when you ask in your own words: set a timer, open an app, change the volume. Anything that changes something asks you first (yes or no on her bubble), and the two riskiest tools are off until you turn them on.</p>
+    <div class="row check" data-key="hands_online">
+      <input id="hands_online" type="checkbox"><label for="hands_online">Use the online model for requests</label>
+      <p class="note">Only your own words go to it, when the online model above is on. With this off she understands plain requests on this computer alone.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="tools_enabled">
+      <span class="label">What she may do</span>
+      <div id="hands-tools" class="tools"></div>
+      <p class="note">"Ask first" makes her check with you before that one. Tools marked "always asks" can't skip it.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="weather_place">
+      <label for="weather_place">Weather place</label>
+      <div class="inline">
+        <input id="weather_place" type="text" placeholder="Chennai" maxlength="80" spellcheck="false" autocomplete="off">
+        <button id="weather-save" type="button">Save</button>
+      </div>
+      <p class="note">Used when you ask about the weather without naming a place. Only the place is sent. Leave empty for none.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="apps">
+      <span class="label">Apps she may open</span>
+      <div id="hands-apps" class="logs"></div>
+      <div class="inline"><button id="app-add" type="button">Add app</button><button id="apps-save" type="button">Save</button></div>
+      <p class="note">"Open notes" opens the target you give: a program, a file or a folder.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="commands">
+      <span class="label">Commands she may run</span>
+      <div id="hands-commands" class="logs"></div>
+      <div class="inline"><button id="command-add" type="button">Add command</button><button id="commands-save" type="button">Save</button></div>
+      <p class="note">"Run backup" runs exactly what is written here, never through a shell, and she asks you each time. Put a path with spaces in double quotes. The timeout is 1 to 60 seconds.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+  </section>
+
   <section aria-labelledby="h-facts">
     <h2 id="h-facts">What she remembers</h2>
     <p id="global-err" class="err" role="alert" hidden></p>
     <ul id="facts" class="list"></ul>
     <p id="facts-empty" class="empty" hidden>Nothing yet.</p>
+  </section>
+
+  <section aria-labelledby="h-notes">
+    <h2 id="h-notes">Notes she took</h2>
+    <p class="note">What you asked her to note down. They are not memories about you.</p>
+    <ul id="notes" class="list"></ul>
+    <p id="notes-empty" class="empty" hidden>No notes.</p>
   </section>
 
   <section aria-labelledby="h-glances">
@@ -187,6 +233,14 @@
     <ul id="days" class="list"></ul>
     <p id="days-empty" class="empty" hidden>No saved transcripts.</p>
   </section>
+
+  <section aria-labelledby="h-actions">
+    <h2 id="h-actions">What she did</h2>
+    <p class="note">Her action log, newest first, kept 30 days.</p>
+    <div class="inline"><button id="actions-clear" type="button">Clear</button></div>
+    <ul id="actions" class="list"></ul>
+    <p id="actions-empty" class="empty" hidden>Nothing yet.</p>
+  </section>
 </main>
 
 <dialog id="confirm" aria-labelledby="confirm-title">
@@ -202,6 +256,7 @@
 </dialog>
 
 <script src="src/agents-logic.js"></script>
+<script src="src/hands-logic.js"></script>
 <script src="src/settings-logic.js"></script>
 <script src="settings.js"></script>
 </body>

@@ -17,12 +17,23 @@
       </div>
     </div>
     <div id="bubble" hidden></div>
+    <div id="confirm" hidden role="alertdialog" aria-labelledby="confirm-text">
+      <p id="confirm-text"></p>
+      <div id="confirm-buttons">
+        <button id="confirm-yes" type="button">Yes</button>
+        <button id="confirm-no" type="button">No</button>
+      </div>
+    </div>
   </div>
   <div id="side">
     <section id="agents" class="empty" aria-label="Agents">
       <h2>Agents</h2>
       <ul id="agents-list"></ul>
       <p id="agents-empty">No agents right now.</p>
+    </section>
+    <section id="reminders" class="empty" aria-label="Reminders">
+      <h2>Reminders</h2>
+      <ul id="reminders-list"></ul>
     </section>
     <div id="log"></div>
     <form id="composer" autocomplete="off">
@@ -37,6 +48,7 @@
 <script src="src/bubble.js"></script>
 <script src="src/stage-logic.js"></script>
 <script src="src/agents-logic.js"></script>
+<script src="src/hands-logic.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>
