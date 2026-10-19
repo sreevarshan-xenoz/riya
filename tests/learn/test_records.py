@@ -241,3 +241,32 @@ def test_a_corrupt_twin_row_reads_as_the_prior(a, b):
     assert d.get_cell("bid", "x") == Cell(2.0, 2.0, NOW)
     assert [c for _, _, c in d.cells()] == [Cell(2.0, 2.0, NOW)]
     assert Twin(d, FakeClock(NOW)).p_engage("bid", "x") == 0.5
+
+
+def test_huge_or_non_numeric_kv_never_raises():
+    conn = open_db(":memory:")
+    big = "9" * 400
+    conn.execute("insert or replace into kv(key, value) values(?, ?)", (DIALS_KEY, '{"teasing": %s, "emoji": -%s}' % (big, big)))
+    conn.execute("insert or replace into kv(key, value) values(?, ?)", (DRIFT_KEY, big))
+    d = LearnDB(conn)
+    assert d.dials() == load_traits()
+    assert d.drift_at() is None
+    for junk in ("[1]", '"x"', "{", ""):
+        conn.execute("insert or replace into kv(key, value) values(?, ?)", (DRIFT_KEY, junk))
+        conn.execute("insert or replace into kv(key, value) values(?, ?)", (DIALS_KEY, junk))
+        assert d.drift_at() is None and d.dials() == load_traits()
+
+
+def test_a_v1_shaped_defaults_dict_gets_emoji_0_3():
+    v1 = {"sweetness": 0.85, "teasing": 0.5, "clinginess": 0.8, "verbosity": 0.35}
+    d = LearnDB(open_db(":memory:"), defaults=v1)
+    assert d.dials() == load_traits() and d.dials()["emoji"] == 0.3
+    d.nudge("emoji", 0.15, "r", "explicit", NOW)
+    d.reset_dials(NOW + 1)
+    assert d.dials()["emoji"] == 0.3
+    assert LearnDB(open_db(":memory:"), defaults={}).dials() == load_traits()
+
+
+def test_traits_file_ends_with_a_newline():
+    from riya.core.persona import TRAITS_PATH
+    assert TRAITS_PATH.read_bytes().endswith(b"\n")

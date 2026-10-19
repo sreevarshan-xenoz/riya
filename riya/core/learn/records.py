@@ -22,6 +22,7 @@ EVENTS_KEEP_S = 30 * 86400
 DIALS_KEY = "learn.dials"
 DRIFT_KEY = "learn.drift_at"
 RESET_REASON = "reset to her defaults"
+FALLBACK = {"sweetness": 0.85, "teasing": 0.5, "clinginess": 0.8, "verbosity": 0.35, "emoji": 0.3}  # a missing default
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,13 @@ class Event:
 
 
 def _num(v) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    """A real, finite number (a bool, or an int too big for a float, is not)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
 
 
 def _event(r: sqlite3.Row) -> Event:
@@ -79,7 +86,7 @@ class LearnDB:
     def __init__(self, conn: sqlite3.Connection, lock=None, defaults: dict[str, float] | None = None):
         self.conn, self.lock = conn, lock or threading.RLock()
         base = defaults if defaults is not None else load_traits()
-        self.defaults = {d: clamp(d, base[d]) for d in DIALS}
+        self.defaults = {d: clamp(d, base[d] if _num(base.get(d)) else FALLBACK[d]) for d in DIALS}  # v1 had no emoji
 
     # ---- dials ----
     def _dials(self) -> dict[str, float]:
