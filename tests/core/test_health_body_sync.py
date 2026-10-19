@@ -45,3 +45,10 @@ def test_js_row_labels_match_the_cores_rows():
 
 def test_js_fix_labels_cover_the_cores_fixes():
     assert set(js_fix_labels()) | {"autostart"} == set(health.FIXES)
+
+
+def test_health_check_labels_match():
+    """The live check's LABELS is the third copy of the row labels: it can't drift from the core or the body."""
+    from evaluation import health_check
+    assert health_check.LABELS == js_row_labels()
+    assert list(health_check.LABELS) == list(health.ROWS)
