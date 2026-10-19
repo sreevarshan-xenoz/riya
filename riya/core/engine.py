@@ -24,11 +24,11 @@ from riya.core.eyes.policy import GlancePolicy, window_refusal
 from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
 from riya.core.hands import online as hands_online
-from riya.core.hands.intent import is_forbidden, match
+from riya.core.hands.intent import is_command_form, is_forbidden, match
 from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
 from riya.core.hands.records import HandsDB
 from riya.core.hands.reminders import delivery, gap_ok, reminder_line
-from riya.core.hands.tools import REGISTRY, TIERS, Call, ToolCtx, ToolResult, _q, validate_call
+from riya.core.hands.tools import ONLINE_OFF, REGISTRY, TIERS, Call, ToolCtx, ToolResult, _q, validate_call
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
@@ -96,6 +96,8 @@ CONFIRM_DECLINED = "Okay, I won't."
 CONFIRM_TIMED_OUT = "That one timed out, so I didn't do it. Ask me again?"
 COMMAND_BUSY = "Something's still running, so I'll wait until it's done."
 TOOL_FAILED = "Something went wrong when I tried that."
+LOOKUP_MISS = ("You tried to look this up online and found nothing useful. Answer from what you know, and say so "
+               "if you're not sure.")
 REMINDER_TOOLS = frozenset({"timer_set", "reminder_set", "reminder_cancel"})
 _BUTTON = {"no": "declined", "expired": "expired", "replaced": "replaced"}  # a yes reports what then happened
 _NOT_RUN = frozenset({"declined", "expired", "cancelled", "replaced"})  # confirm outcomes logged as themselves
@@ -291,6 +293,9 @@ class RiyaCore:
             try:
                 if not chat:
                     call = FORBIDDEN if is_forbidden(text) else self._match(text)
+                if (isinstance(call, Call) and call.tool == "lookup" and not self.settings.online_enabled
+                        and not is_command_form(text)):
+                    call = None  # online off: a question she may answer from what she knows (she can't look it up)
             except Exception:
                 log.exception("couldn't read the turn for a tool")
             move = None
@@ -303,15 +308,17 @@ class RiyaCore:
                 return
             if call is None and not chat:
                 call = self._propose(text)
+            note = None
             if call is not None:
-                yield from self._hands_turn(text, call)
-                return
+                note = yield from self._hands_turn(text, call)
+                if note is None:
+                    return
             saved = None
             try:
                 saved = self._take_user_turn(text)
             except Exception:
                 log.exception("couldn't record the user's turn")
-            base = [remember_situation(saved) if saved else None,
+            base = [note, remember_situation(saved) if saved else None,
                     IDENTITY_SITUATION if is_identity_question(text) else None,
                     FEELINGS_SITUATION if is_feelings_question(text) else None,
                     games.mid_game_note(move[0]) if move else None]  # chat mid-game: the game stays on
@@ -787,7 +794,18 @@ class RiyaCore:
 
     def _hands_turn(self, text: str, call: Call | str) -> Iterator[str]:
         """A turn that asks her to act. Every call (matched or proposed) is validated against the settings first;
-        then the policy refuses, asks or runs. The turn never reaches consolidation."""
+        then the policy refuses, asks or runs. The turn never reaches consolidation. With online access off a network
+        tool makes no request: a plain templated line. A lookup that finds nothing (or fails) returns LOOKUP_MISS
+        before the turn is recorded: the turn goes on to the normal reply with that situation."""
+        s = self.settings
+        checked = verdict = found = None
+        if call != FORBIDDEN:
+            checked = validate_call(call, s)
+            verdict = decide(checked, s)
+            if verdict == "run" and checked.tool == "lookup" and s.online_enabled:
+                found = self._run_tool(checked, self._summary(checked))
+                if not found.ok:
+                    return LOOKUP_MISS
         try:
             self._take_user_turn(text, remember=False, consolidate=False)
         except Exception:
@@ -796,16 +814,17 @@ class RiyaCore:
             self._log_action(FORBIDDEN, 3, summarize(text, 80), "refused")
             yield from self._say_line(FORBIDDEN_LINE, user_text=text)
             return
-        s = self.settings
-        checked = validate_call(call, s)
-        verdict = decide(checked, s)
         if verdict == "refuse":
             self._log_action(call.tool, TIERS.get(call.tool, 3), self._summary(checked or call), "refused")
             yield from self._say_line(INVALID_LINE if checked is None else refusal(call.tool), user_text=text)
             return
         summary = self._summary(checked)
+        if checked.tool in ONLINE_OFF and not s.online_enabled:
+            self._log_action(checked.tool, TIERS[checked.tool], summary, "refused")
+            yield from self._say_line(ONLINE_OFF[checked.tool], user_text=text)
+            return
         if verdict == "run":
-            yield from self._run_call(text, checked, summary)
+            yield from self._run_call(text, checked, summary, found=found)
             return
         gaming = self.presence.state == "gaming"
         if gaming and TIERS[checked.tool] >= 2:  # asked once the game ends (_park_step raises it)
@@ -823,10 +842,12 @@ class RiyaCore:
         self.emit(ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at))
         yield from self._say_line(confirm_text(p), user_text=user_text, spoken=spoken, kind=kind)
 
-    def _run_call(self, text: str, call: Call, summary: str, confirmed: Pending | None = None) -> Iterator[str]:
+    def _run_call(self, text: str, call: Call, summary: str, confirmed: Pending | None = None,
+                  found: ToolResult | None = None) -> Iterator[str]:
         """Runs a validated call for the user's turn: a command goes to the worker ("Running ..." at once, the result
-        later through tick); anything else runs here and she says how it went (the result text is the fallback)."""
-        how, result = self._execute(call, summary, confirmed)
+        later through tick); anything else runs here and she says how it went (the result text is the fallback).
+        found: the call already ran (a lookup that found something), so only her line about it is left."""
+        how, result = ("ran", found) if found is not None else self._execute(call, summary, confirmed)
         if how == "started":
             yield from self._say_line(f"Running {_q(call.args['name'], 40)}~", user_text=text)
         elif how == "refused":
