@@ -84,6 +84,43 @@ def default_http_get(url: str, timeout_s: float) -> bytes:
         return r.read(HTTP_MAX_BYTES)
 
 
+class Later:
+    """A HealthCtx field read on its own daemon thread, started at once, so gathering the context shares the checks'
+    budget: a check that reads the field waits for it inside its own thread, under run_checks' deadline. A field that
+    hangs is one row's "No answer within 5 s.", never a stalled run; one whose read raised raises again in the check."""
+
+    def __init__(self, fn: Callable[[], object], name: str = "field"):
+        self._done = threading.Event()
+        self._value: object = None
+        self._error: BaseException | None = None
+        threading.Thread(target=self._run, args=(fn,), name=f"riya-health-ctx-{name}", daemon=True).start()
+
+    def _run(self, fn) -> None:
+        try:
+            self._value = fn()
+        except BaseException as e:  # noqa: BLE001 - re-raised in the reading check, which names only its type
+            self._error = e
+        finally:
+            self._done.set()
+
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def get(self) -> object:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error.with_traceback(None)
+        return self._value
+
+
+def peek(ctx: HealthCtx, name: str, default=None):
+    """A ctx field without waiting: its value when it is ready (and read without raising), else default."""
+    value = object.__getattribute__(ctx, name)
+    if isinstance(value, Later):
+        return value._value if value.done() and value._error is None else default
+    return value
+
+
 @dataclass
 class HealthCtx:
     now: float
@@ -103,6 +140,10 @@ class HealthCtx:
     session_start: float | None = None  # when this core started; None: no test counts as this session's
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
+
+    def __getattribute__(self, name):  # a Later field resolves when a check reads it, on that check's thread
+        value = object.__getattribute__(self, name)
+        return value.get() if isinstance(value, Later) else value
 
 
 def pack_in_use(sprite_pack: str | None, repo_root: Path) -> tuple[Path | None, bool]:

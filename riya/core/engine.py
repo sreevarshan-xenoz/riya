@@ -337,6 +337,7 @@ class RiyaCore:
         self._settings_lock = threading.Lock()  # a settings patch: saved, applied and sent as one
         self._health_lock = threading.Lock()  # guards _health_running and _health_again
         self._health_running = self._health_again = False
+        self._health_fields: dict[str, health.Later] = {}  # each context field's last reader (guarded by _health_lock)
         self.setup = Setup(self, setup_deps or SetupDeps.sandboxed(self.riya_dir / ".setup"),
                            on_result=self._setup_result)
 
@@ -2147,14 +2148,27 @@ class RiyaCore:
             log.exception("couldn't list her voices")
 
     def _health_ctx(self) -> health.HealthCtx:
-        """Everything the checks read, gathered on the health thread (never under the core lock). A field that can't
-        be read (APPDATA unset, a DB error) becomes an _Unreadable: only the rows that use it warn."""
-        def read(name: str, fn: Callable[[], object]):
-            try:
-                return fn()
-            except Exception as e:
-                log.warning("Health couldn't read %s (%s)", name, type(e).__name__)
-                return _Unreadable(e)
+        """Everything the checks read, never under the core lock. A field that may wait (the DB under memory.lock, the
+        key file, KV, the Startup folder) is a health.Later read on its own thread, so it runs under the checks' 5 s
+        budget: a slow one is its rows' "No answer" warn, and a stuck one is reused by the next pass instead of getting
+        another thread. A field that can't be read (APPDATA unset, a DB error) becomes an _Unreadable: only the rows
+        that use it warn."""
+        def safe(name: str, fn: Callable[[], object]) -> Callable[[], object]:
+            def run():
+                try:
+                    return fn()
+                except Exception as e:
+                    log.warning("Health couldn't read %s (%s)", name, type(e).__name__)
+                    return _Unreadable(e)
+            return run
+
+        def read(name: str, fn: Callable[[], object]) -> health.Later:
+            with self._health_lock:
+                stuck = self._health_fields.get(name)
+                if stuck is not None and not stuck.done():
+                    return stuck
+                later = self._health_fields[name] = health.Later(safe(name, fn), name)
+                return later
 
         def db() -> tuple[str, int]:
             with self.memory.lock:
@@ -2166,18 +2180,29 @@ class RiyaCore:
             got = self.kv.get(TESTS_KEY, {})
             return got if isinstance(got, dict) else {}
 
-        where = read("the database", db)
-        db_path, version = (where, where) if isinstance(where, _Unreadable) else where
+        where = read("db", db)
+
+        def part(i: int) -> Callable[[], object]:
+            def get():
+                got = where.get()
+                return got if isinstance(got, _Unreadable) else got[i]
+            return get
+
         receiver = self.receiver
+        try:
+            now = self.clock.now()
+        except Exception as e:
+            log.warning("Health couldn't read the clock (%s)", type(e).__name__)
+            now = _Unreadable(e)
         return health.HealthCtx(
-            now=read("the clock", self.clock.now), settings=read("the settings", lambda: self.settings),
-            local_url=self.local_url, key=read("the key", self.setup.deps.key.info),
-            last_tests=read("the tests", tests),
+            now=now, settings=read("settings", lambda: self.settings),
+            local_url=self.local_url, key=read("key", lambda: self.setup.deps.key.info()),
+            last_tests=read("tests", tests),
             voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
             receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,
-            claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT, db_path=db_path,
-            schema_version=version,
-            startup_dir=read("the Startup folder", lambda: self.startup_dir or default_startup_dir()),
+            claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT, db_path=read("db_path", part(0)),
+            schema_version=read("schema_version", part(1)),
+            startup_dir=read("startup_dir", lambda: self.startup_dir or default_startup_dir()),
             session_start=self._session_start, http_get=self.health_http, tz=self.tz)
 
     def _start_health(self) -> None:
@@ -2205,12 +2230,16 @@ class RiyaCore:
                 self._health_again = False
 
     def _health_pass(self) -> None:
-        """The voices, then the checklist; a failure is logged and this pass sends no HealthMsg."""
+        """The voices, then the checklist; a failure is logged and this pass sends no HealthMsg. Nothing here waits past
+        the checks' deadline: the voices and the key source come from fields already read, or are left out."""
         try:
-            self.emit(self._voices_msg())
             ctx = self._health_ctx()
             items = [HealthItemInfo(**asdict(i)) for i in health.run_checks(ctx, self.health_timeout_s)]
-            source = ctx.key.source if isinstance(ctx.key, KeyInfo) else None
+            settings = health.peek(ctx, "settings")
+            if isinstance(settings, Settings):
+                self.emit(VoicesMsg(items=self.setup.voices(), current=settings.voice))
+            key = health.peek(ctx, "key")  # a key still being read gives no source
+            source = key.source if isinstance(key, KeyInfo) else None
             self.emit(HealthMsg(items=items, key_source=source))
         except Exception:
             log.exception("the health checks failed")

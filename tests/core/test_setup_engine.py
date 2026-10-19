@@ -504,3 +504,51 @@ def test_the_voice_row_says_speaking_works_only_after_a_sample_this_session(tmp_
     assert run(core, emitted, "voice_sample").ok  # no voice arg: the current one
     row = voice_row()
     assert (row.status, row.detail, row.fix) == ("ok", "Speaking works · voice alba", "voice_sample")
+
+
+def test_a_slow_health_field_warns_its_row_and_never_stalls_the_run(tmp_path):
+    """Gathering the context runs under the same budget as the checks: a key file read that hangs is one warn row, the
+    rest report, and the message still arrives in time; a refresh doesn't start a second reader of the stuck field."""
+    core, emitted, *_ = make_core(setup_deps=deps(tmp_path))
+    core.health_timeout_s = 0.3
+    release = threading.Event()
+    core.setup.deps.key.info = lambda: release.wait(10) and None
+    try:
+        mark = len(emitted)
+        t0 = time.monotonic()
+        core.handle(HealthGet())
+        h = wait_for(emitted, HealthMsg, after=mark, timeout_s=2)
+        assert time.monotonic() - t0 < 1.5
+        rows = {i.key: i for i in h.items}
+        assert list(rows) == list(health.ROWS)
+        assert (rows["online"].status, rows["online"].detail) == ("warn", "No answer within 0.3 s.")
+        assert rows["local"].detail == "No local server is configured." and rows["memory"].status == "ok"
+        assert rows["claude_code"].detail.startswith("Receiver down") and h.key_source is None
+        wait_health_idle(core)
+        mark = len(emitted)
+        core.handle(HealthGet())
+        wait_for(emitted, HealthMsg, after=mark, timeout_s=2)
+        wait_health_idle(core)
+        assert sum(1 for t in threading.enumerate() if t.name == "riya-health-ctx-key") == 1
+    finally:
+        release.set()
+
+
+def test_a_long_memory_lock_holder_doesnt_hold_up_health(tmp_path):
+    core, emitted, *_ = make_core(setup_deps=deps(tmp_path))
+    core.health_timeout_s = 0.3
+    with core.memory.lock:  # held on this thread for the whole pass: every DB read waits
+        held = threading.Event()
+        box = []
+
+        def other():
+            mark = len(emitted)
+            core.handle(HealthGet())
+            box.append(wait_for(emitted, HealthMsg, after=mark, timeout_s=2))
+            held.set()
+
+        threading.Thread(target=other, daemon=True).start()
+        assert held.wait(3), "Health waited on the memory lock"
+    rows = {i.key: i for i in box[0].items}
+    assert rows["memory"].detail == "No answer within 0.3 s." and rows["local"].detail == "No local server is configured."
+    wait_health_idle(core)
