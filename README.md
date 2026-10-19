@@ -87,8 +87,8 @@ Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
   memory, start with Windows), each with at most one fix button. Anything that reaches outside Riya (a key test, the
   eye test, Connect or Disconnect Claude Code) first shows exactly what it will do and runs only on your Yes.
 - **Where the key lives.** A key pasted in the welcome or in Health is saved to `%LOCALAPPDATA%\Riya\secrets.env`,
-  never in the repo. A key in the repo `.env` still works, but the pasted key wins; Remove in Health only removes the
-  pasted one. The key is only ever shown masked (`••••1a2b`).
+  never in the repo. A key in the repo `.env` still works, but the pasted key wins; "Remove saved key" in Health
+  only removes the pasted one. The key is only ever shown masked (`••••1a2b`).
 - **Connect Claude Code** merges Riya's hooks into `~/.claude/settings.json` (backed up first, nothing else changed)
   and sets the `RIYA_HOOK_TOKEN` user variable. Restart Claude Code (and open a new terminal) afterwards. If your
   Claude Code settings block hooks (`disableAllHooks`, or allow-lists without Riya's entry), Health says so; Riya never
