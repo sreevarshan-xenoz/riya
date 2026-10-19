@@ -739,13 +739,14 @@ class RiyaCore:
             log.exception("couldn't send what she learned")
 
     def _reset_learning(self) -> None:
-        """Reset to her defaults: the dials (logged as "reset"), the notes and the whole twin, under the core lock so no
-        reply's feedback lands halfway through it."""
+        """Reset to her defaults: the dials (logged as "reset"), the notes, the whole twin and the drift clock, under the
+        core lock so no reply's feedback lands halfway through it."""
         with self._lock:
             now = self.clock.now()
             self.learn.reset_dials(now)
             self.learn.clear_notes()
             self.learn.reset_twin(None)
+            self.learn.clear_drift_at()
             self._barges.clear()
             self._twin_open = self._greet_open = None
             self._emit_learning()

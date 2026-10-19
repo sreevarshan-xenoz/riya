@@ -239,6 +239,11 @@ class LearnDB:
             return None
         return float(v) if _num(v) else None
 
+    def clear_drift_at(self) -> None:
+        with self.lock:
+            self.conn.execute("delete from kv where key=?", (DRIFT_KEY,))
+            self.conn.commit()
+
     def set_drift_at(self, now: float) -> None:
         with self.lock:
             self.conn.execute("insert or replace into kv(key, value) values(?, ?)", (DRIFT_KEY, json.dumps(now)))
