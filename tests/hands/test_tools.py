@@ -191,3 +191,16 @@ def test_calc_answer_survives_truncation():
     expr = "+".join(["1"] * 99)  # 197 chars
     r = REGISTRY["calc"].run({"expr": expr}, ctx)
     assert r.ok and r.text.startswith("= 99") and len(r.text) == 200
+
+
+# ---- final review: M2, sizes are pluralized ------------------------------------------------------------------------
+@pytest.mark.parametrize("text, size", [("h", "(1 byte)"), ("hi", "(2 bytes)"), ("é", "(2 bytes)")])
+def test_write_file_summary_pluralizes_bytes(text, size):
+    assert size in REGISTRY["write_file"].summary({"filename": "a.txt", "text": text})
+
+
+def test_clipboard_result_pluralizes_characters():
+    from riya.core.hands.effects import FakeEffects
+    ctx = ToolCtx(effects=FakeEffects())
+    assert REGISTRY["clipboard_copy"].run({"text": "x"}, ctx).text == "Copied 1 character to the clipboard."
+    assert REGISTRY["clipboard_copy"].run({"text": "xy"}, ctx).text == "Copied 2 characters to the clipboard."

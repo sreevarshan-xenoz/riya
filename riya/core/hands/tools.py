@@ -100,6 +100,11 @@ def _q(s: str, n: int = 60) -> str:
     return '"' + _ctl(s.replace("\\", "\\\\").replace('"', '\\"')) + '"'
 
 
+def _count(n: int, unit: str) -> str:
+    """'1 byte', '2 bytes'."""
+    return f"{n} {unit}{'' if n == 1 else 's'}"
+
+
 def _effect(ctx: ToolCtx, name: str, *a) -> bool:
     """Call one effect; False if it raised (a failed effect is a kind result, never an exception)."""
     try:
@@ -146,7 +151,7 @@ def _volume(args: dict, ctx: ToolCtx) -> ToolResult:
 def _clipboard_copy(args: dict, ctx: ToolCtx) -> ToolResult:
     if not _effect(ctx, "copy", args["text"]):
         return ToolResult(False, "I couldn't reach the clipboard.")
-    return ToolResult(True, f"Copied {len(args['text'])} characters to the clipboard.")
+    return ToolResult(True, f"Copied {_count(len(args['text']), 'character')} to the clipboard.")
 
 
 def _run_command(args: dict, ctx: ToolCtx) -> ToolResult:
@@ -322,7 +327,8 @@ REGISTRY: dict[str, Tool] = dict([
     _tool("clipboard_copy", {"text": _P("str", max_len=4000)}, lambda a: f"copy {_q(a['text'])} to the clipboard", _clipboard_copy),
     _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({_ctl(' '.join(map(str, a['argv'])))})", _run_command),
     _tool("write_file", {"filename": _P("str"), "text": _P("str", max_len=WRITE_MAX_CHARS)},
-          lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8', 'replace'))} bytes): {_q(a['text'], 80)}",
+          lambda a: f"write {_q(a['filename'])} ({_count(len(a['text'].encode('utf-8', 'replace')), 'byte')}): "
+                    f"{_q(a['text'], 80)}",
           _write_file),
 ])
 assert set(REGISTRY) == set(TIERS)
