@@ -183,8 +183,24 @@ def test_helpers_build_the_engines_objects():
 
 
 def test_pools_are_big_enough():
-    assert len(sc.NAMES) >= 30 and len(sc.PLACES) >= 15 and len(sc.ATTRS) >= 10 and len(sc.LOOKUPS) >= 12
+    assert len(sc.NAMES) >= 30 and len(sc.PLACES) >= 15 and len(sc.ATTRS) >= 30 and len(sc.LOOKUPS) >= 12
     for a in sc.ATTRS:
         assert "{v}" in a.fact and "{v}" in a.remember and a.unknown
+        assert a.topic and a.pool in sc.POOLS
     assert sum(sc.MIX.values()) == 100 and set(sc.MIX) == set(KINDS)
     assert len({normalize(n) for n in sc.NAMES}) == len(sc.NAMES)
+
+
+def test_user_text_variety_floor():
+    """Every text-bearing kind keeps at least 60% distinct normalised user texts at n=3000 (no template ceiling)."""
+    for k in KINDS:
+        texts = [normalize(s.user_text) for s in rows(0) if s.kind == k and s.user_text is not None]
+        if texts:
+            assert len(set(texts)) / len(texts) >= 0.6, (k, len(set(texts)), len(texts))
+
+
+def test_fact_prefixes_are_unambiguous():
+    prefixes = [a.fact.split("{v}")[0] for a in sc.ATTRS]
+    assert len(set(prefixes)) == len(prefixes) and len({a.key for a in sc.ATTRS}) == len(sc.ATTRS)
+    for a in sc.ATTRS:
+        assert sc.fact_attr(a.fact.format(v="x")) == a.key

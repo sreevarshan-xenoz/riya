@@ -41,8 +41,10 @@ def normalize(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", "", text.casefold()).split())
 
 
-def _conversations(path: Path) -> list[dict]:
-    return json.loads(path.read_text(encoding="utf-8"))["conversations"]
+@functools.cache
+def _conversations(path: Path) -> tuple[dict, ...]:
+    """The probe conversations, read and parsed once per path (nobody edits the file mid-run)."""
+    return tuple(json.loads(path.read_text(encoding="utf-8"))["conversations"])
 
 
 def probe_texts(path: Path = PROBES_PATH) -> list[str]:
@@ -84,7 +86,7 @@ PLACES = ("Veldmoor", "Quillhaven", "Brindlewick", "Ashkerry", "Tolmere", "Marro
 FOODS = ("mango sticky rice", "lentil soup", "dumplings", "paneer wraps", "spicy ramen", "blueberry pancakes",
          "mushroom risotto", "falafel", "peanut noodles", "banoffee pie", "cheese toasties", "pad see ew",
          "roast potatoes", "sushi", "tomato pasta", "apple crumble")
-COLOURS = ("teal", "forest green", "burnt orange", "lavender", "navy blue", "mustard yellow", "coral", "plum",
+COLOURS = ("forest green", "burnt orange", "lavender", "navy blue", "mustard yellow", "coral", "plum",
            "sage", "crimson")
 JOBS = ("nurse", "carpenter", "barista", "bike mechanic", "librarian", "baker", "pilot", "translator",
         "sound engineer", "florist", "paramedic", "illustrator")
@@ -95,9 +97,24 @@ LANGUAGES = ("Portuguese", "Korean", "Swahili", "Italian", "Norwegian", "Tamil",
 MONTHS = ("January", "February", "April", "May", "June", "July", "August", "September", "October", "November",
           "December")
 DATES = tuple(f"{d} {m}" for d in (2, 5, 9, 12, 17, 21, 26, 28) for m in MONTHS)
+COMPANIES = ("Brightwick Labs", "Harrow and Finch", "Lumen Foundry", "Oakline Studio", "Tidepool Systems",
+             "Kettle Works", "Fernhill Press", "Saltmarsh Bakery")
+RIDES = ("second-hand bicycle", "yellow scooter", "folding bike", "old moped", "battered green van")
+SPORTS = ("badminton", "five-a-side football", "volleyball", "table tennis", "squash", "ultimate frisbee")
+HOBBIES = ("pottery", "birdwatching", "embroidery", "rock climbing", "baking bread", "stargazing", "journalling")
+DRINKS = ("an oat flat white", "a double espresso", "a cold brew", "a cardamom latte", "a pot of jasmine tea")
+BOOKS = ("The Salt Road", "Letters to a Lighthouse", "A Map of Small Hours", "The Quiet Orchard", "Winter Ledger")
+VIDEOGAMES = ("Starfall Drift", "Moss and Embers", "Lantern Keep", "Tinker Isles", "Hollow Harbour")
+FEARS = ("heights", "moths", "deep water", "thunder", "crowded lifts", "public speaking")
+BEDTIMES = ("11 pm", "midnight", "half past ten", "1 am", "9 pm")
+DEGREES = ("geology", "linguistics", "marine biology", "architecture", "philosophy", "chemistry")
+TEAMS = ("Brindlewick Rovers", "Tolmere United", "Pellam Athletic", "Ravenmoor City", "Sorrel Bay Rangers")
+NICKNAMES = ("Pip", "Bug", "Noodle", "Sprout", "Biscuit", "Moth")
 POOLS: dict[str, tuple[str, ...]] = {
     "name": NAMES, "place": PLACES, "food": FOODS, "colour": COLOURS, "job": JOBS, "instrument": INSTRUMENTS,
-    "show": SHOWS, "language": LANGUAGES, "date": DATES}
+    "show": SHOWS, "language": LANGUAGES, "date": DATES, "company": COMPANIES, "ride": RIDES, "sport": SPORTS,
+    "hobby": HOBBIES, "drink": DRINKS, "book": BOOKS, "videogame": VIDEOGAMES, "fear": FEARS, "bedtime": BEDTIMES,
+    "degree": DEGREES, "team": TEAMS, "nickname": NICKNAMES}
 
 
 @dataclass(frozen=True)
@@ -106,45 +123,89 @@ class Attr:
     pool: str
     fact: str  # the memory fact ("The user ...")
     remember: str  # what they say after "remember that"
-    unknown: tuple[str, ...]  # questions about it
+    unknown: tuple[str, ...]  # natural questions about it
+    topic: str  # the clause the composed question frames wrap ("what my sister is called")
 
 
 ATTRS = (
     Attr("sister", "name", "The user's sister is called {v}", "my sister is called {v}",
-         ("what's my sister's name?", "do you remember my sister's name?", "what's my sister called again?")),
+         ("do you remember my sister's name?", "what's my sister called again?"), "what my sister is called"),
     Attr("brother", "name", "The user's brother is called {v}", "my brother is called {v}",
-         ("what's my brother's name?", "do you know my brother's name?")),
+         ("what's my brother's name?", "do you know my brother's name?"), "what my brother is called"),
+    Attr("mother", "name", "The user's mother is called {v}", "my mother is called {v}",
+         ("what's my mum's name?", "do you know my mother's name?"), "what my mother is called"),
+    Attr("father", "name", "The user's father is called {v}", "my father is called {v}",
+         ("what's my dad called?", "do you remember my father's name?"), "what my father is called"),
+    Attr("cousin", "name", "The user's cousin is called {v}", "my cousin is called {v}",
+         ("what's my cousin's name?",), "what my cousin is called"),
+    Attr("roommate", "name", "The user's roommate is called {v}", "my roommate is called {v}",
+         ("what's my roommate's name?", "who am i living with?"), "who my roommate is"),
     Attr("best_friend", "name", "The user's best friend is called {v}", "my best friend is called {v}",
-         ("who's my best friend?", "do you remember my best friend's name?")),
+         ("who's my best friend?", "do you remember my best friend's name?"), "who my best friend is"),
     Attr("dog", "name", "The user has a dog called {v}", "i have a dog called {v}",
-         ("what's my dog's name?", "do you remember what my dog is called?")),
+         ("what's my dog's name?", "do you remember what my dog is called?"), "what my dog is called"),
+    Attr("cat", "name", "The user has a cat called {v}", "i have a cat called {v}",
+         ("what's my cat's name?", "what's my cat called?"), "what my cat is called"),
+    Attr("plant", "name", "The user keeps a plant called {v}", "my plant is called {v}",
+         ("what did i name my plant?",), "what my plant is called"),
     Attr("hometown", "place", "The user grew up in {v}", "i grew up in {v}",
-         ("where did i grow up?", "do you remember where i grew up?")),
+         ("where did i grow up?", "do you remember where i grew up?"), "where i grew up"),
     Attr("city", "place", "The user lives in {v}", "i live in {v}",
-         ("where do i live?", "which town do i live in?", "do you know where i live?")),
+         ("where do i live?", "which town do i live in?", "do you know where i live?"), "where i live"),
+    Attr("travel", "place", "The user wants to visit {v} next year", "i want to visit {v} next year",
+         ("where do i want to travel?", "which place was i dreaming about visiting?"), "where i want to travel"),
+    Attr("workplace", "company", "The user works at {v}", "i work at {v}",
+         ("where do i work?", "which company am i at?"), "where i work"),
     Attr("food", "food", "The user's favourite food is {v}", "my favourite food is {v}",
-         ("what's my favourite food?", "do you remember what i love to eat?")),
+         ("what's my favourite food?", "do you remember what i love to eat?"), "what my favourite food is"),
     Attr("colour", "colour", "The user's favourite colour is {v}", "{v} is my favourite colour",
-         ("which colour do i like best?", "do you remember my favourite colour?")),
+         ("which colour do i like best?", "do you remember my favourite colour?"), "which colour i like best"),
     Attr("job", "job", "The user works as a {v}", "i work as a {v}",
-         ("what do i do for work?", "do you remember what my job is?")),
+         ("what do i do for work?", "do you remember what my job is?"), "what i do for work"),
+    Attr("degree", "degree", "The user studied {v} at university", "i studied {v} at university",
+         ("what did i study at university?",), "what i studied at university"),
     Attr("instrument", "instrument", "The user plays the {v}", "i play the {v}",
-         ("what instrument do i play?", "do you know which instrument i play?")),
+         ("what instrument do i play?", "do you know which instrument i play?"), "which instrument i play"),
     Attr("birthday", "date", "The user's birthday is on {v}", "my birthday is on {v}",
-         ("when is my birthday?", "do you remember my birthday?")),
+         ("when is my birthday?", "do you remember my birthday?"), "when my birthday is"),
     Attr("show", "show", "The user is watching {v}", "i'm watching {v} right now",
-         ("what show am i watching?", "what was i watching lately?")),
+         ("what show am i watching?", "what was i watching lately?"), "what show i'm watching"),
+    Attr("book", "book", "The user is reading {v}", "i'm reading {v}",
+         ("what book am i reading?", "which book was i halfway through?"), "what book i'm reading"),
+    Attr("videogame", "videogame", "The user's favourite video game is {v}", "my favourite video game is {v}",
+         ("which video game do i love?",), "which video game i love most"),
     Attr("language", "language", "The user is learning {v}", "i'm learning {v}",
-         ("which language am i learning?", "do you remember what language i'm learning?")),
+         ("which language am i learning?", "do you remember what language i'm learning?"),
+         "which language i'm learning"),
     Attr("allergy", "food", "The user is allergic to {v}", "i'm allergic to {v}",
-         ("what am i allergic to?", "do you remember my allergy?")),
+         ("what am i allergic to?", "do you remember my allergy?"), "what i'm allergic to"),
+    Attr("fear", "fear", "The user is afraid of {v}", "i'm afraid of {v}",
+         ("what am i scared of?", "what scares me?"), "what i'm afraid of"),
+    Attr("sport", "sport", "The user's weekend sport is {v}", "my weekend sport is {v}",
+         ("what sport do i play at weekends?",), "what sport i play at weekends"),
+    Attr("hobby", "hobby", "The user likes {v}", "i like {v}",
+         ("what hobby am i into?", "what do i do for fun?"), "what i do for fun"),
+    Attr("drink", "drink", "The user's usual coffee order is {v}", "my usual coffee order is {v}",
+         ("what's my usual coffee order?", "what coffee do i always order?"), "what my usual coffee order is"),
+    Attr("ride", "ride", "The user gets around on a {v}", "i get around on a {v}",
+         ("what do i use to get around town?",), "how i get around town"),
+    Attr("bedtime", "bedtime", "The user usually goes to bed at {v}", "i usually go to bed at {v}",
+         ("when do i usually go to bed?", "what time do i go to sleep?"), "when i usually go to bed"),
+    Attr("team", "team", "The user supports {v}", "i support {v}",
+         ("which team do i support?", "who do i cheer for?"), "which team i support"),
+    Attr("nickname", "nickname", "The user's childhood nickname was {v}", "my childhood nickname was {v}",
+         ("what was my childhood nickname?",), "what my childhood nickname was"),
 )
-_BY_KEY = {a.key: a for a in ATTRS}
+# the ways a question about an attribute can be asked, around its topic (every one ends in "?")
+UNKNOWN_FRAMES = ("do you remember {t}?", "do you know {t}?", "can you tell me {t}?", "remind me {t}?",
+                  "can you remind me {t}?", "did i ever tell you {t}?", "do you still know {t}?",
+                  "i forgot {t}, do you know?", "any idea {t}?", "do you happen to know {t}?")
 
 
 def fact_attr(fact: str) -> str | None:
-    """The attribute key a fact sentence is about (None for a fact that isn't from the pools)."""
-    return next((a.key for a in ATTRS if fact.startswith(a.fact.split("{v}")[0])), None)
+    """The attribute key a fact sentence is about (None for a fact that isn't from the pools): its longest prefix."""
+    hits = [(len(pre), a.key) for a in ATTRS if fact.startswith(pre := a.fact.split("{v}")[0])]
+    return max(hits)[1] if hits else None
 
 
 NOTES = ("They like it when I tease them about their snacks.", "They asked me not to call them buddy.",
@@ -202,19 +263,35 @@ SMALL = (
 LEADS = ("", "", "", "hey, ", "hey riya, ", "ok so ", "riya, ", "honestly ", "so ")
 TAILS = ("", "", "", "", " lol", " haha", " ugh", " tbh")
 
-ABOUT_ME = ("what do you know about me", "what have i told you", "what have i said to you",
-            "tell me what you remember about me", "tell me all you know about me",
-            "say everything you remember about me", "tell me what you remember", "tell me what you know")
-ABOUT_LEADS = ("", "", "hey riya, ", "riya, ", "ok so ", "hmm, ", "quick check, ")
+# about_me is composed; every result is read by ABOUT_ME_RE (riya/core/memory.py)
+ABOUT_LEADS = ("", "", "", "hey riya, ", "riya, ", "ok so ", "hmm, ", "quick check, ", "wait, ", "so ", "alright, ",
+               "be honest, ", "okay riya, ", "um, ", "just curious, ")
+ABOUT_ASKS = ("go on and say", "just list", "can you list", "please say", "try to list", "i dare you to say",
+              "go ahead and name", "list")
+ABOUT_QUANTITY = ("everything ", "all ", "what ", "everything that ", "all that ")
+ABOUT_TAILS = ("", "", " so far", " by now", " lately", " right now", " at this point", " already", " anyway",
+               ", riya", " these days")
+ABOUT_HAVE_TAILS = ("", "", " so far", " lately", " before", " already", " today", " this week", " until now")
+ABOUT_ENDS = ("", "?", "?", "?", "!", "?!", "...")
 
+UNKNOWN_LEADS = ("", "", "", "hey riya, ", "quick question, ", "wait, ", "hmm, ", "ok so ", "riya, ", "random one, ",
+                 "sorry, ", "just curious, ", "be honest, ")
+
+# identity is composed: a lead, one of the cores, a tail and an ending
 IDENTITY = ("are you human", "are you a real person", "are you an ai", "are you a bot", "are you a robot",
-            "are you real", "are you alive", "are you a real girl", "is this an ai", "what are you",
-            "are you a bot or something", "are you an ai or a person", "so are you a real person or what",
-            "are you a bot, honestly", "are you human or not", "is this an ai or a person typing")
-IDENTITY_LEADS = ("", "", "wait, ", "hey riya, ", "okay but ", "be honest, ", "quick question, ", "hold on, ")
+            "are you real", "are you alive", "are you a real girl", "are you a person", "are you a program",
+            "are you an ai assistant", "is this an ai", "what are you")
+IDENTITY_LEADS = ("", "", "wait, ", "hey riya, ", "okay but ", "be honest, ", "quick question, ", "hold on, ",
+                  "so riya, ", "hmm, ", "serious question, ", "ok real talk, ", "sorry but ")
+IDENTITY_TAILS = ("", "", "", " or something", " for real", " honestly", " or what", " right now", ", riya", " lol",
+                  " or a person", " or not")
+WHAT_ARE_YOU_TAILS = ("", ", exactly", ", really", ", riya", ", for real")  # "what are you" needs punctuation next
+IDENTITY_ENDS = ("?", "?", "?", "??", "", "?!")
 
 REMEMBER_LEADS = ("remember that ", "remember that ", "please remember that ", "also remember that ",
-                  "riya, remember that ", "remember ", "can you remember that ")  # the last one is a question form
+                  "riya, remember that ", "remember ", "riya, please remember that ", "please also remember that ",
+                  "riya, also remember that ")
+
 
 TOPICS = ("a binary search", "a linked list", "recursion", "tcp handshakes", "garbage collection", "dns",
           "photosynthesis", "compound interest", "inflation", "vaccines", "a transistor", "git branches",
@@ -411,27 +488,43 @@ def _small(r: random.Random) -> dict:
     return {"user_text": _dress(r, _fill(r, r.choice(SMALL))), "facts": _facts(r, 0, 3), "turns": _prior(r)}
 
 
+def _cap(r: random.Random, text: str) -> str:
+    return text[0].upper() + text[1:] if r.random() < 0.15 else text
+
+
 def _about_me(r: random.Random) -> dict:
-    text = r.choice(ABOUT_LEADS) + r.choice(ABOUT_ME) + r.choice(("", "?", "?", "?", "!"))
+    verb, form = r.choice(("remember", "know")), r.random()
+    if form < 0.3:
+        core = f"what do you {verb} about me" + r.choice(ABOUT_TAILS)
+    elif form < 0.5:
+        core = f"{r.choice(ABOUT_ASKS)} everything you {verb} about me" + r.choice(ABOUT_TAILS)
+    elif form < 0.65:
+        core = f"tell me {r.choice(ABOUT_QUANTITY)}you {verb} about me" + r.choice(ABOUT_TAILS)
+    elif form < 0.75:
+        core = f"tell me {r.choice(ABOUT_QUANTITY)}you {verb}" + r.choice(("", ", riya"))  # nothing may follow
+    else:
+        core = f"what have i {r.choice(('told', 'said to'))} you" + r.choice(ABOUT_HAVE_TAILS)
+    text = _cap(r, r.choice(ABOUT_LEADS) + core + r.choice(ABOUT_ENDS))
     return {"user_text": text, "facts": _facts(r, 2, 4), "turns": _prior(r)}
 
 
 def _unknown(r: random.Random) -> dict:
     a = r.choice(ATTRS)
-    text = r.choice(("", "", "hey riya, ", "quick question, ", "wait, ", "hmm, ")) + r.choice(a.unknown)
-    return {"user_text": text, "facts": _facts(r, 1, 4, exclude=(a.key,)), "turns": _prior(r), "asks": a.key}
+    q = r.choice(a.unknown) if r.random() < 0.5 else r.choice(UNKNOWN_FRAMES).format(t=a.topic)
+    return {"user_text": _cap(r, r.choice(UNKNOWN_LEADS) + q), "facts": _facts(r, 1, 4, exclude=(a.key,)),
+            "turns": _prior(r), "asks": a.key}
 
 
 def _identity(r: random.Random) -> dict:
     core = r.choice(IDENTITY)
+    tail = r.choice(WHAT_ARE_YOU_TAILS if core == "what are you" else IDENTITY_TAILS)
     lead = "" if core == "what are you" and r.random() < 0.5 else r.choice(IDENTITY_LEADS)
-    return {"user_text": lead + core + r.choice(("?", "?", "?", "??", "")), "facts": _facts(r, 0, 2)}
+    return {"user_text": _cap(r, lead + core + tail + r.choice(IDENTITY_ENDS)), "facts": _facts(r, 0, 2)}
 
 
 def _remember(r: random.Random) -> dict:
     a = r.choice(ATTRS)
-    lead = r.choice(REMEMBER_LEADS[:-1])
-    text = lead + a.remember.format(v=r.choice(POOLS[a.pool])) + r.choice(("", "", ".", "!"))
+    text = r.choice(REMEMBER_LEADS) + a.remember.format(v=r.choice(POOLS[a.pool])) + r.choice(("", "", ".", "!"))
     return {"user_text": text[0].upper() + text[1:] if r.random() < 0.2 else text,
             "facts": _facts(r, 0, 2, exclude=(a.key,))}
 
