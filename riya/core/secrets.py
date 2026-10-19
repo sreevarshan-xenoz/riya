@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import unicodedata
@@ -53,6 +54,29 @@ def validate(raw: str) -> str:
     if any(c.isspace() or unicodedata.category(c).startswith("C") for c in key):
         raise InvalidKey(InvalidKey.BAD_CHARS)
     return key
+
+
+# The shapes body/src/welcome-logic.js looksLikeKey (and the body's fixture scan) refuse: a Gemini- or OpenAI-shaped
+# token, a word of 24+ letters and digits mixing both, or a word over 40 characters.
+_KEY_SHAPE = re.compile(r"AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}")
+_LONG_WORD = 40
+KEY_STANDIN = "[a key]"
+
+
+def _key_word(word: str) -> bool:
+    return bool(_KEY_SHAPE.search(word)) or len(word) > _LONG_WORD or (
+        len(word) >= 24 and re.fullmatch(r"[A-Za-z0-9_-]+", word) is not None
+        and any(c.isdigit() for c in word) and any(c.isalpha() for c in word))
+
+
+def key_shaped(text: str) -> bool:
+    """Whether text holds something shaped like a pasted API key."""
+    return any(_key_word(w) for w in str(text).split())
+
+
+def hide_key_shaped(text: str) -> str:
+    """text with every key-shaped word replaced by KEY_STANDIN."""
+    return " ".join(KEY_STANDIN if _key_word(w) else w for w in str(text).split())
 
 
 def mask(key: str | None) -> str | None:

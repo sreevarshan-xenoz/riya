@@ -110,3 +110,37 @@ test("Settings has a button to open the welcome again, through the argument-free
   assert.match(read("settings.html"), /<button id="welcome-open"[^>]*>Open the welcome again<\/button>/);
   assert.match(read("settings.js"), /\$\("welcome-open"\)\.addEventListener\("click", \(\) => window\.riya\.openWelcome\(\)\)/);
 });
+
+test("cleanName refuses a pasted key, and nameError says so clearly", () => {
+  const keys = [
+    "AIzaSyD-0123456789abcdefghijklmnopqrstu", // a 39-character Gemini-shaped key: under the 40 limit
+    "AIzaSyDUMMY12",
+    "sk-abcdefghijklmnop",
+    "ab12cd34ef56gh78ij90kl12mn34", // a long mixed token
+    "Riya friend ab12cd34ef56gh78ij90kl12", // inside a longer name
+  ];
+  for (const k of keys) {
+    assert.equal(W.looksLikeKey(k), true, k);
+    assert.equal(W.cleanName(k), null, k);
+    assert.equal(W.nameMessage(k), null, k);
+    assert.equal(W.nameError(k), W.KEY_IN_NAME, k);
+  }
+  assert.match(W.KEY_IN_NAME, /looks like a key/);
+  assert.match(W.KEY_IN_NAME, /next step/);
+  for (const name of ["Sree", "Mary Jane", "a".repeat(40), "Sreevarshan Xenoz", "R2-D2", "Anna-Maria 3rd"]) {
+    assert.equal(W.looksLikeKey(name), false, name);
+    assert.equal(W.nameError(name), null, name);
+  }
+  assert.equal(W.nameError("who?"), W.NAME_RULES);
+  assert.equal(W.nameError("ab ".repeat(14)), W.NAME_RULES); // long, but words: not a key
+  assert.equal(W.nameError("a".repeat(41)), W.KEY_IN_NAME); // over 40 with no space: key-shaped
+});
+
+test("cleanName keeps ZWJ and ZWNJ (Malayalam, Hindi, Persian spellings) and still refuses other control characters", () => {
+  for (const name of ["ശ്രീ\u200D", "क्\u200Dष", "می\u200Cخواهم", "Sree\u200Cvarshan"]) {
+    assert.equal(W.cleanName(name), name, JSON.stringify(name));
+  }
+  for (const bad of ["x\u200B", "x\u202E", "x\u2066", "x\u00AD", "x\u0007", "x\uE000"]) {
+    assert.equal(W.cleanName(bad), null, JSON.stringify(bad));
+  }
+});

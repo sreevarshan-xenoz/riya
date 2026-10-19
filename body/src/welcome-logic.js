@@ -36,14 +36,35 @@ function prevStep(step) {
   return i <= 0 ? null : STEPS[i - 1];
 }
 
-/** What was typed as a name: trimmed, whitespace collapsed; null when empty, over 40 characters, or holding a "?" or a
- *  control character (a question is not a name, and the remember path ignores one). */
+const NAME_RULES = "I can only remember a short name, up to 40 letters and no question marks.";
+const KEY_IN_NAME = "That looks like a key, not a name~ Paste it on the next step and I'll keep it safe.";
+// The key shapes the fixture scan (core-client.test.js) looks for, and the core's riya.core.secrets.key_shaped.
+const KEY_SHAPE = /AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}/;
+const JOINERS = /[\u200C\u200D]/g; // ZWNJ and ZWJ: part of many Malayalam, Hindi and Persian spellings
+
+/** A pasted API key: a Gemini- or OpenAI-shaped token, a word of 24+ letters and digits mixing both, or one over 40
+ *  characters. */
+function looksLikeKey(text) {
+  if (typeof text !== "string") return false;
+  return KEY_SHAPE.test(text) || text.split(/\s+/).some((word) => word.length > MAX_NAME
+    || (word.length >= 24 && /^[A-Za-z0-9_-]+$/.test(word) && /\d/.test(word) && /[A-Za-z]/.test(word)));
+}
+
+/** What was typed as a name: trimmed, whitespace collapsed; null when empty, over 40 characters, holding a "?" or a
+ *  control character other than ZWJ/ZWNJ (a question is not a name, and the remember path ignores one), or shaped like
+ *  a key (it would land in memory, the transcript and the model's prompt). */
 function cleanName(raw) {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
-  if (!trimmed || /[?\p{C}]/u.test(trimmed)) return null;
+  if (!trimmed || trimmed.includes("?") || /\p{C}/u.test(trimmed.replace(JOINERS, "")) || looksLikeKey(trimmed)) return null;
   const name = trimmed.replace(/\s+/g, " ");
   return name.length <= MAX_NAME ? name : null;
+}
+
+/** Why a typed name can't be used (KEY_IN_NAME for a pasted key, else NAME_RULES), or null when it can. */
+function nameError(raw) {
+  if (cleanName(raw) !== null) return null;
+  return looksLikeKey(typeof raw === "string" ? raw.trim() : raw) ? KEY_IN_NAME : NAME_RULES;
 }
 
 /** The existing remember path: she acks aloud and the fact is saved as `user_said`. */
@@ -72,6 +93,9 @@ function agentRows(healthMsg) {
   return Health.healthRows(healthMsg).filter((row) => AGENT_KEYS.includes(row.key)).map((row) => ({ ...row, fix: null }));
 }
 
-const api = { STEPS, LINES, MAX_NAME, nextStep, prevStep, cleanName, nameMessage, modeMessage, eyesMessage, eyesLine, agentRows };
+const api = {
+  STEPS, LINES, MAX_NAME, NAME_RULES, KEY_IN_NAME, nextStep, prevStep, looksLikeKey, cleanName, nameError, nameMessage,
+  modeMessage, eyesMessage, eyesLine, agentRows,
+};
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 else globalThis.RiyaWelcome = api;
