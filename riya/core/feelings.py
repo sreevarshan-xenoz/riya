@@ -6,6 +6,7 @@ with continuous talk and recovers during breaks; expression is derived from all 
 """
 import math
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
@@ -91,12 +92,17 @@ def _user_label(valence: float) -> str:
 
 
 class Feelings:
-    def __init__(self, clock, traits: dict[str, float]):
-        self.clock, self.traits = clock, traits
+    def __init__(self, clock, traits: dict[str, float] | Callable[[], dict[str, float]]):
+        """traits: the dials, or a getter for them (LearnDB.dials), read live so a nudge takes effect at once."""
+        self.clock, self._traits = clock, traits
         self.state = FeelingState()
         self.prev_words: set[str] = set()
         self._last = clock.now()  # time of the last tick (or of the save, after a restore)
         self._override: tuple[str, float | None] | None = None  # (expression, expires_at or None)
+
+    @property
+    def traits(self) -> dict[str, float]:
+        return self._traits() if callable(self._traits) else self._traits
 
     # ---- events -------------------------------------------------------------------------------------
     def _bump(self, name: str, delta: float, lo: float = -1.0, hi: float = 1.0, cap: float = MAX_TURN_DELTA) -> None:
@@ -214,7 +220,7 @@ class Feelings:
         return {"state": asdict(self.state), "saved_at": self.clock.now()}
 
     @classmethod
-    def from_dict(cls, d: dict, clock, traits: dict[str, float]) -> "Feelings":
+    def from_dict(cls, d: dict, clock, traits: dict[str, float] | Callable[[], dict[str, float]]) -> "Feelings":
         f = cls(clock, traits)
         raw = dict(d.get("state", {}))
         um_raw = raw.pop("user_mood", None)

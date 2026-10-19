@@ -112,3 +112,29 @@ def test_hands_messages():
     assert MemoriesMsg(facts=[], transcript_days=[]).notes == []
     m = MemoriesMsg(facts=[], transcript_days=[], notes=[NoteInfo(id=1, at=2.0, text="milk")])
     assert json.loads(dump(m))["notes"] == [{"id": 1, "at": 2.0, "text": "milk"}]
+
+
+def test_learning_messages():
+    from typing import get_args
+
+    from riya.core.learn import twin
+    from riya.core.protocol import (DialInfo, LearningMsg, LearningReset, StyleNoteDelete, StyleNoteInfo,
+                                    TraitChangeInfo, TwinInfo, TwinReset)
+    assert parse_body_message('{"type":"note_delete_style","id":2}') == StyleNoteDelete(id=2)
+    assert parse_body_message('{"type":"twin_reset","kind":"bid"}') == TwinReset(kind="bid")
+    assert parse_body_message('{"type":"learning_reset"}') == LearningReset()
+    for raw in ('{"type":"twin_reset","kind":"nope"}', '{"type":"twin_reset"}', '{"type":"note_delete_style"}'):
+        with pytest.raises(ProtocolError):
+            parse_body_message(raw)
+    assert get_args(TwinReset.model_fields["kind"].annotation) == twin.KINDS
+    m = LearningMsg(dials={"teasing": DialInfo(value=0.35, lo=0.1, hi=0.8)},
+                    history=[TraitChangeInfo(at=1.0, dial="teasing", old=0.5, new=0.35, reason="r", source="explicit")],
+                    notes=[StyleNoteInfo(id=1, at=1.0, text="t", polarity="like")],
+                    twin=[TwinInfo(kind="bid", bucket="night/break/long", p=0.5, n=2.0)], enabled=True)
+    out = json.loads(dump(m))
+    assert out["type"] == "learning" and out["dials"]["teasing"] == {"value": 0.35, "lo": 0.1, "hi": 0.8}
+    assert out["twin"] == [{"kind": "bid", "bucket": "night/break/long", "p": 0.5, "n": 2.0}]
+    with pytest.raises(ValueError):
+        TraitChangeInfo(at=1.0, dial="teasing", old=0.5, new=0.35, reason="r", source="nope")
+    with pytest.raises(ValueError):
+        StyleNoteInfo(id=1, at=1.0, text="t", polarity="nope")

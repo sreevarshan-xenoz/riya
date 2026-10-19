@@ -8,6 +8,9 @@ from typing import Literal
 BUDGETS = {"small": 110, "about_me": 160, "explain": 380, "greeting": 90, "bid": 40, "report": 40,
            "tool": 60}  # max_tokens
 CAPS = {"small": 3, "about_me": 6, "explain": 8, "greeting": 3, "report": 1, "tool": 2}  # most sentences per kind
+VERBOSE_LOW, VERBOSE_HIGH = 0.25, 0.45  # verbosity below / above these moves the SCALED caps by -1 / +1
+SCALED = ("small", "about_me", "greeting")
+EMOJI_OFF = 0.15  # below this emoji dial she uses none
 ONLINE_BUDGETS = {"explain": 600}  # online models may count their thinking tokens
 
 _VS = "[\uFE0F\U0001F3FB-\U0001F3FF]*"  # variation selector and skin tones ride along with their emoji
@@ -36,6 +39,18 @@ GENERIC_MAX_WORDS = 6
 _IDENTITY = re.compile(r"\b(?:are you (?:human|real|alive|an? (?:ai|person|bot|robot|program|real (?:person|girl)))"
                        r"|what are you(?=\s*(?:[?!.,]|$))|is this an? ai)\b", re.I)
 _FEELINGS = re.compile(r"\b(?:do you (?:actually |really )?have feelings|can you feel|do you feel)\b", re.I)
+
+
+def cap_for(kind: str, verbosity: float) -> int:
+    """The sentence cap for a kind: CAPS[kind], one less when verbosity < VERBOSE_LOW or one more when it is above
+    VERBOSE_HIGH, for the SCALED kinds only; never below 1."""
+    shift = (-1 if verbosity < VERBOSE_LOW else 1 if verbosity > VERBOSE_HIGH else 0) if kind in SCALED else 0
+    return max(1, CAPS[kind] + shift)
+
+
+def emoji_limit(emoji: float) -> int:
+    """Emoji allowed in a reply: none below EMOJI_OFF, else one."""
+    return 0 if emoji < EMOJI_OFF else 1
 
 
 def turn_kind(text: str, *, about_me: bool, needs_thinking: bool) -> Literal["small", "explain", "about_me"]:

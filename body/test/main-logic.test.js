@@ -248,3 +248,18 @@ test("confirm, reminder_cancel, note_delete and actions_clear sent while the cor
   }
   assert.equal(shouldSendToCore({ type: "set_settings", patch: {} }, false), true, "settings still queue");
 });
+
+test("learning is replayed to a new window but forgotten on disconnect, and its three actions are never queued", () => {
+  assert.ok(REPLAY_TYPES.includes("learning"));
+  assert.ok(FORGET_ON_DISCONNECT.includes("learning"), "stale dials would pass for live");
+  const cache = new Map();
+  for (const msg of [{ type: "hello" }, { type: "learning", dials: {}, history: [], notes: [], twin: [], enabled: true }]) rememberForReplay(cache, msg);
+  assert.deepEqual([...cache.keys()], ["hello", "learning"]);
+  forgetOnDisconnect(cache);
+  assert.deepEqual([...cache.keys()], ["hello"]);
+  for (const type of ["note_delete_style", "twin_reset", "learning_reset"]) {
+    assert.ok(NOW_ONLY.includes(type), type);
+    assert.equal(shouldSendToCore({ type }, false), false, type);
+    assert.equal(shouldSendToCore({ type }, true), true, type);
+  }
+});

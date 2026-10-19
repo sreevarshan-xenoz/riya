@@ -232,3 +232,8 @@ test("an actions fixture is a valid shape for actionText", () => {
   assert.ok(msg.items.length >= 2);
   for (const a of msg.items) assert.ok(H.actionText(a).includes(a.summary));
 });
+
+test("learning_enabled is a boolean setting", () => {
+  assert.deepEqual(L.settingPatch("learning_enabled", false), { ok: true, patch: { learning_enabled: false } });
+  assert.deepEqual(L.settingPatch("learning_enabled", 1), { ok: true, patch: { learning_enabled: true } });
+});
