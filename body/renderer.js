@@ -237,7 +237,8 @@
   }
 
   function answer(yes) {
-    const c = bubble.answerConfirm(Date.now()); // once: the buttons vanish below, so a second click finds nothing
+    // once: the buttons vanish below, so a second click finds nothing; and for the id these buttons were drawn for
+    const c = shownConfirm && bubble.answerConfirm(Date.now(), shownConfirm.id);
     if (c) window.riya.send({ type: "confirm", id: c.id, yes: yes === true });
     refresh();
   }
@@ -389,7 +390,7 @@
         renderAgents();
         break;
       case "confirm_request":
-        bubble.onConfirmRequest(msg);
+        bubble.onConfirmRequest(msg, Date.now());
         break;
       case "confirm_done":
         bubble.onConfirmDone(msg.id);
@@ -414,6 +415,10 @@
       look = null; // the core sends a fresh look when it comes back
       bubble.endCurrent(now());
       bubble.clearConfirm(); // an answer couldn't reach her now, and the core forgets a pending one when it restarts
+      if (reminders.length) { // a stale list would pass for live, with live Cancel buttons; the core re-sends on change
+        reminders = [];
+        renderReminders();
+      }
     }
     const shown = agentsWhileConnected(agents, connected); // a stale list or badge would pass for live; hello re-sends
     if (shown !== agents) {
