@@ -89,7 +89,8 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "actions") == ["hello", "settings", "state", "agents", "eyes", "reminders", "actions"]
+        assert receive_until(ws, "actions") == ["hello", "settings", "state", "agents", "eyes", "learning",
+                                                "reminders", "actions"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
