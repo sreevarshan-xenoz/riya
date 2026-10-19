@@ -1,5 +1,6 @@
 """SQLite store: schema migrations, connection setup and a JSON key-value table."""
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -42,16 +43,44 @@ create index actions_at on actions(at);
 _MIGRATIONS = [_V1, _V2, _V3]
 
 
+def _backup(conn: sqlite3.Connection, path: Path) -> None:
+    """A copy of the database as it is (WAL included) at <db>.pre-v<SCHEMA_VERSION>.bak, made once: an existing backup
+    is never overwritten."""
+    bak = path.with_name(f"{path.name}.pre-v{SCHEMA_VERSION}.bak")
+    if bak.exists():
+        return
+    tmp = bak.with_name(bak.name + ".tmp")
+    dst = sqlite3.connect(str(tmp))
+    try:
+        conn.backup(dst)
+    finally:
+        dst.close()
+    os.replace(tmp, bak)
+
+
 def open_db(path: str | Path) -> sqlite3.Connection:
     """Opens (creating) the database and brings its schema up to date; each migration and its version bump commit
-    together, so a failure leaves the previous version intact."""
-    if str(path) != ":memory:":
+    together, so a failure leaves the previous version intact. An existing database is copied to
+    <db>.pre-v<N>.bak before it's migrated, and one from a newer Riya (a schema above SCHEMA_VERSION) is refused
+    before anything is written to it."""
+    memory = str(path) == ":memory:"
+    if not memory:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    version = conn.execute("pragma user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(f"{path} is from a newer Riya (schema {version}; this one knows up to {SCHEMA_VERSION}). "
+                           "It was left untouched: run the newer Riya, or move the file aside to start fresh.")
     conn.execute("pragma journal_mode=wal")
     conn.execute("pragma foreign_keys=on")
-    version = conn.execute("pragma user_version").fetchone()[0]
+    if 0 < version < len(_MIGRATIONS) and not memory:
+        try:
+            _backup(conn, Path(path))
+        except (OSError, sqlite3.Error):  # no backup, no migration: the database stays as it was
+            conn.close()
+            raise
     for i in range(version, len(_MIGRATIONS)):
         try:
             conn.executescript(f"begin; {_MIGRATIONS[i]} pragma user_version={i + 1}; commit;")
