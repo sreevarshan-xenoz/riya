@@ -168,11 +168,6 @@ def test_time_now_uses_the_zone():
     assert " on " in text and "January" in text and ":" in text and ("AM" in text or "PM" in text)
 
 
-def test_unwritten_runs_raise_until_their_task():
-    with pytest.raises(NotImplementedError):
-        REGISTRY["note_add"].run({"text": "x"}, ToolCtx())
-
-
 def test_validate_call_never_raises_on_huge_or_odd_values(s):
     for bad in (10**400, -10**400, float("nan"), float("inf"), {"a": 1}, [1], (1,), object()):
         assert v(s, "timer_set", duration=bad) is None, bad
