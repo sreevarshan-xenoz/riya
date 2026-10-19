@@ -283,3 +283,16 @@ def test_other_quoted_values_and_argv_are_one_line():
                  Call("run_command", {"name": "n\nm", "argv": ["a\nb", "c"], "cwd": None, "timeout_s": 1})):
         t = confirm_text(Pending("i", call, "", 0))
         assert "\n" not in t and t.endswith("? (yes / no)")
+
+
+# ---- final review: a few natural two-word yes forms ----------------------------------------------------------------
+@pytest.mark.parametrize("text", ["yes please", "yes do it", "yeah go ahead", "ok do it", "Okay, do it!",
+                                  "riya, yes please", "yep", "yup", "please do", "sure, go ahead", "yeah do it"])
+def test_natural_yes_forms_confirm(text):
+    assert yes_no(text) == "yes"
+
+
+@pytest.mark.parametrize("text", ["yes but not now", "yes don't", "ok not yet", "yeah but wait", "yes please don't",
+                                  "do it later", "yes no", "ok do it tomorrow"])
+def test_yes_with_a_but_or_a_negation_never_confirms(text):
+    assert yes_no(text) != "yes"

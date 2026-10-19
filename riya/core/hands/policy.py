@@ -21,7 +21,9 @@ CONFIRM_S = 60  # a pending confirmation expires after this
 PARK_S = 600  # a parked T2 call (the user is gaming) expires after this
 EXPIRED_NOTE_S = 300  # a late "yes" this soon after an expiry gets the timed-out line
 
-_YES = frozenset({"yes", "yeah", "do it", "go ahead", "sure", "ok", "okay"})
+_YES = frozenset({"yes", "yeah", "do it", "go ahead", "sure", "ok", "okay", "yep", "yup", "please do"}
+                 | {f"{a} {b}" for a in ("yes", "yeah", "yep", "sure", "ok", "okay")
+                    for b in ("please", "do it", "go ahead")})  # still the whole turn: a "but" or "not" isn't a yes
 _NO = frozenset({"no", "nope", "nah", "don't", "dont", "cancel", "stop", "no thanks"})
 _JUNK = re.compile(r"[^\w' ]+")
 
