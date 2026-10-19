@@ -32,9 +32,10 @@ class Router:
         return getattr(self.online if self.last_source == "online" else self.local, "finish_reason", None)
 
     def stream(self, messages: list[dict], text: str, max_tokens: int = 300,
-               online_tokens: int | None = None) -> Iterator[str]:
-        """online_tokens, when given, is the online model's budget; a local fallback keeps max_tokens."""
-        if self.route(text) == "online":
+               online_tokens: int | None = None, route: str | None = None) -> Iterator[str]:
+        """online_tokens, when given, is the online model's budget; a local fallback keeps max_tokens. route: the route
+        the caller already decided (and built its prompt for); None decides here."""
+        if (route or self.route(text)) == "online":
             yield from self._online(messages, max_tokens, online_tokens or max_tokens)
         else:
             self.last_source = "local"

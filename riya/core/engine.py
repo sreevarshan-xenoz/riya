@@ -543,7 +543,8 @@ class RiyaCore:
                 ran_out = lambda: getattr(self.local if seeing.fell_back else self.vision,  # noqa: E731
                                           "finish_reason", None) == "length"
             else:
-                stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
+                # the route the prompt was built for, decided once: a toggle meanwhile can't send the notes online
+                stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn), route=route)
                 ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
             kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead or ack),
                                                 emoji_max=emoji_max), others=bool(lead or ack), dropped=dropped)
@@ -643,12 +644,14 @@ class RiyaCore:
             log.exception("couldn't send what she learned")
 
     def _reset_learning(self) -> None:
-        """Reset to her defaults: the dials (logged as "reset"), the notes and the whole twin."""
-        now = self.clock.now()
-        self.learn.reset_dials(now)
-        self.learn.clear_notes()
-        self.learn.reset_twin(None)
-        self._emit_learning()
+        """Reset to her defaults: the dials (logged as "reset"), the notes and the whole twin, under the core lock so no
+        reply's feedback lands halfway through it."""
+        with self._lock:
+            now = self.clock.now()
+            self.learn.reset_dials(now)
+            self.learn.clear_notes()
+            self.learn.reset_twin(None)
+            self._emit_learning()
 
     @staticmethod
     def _shape(kind: str, text: str, verbosity: float | None = None) -> tuple[str | None, int, int]:
