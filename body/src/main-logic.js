@@ -131,6 +131,25 @@ function welcomeClosedMessage({ quitting, onboarded } = {}) {
   return quitting === true || onboarded === true ? null : { type: "onboarding_done" };
 }
 
+/** The welcome window's own webPreferences, a fresh object each call: isolated, sandboxed, no node in the page. */
+function welcomeWebPreferences(preload) {
+  return {
+    preload,
+    additionalArguments: ["--riya-mode=welcome"],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  };
+}
+
+/** The events after which Riya is going away, each setting state.quitting: the app's "before-quit", and a window's
+ *  "query-session-end" / "session-end" (a Windows shutdown or logoff, where Electron emits no before-quit). So a
+ *  welcome closed by the session ending sends no onboarding_done, as when quitting. */
+const QUIT_EVENTS = { app: ["before-quit"], window: ["query-session-end", "session-end"] };
+function isQuitEvent(source, name) {
+  return Object.prototype.hasOwnProperty.call(QUIT_EVENTS, source) && QUIT_EVENTS[source].includes(name);
+}
+
 const WELCOME_IPC = { "welcome:open": ["settings"], "welcome:key-page": ["welcome", "settings"] };
 
 /** Which window kind may use a main-process channel of the welcome: open it only from Settings, the key page from
@@ -142,5 +161,5 @@ function ipcAllowed(channel, senderKind) {
 module.exports = {
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
   quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
-  welcomeClosedMessage, ipcAllowed,
+  welcomeClosedMessage, ipcAllowed, welcomeWebPreferences, QUIT_EVENTS, isQuitEvent,
 };

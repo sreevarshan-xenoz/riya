@@ -11,7 +11,8 @@ const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
-  forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed,
+  forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed, welcomeWebPreferences,
+  QUIT_EVENTS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -447,15 +448,11 @@ function openWelcome() {
     title: "Welcome to Riya",
     autoHideMenuBar: true,
     fullscreenable: false,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      additionalArguments: ["--riya-mode=welcome"],
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+    webPreferences: welcomeWebPreferences(path.join(__dirname, "preload.js")),
   });
   state.welcomeWin = win;
+  // a Windows shutdown or logoff emits no before-quit: it counts as quitting, so closing marks nothing done
+  for (const event of QUIT_EVENTS.window) win.on(event, () => { state.quitting = true; });
   win.removeMenu();
   win.once("ready-to-show", () => {
     if (win.isDestroyed()) return;
@@ -543,7 +540,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", showWindow);
   app.on("window-all-closed", () => {}); // a tray app: stay alive with no windows
-  app.on("before-quit", () => { state.quitting = true; });
+  for (const event of QUIT_EVENTS.app) app.on(event, () => { state.quitting = true; });
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
     stopDrag(false);
