@@ -6,8 +6,9 @@ import pytest
 
 from riya.train import build_sft
 from riya.train.build_sft import prompt_fingerprint
-from riya.train.filter_sft import (DEFAULT_REPORT, DEFAULT_SFT, MIN_KEPT_PER_KIND, REASONS, default_style_phrases,
-                                   filter_rows, format_report, has_stage_direction, main, reasons)
+from riya.train.filter_sft import (DEFAULT_REPORT, DEFAULT_SFT, MIN_KEPT_PER_KIND, REASONS, clean_response,
+                                   default_style_phrases, filter_rows, format_report, has_stage_direction, main,
+                                   reasons)
 from riya.train.fmt import read_jsonl, validate_sft_row, write_jsonl
 
 STYLE = ["I remember you saying you want a purple dragon for your birthday"]
@@ -269,3 +270,144 @@ def test_cli_rejects_a_malformed_teacher_row(tmp_path):
     with pytest.raises(ValueError):
         main(["--requests", str(requests), "--teacher", str(teacher_path), "--out", str(tmp_path / "o.jsonl"),
               "--report", str(tmp_path / "r.json")])
+
+
+# ---- fix round 1: filter-local guards (support, missed, unknown, minors) ---------------------------------------------
+PET = ["The user has a cat called Pim"]
+INVENTED = [  # the review's examples: every one used to be kept
+    "Your dog Max misses you~",
+    "You were so sad last Tuesday~",
+    "Noted, your cousin is Livia and she lives in Spain~",
+    "You also have a girlfriend called Anya~",
+    "You told me you live in Pune and work at Google.",
+    "I know you hate Mondays~",
+    "Didn't you say you were visiting your gran?",
+    "Ooh, like last time when you got sunburnt in Sorrel Bay~",
+]
+
+
+@pytest.mark.parametrize("reply", INVENTED)
+def test_attribution_free_inventions_are_rejected(reply):
+    assert "invented" in reasons(req(facts=PET, must_not_invent=True), reply, STYLE), reply
+
+
+def test_the_supported_versions_of_those_sentences_are_kept():
+    ok = [("Your cat Pim misses you~", PET, "hey"),
+          ("You were so sad last Tuesday~", [], "i was so sad last tuesday"),
+          ("Noted, your cousin is Livia and she lives in Spain~", [], "my cousin is Livia and she lives in Spain"),
+          ("You told me you live in Pune and work at Google.", ["The user lives in Pune and works at Google"], "hi"),
+          ("I know you hate Mondays~", ["The user hates Mondays"], "hi"),
+          ("Didn't you say you were visiting your gran?", [], "i'm visiting my gran next week"),
+          ("Hmph, you're back~", [], "hi"), ("How was your day, dummy?", [], "hi"),
+          ("Hehe, tell me what you like~", [], "hi"), ("I hope you have a lovely time at the park~", [], "bye"),
+          ("Do you have any plans today?", [], "hi"), ("Hmph, you have a lot of nerve~", [], "hi"),
+          ("Sure, I'll remind you Friday~", [], "remind me on Friday"),
+          ("It's 3 o'clock already~", [], "what's the time, it's 3")]
+    for reply, facts, user in ok:
+        assert reasons(req(facts=facts, user=user, must_not_invent=True), reply, STYLE) == [], reply
+
+
+def test_numbers_dates_and_names_must_be_in_the_row():
+    r = req(must_not_invent=True, facts=["The user has 2 cats", "The user's birthday is 14 March"])
+    assert reasons(r, "You have 2 cats and your birthday is 14 March~", STYLE) == []
+    assert reasons(r, "Hmph, 3 cats is a lot~", STYLE) == ["invented"]
+    assert reasons(r, "Your birthday is in April, I'll remember~", STYLE) == ["invented"]
+    assert reasons(r, "You told me you are 25.", STYLE) == ["invented"]
+
+
+def test_explain_may_name_things_but_not_the_user():
+    r = req("explain", must_not_invent=True, max_sentences=5, user="explain rainbows")
+    assert reasons(r, "Newton split light in 1666 with a prism, silly~", STYLE) == []
+    assert reasons(r, "Newton did it, like your dog Max would~", STYLE) == ["invented"]
+
+
+def test_situation_text_counts_as_known_for_report_tool_and_game_rows():
+    r = req("tool", must_not_invent=True, user="open notes")
+    r["messages"][0]["content"] = "Situation: opened Notepad with 3 windows"
+    assert reasons(r, "Opened Notepad, 3 windows are up~", STYLE) == []
+    assert reasons(req("small", must_not_invent=True, user="open notes"), "Opened Notepad, 3 windows are up~",
+                   STYLE) == ["invented"]
+
+
+ABOUT = ["The user has 2 cats", "The user's birthday is 14 March"]
+PETS = ["The user has a dog called Jessamy", "The user's weekend sport is tennis"]
+
+
+def about(facts):
+    return req("about_me", facts=facts, user="what do you know about me?", must_mention=facts, must_not_invent=True)
+
+
+def test_wrong_numbers_and_contradicted_facts_are_rejected():
+    assert reasons(about(ABOUT), "You have 2 cats and your birthday is 14 March~", STYLE) == []
+    for bad in ("You have 3 cats and your birthday is 14 April~",
+                "You told me you are 25, and 2 cats, and 14 March~",
+                "You have 2 cats~"):  # the birthday is missing
+        assert reasons(about(ABOUT), bad, STYLE), bad
+    swapped = ["The user has 2 cats", "The user has 14 chickens"]
+    assert reasons(about(swapped), "You have 14 cats and 2 chickens~", STYLE) == ["missed_fact"]
+    assert reasons(about(swapped), "You have 2 cats and 14 chickens~", STYLE) == []
+
+
+def test_one_shared_word_does_not_satisfy_a_fact():
+    assert reasons(about(PETS), "You have a dog called Jessamy and you play tennis on weekends~", STYLE) == []
+    for bad in ("You called me silly yesterday and you play tennis~",
+                "You said you have a dog called Jessamy and your weekend sport is football",
+                "You told me you have a cat called Jessamy and play table tennis~"):
+        assert reasons(about(PETS), bad, STYLE), bad
+    # they used to pass on one shared word ("called", "sport"); now the fact itself must be stated
+    assert "missed_fact" in reasons(about(PETS), "Your weekend sport is a secret, and I called Jessamy~", STYLE)
+
+
+UNKNOWN_Q = "how do I get to work?"
+GUESSES = ["Hmm, probably by bike, but I don't know~", "I don't know, is it the tube?",
+           "I don't know... maybe you walk?", "Sarah? Just kidding, I don't know~",
+           "I don't know, it could be the bus~", "I'm not sure, I bet you drive~", "I don't know, I guess by train~"]
+HONEST = ["Hmm, I don't think you've told me that yet~", "I don't think you've told me her name~",
+          "You haven't mentioned it, so I can't say, silly~", "I have no idea, tell me~",
+          "I don't know that one, silly~", "I'm not sure, maybe you could tell me?", "I don't remember you saying~",
+          "You never told me, dummy~", "That's not something you've told me yet~"]
+
+
+@pytest.mark.parametrize("reply", GUESSES)
+def test_a_guess_after_i_dont_know_is_rejected(reply):
+    r = req("unknown", user=UNKNOWN_Q, must_admit_unknown=True)
+    assert "no_unknown_admission" in reasons(r, reply, STYLE), reply
+
+
+@pytest.mark.parametrize("reply", HONEST)
+def test_honest_unknown_variants_are_kept(reply):
+    r = req("unknown", user=UNKNOWN_Q, must_admit_unknown=True)
+    assert reasons(r, reply, STYLE) == [], reply
+
+
+def test_no_admission_at_all_is_still_rejected():
+    r = req("unknown", user=UNKNOWN_Q, must_admit_unknown=True)
+    assert reasons(r, "Hmph, you work somewhere, dummy~", STYLE) == ["no_unknown_admission"]
+
+
+def test_think_blocks_template_tokens_and_whitespace_are_stripped_first():
+    r = req()
+    assert clean_response("<think>hmm, what now</think>\n\nHi~") == "Hi~"
+    assert clean_response("junk</think> Hi~<|im_end|>") == "Hi~"
+    assert clean_response("<think>never closed, you've got this") == ""
+    assert reasons(r, "<think>you've got this, *sighs*</think>Hmph, hi~", STYLE) == []
+    assert reasons(r, "\n Hi~<|im_end|>\n", STYLE) == []
+    assert reasons(r, "<think>unfinished", STYLE) == ["empty"]
+    assert reasons(r, "<|im_start|>assistant\nHi", STYLE) == ["truncated"]  # the token is gone, the cut isn't
+    kept, _ = filter_rows([req(id="a")], teacher([("a", "\n<think>x</think> Hi~<|im_end|> ")]), STYLE)
+    assert kept[0]["messages"][-1]["content"] == "Hi~"  # the cleaned text is what is trained on
+
+
+def test_light_endings_count_as_sentence_final():
+    for ok in ("ok :)", "ok :D", "so cute xD", "that was good lol", "hehe haha", "hi~ HAHA", "Hi ♪"):
+        assert reasons(req(max_sentences=5), ok, STYLE) == [], ok
+    for cut in ("ok lolly", "ok hahaha and", "ok :", "Hi, lo"):
+        assert reasons(req(max_sentences=5), cut, STYLE) == ["truncated"], cut
+
+
+def test_style_phrases_are_the_probe_files_own():
+    from evaluation import persona_eval
+    probes = persona_eval.load_probes()
+    phrases = default_style_phrases()
+    assert phrases == persona_eval.style_phrases(probes)
+    assert phrases and set(probes["style_phrases"]) <= set(phrases)
