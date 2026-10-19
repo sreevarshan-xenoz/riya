@@ -23,8 +23,9 @@ class Action:
 
 
 class Initiative:
-    def __init__(self, clock: Clock, get_settings: Callable[[], Settings]):
-        self.clock, self.get_settings = clock, get_settings
+    def __init__(self, clock: Clock, get_settings: Callable[[], Settings], tz=None):
+        """tz: the zone quiet hours are read in (None: the machine's), the same as the engine's."""
+        self.clock, self.get_settings, self.tz = clock, get_settings, tz
         self.last_bid_at: float | None = None
 
     def _eligible(self, threads: list[Thread]) -> Thread | None:
@@ -43,7 +44,7 @@ class Initiative:
         now = self.clock.now()
         if state != "break" or not s.may_start_conversations:
             return None
-        if in_quiet_hours(s.quiet_hours, datetime.fromtimestamp(now)):
+        if in_quiet_hours(s.quiet_hours, datetime.fromtimestamp(now, self.tz)):
             return None
         if self.last_bid_at is not None and now - self.last_bid_at < BID_MIN_GAP_S:
             return None

@@ -100,7 +100,7 @@ def test_hands_messages():
             parse_body_message(raw)
     assert json.loads(dump(ConfirmRequest(id="a", summary="run x", expires_at=5.0))) == {
         "type": "confirm_request", "id": "a", "summary": "run x", "expires_at": 5.0}
-    for outcome in ("ran", "declined", "expired", "replaced", "cancelled"):
+    for outcome in ("ran", "started", "failed", "declined", "expired", "replaced", "cancelled"):
         assert json.loads(dump(ConfirmDone(id="a", outcome=outcome)))["outcome"] == outcome
     with pytest.raises(ValueError):
         ConfirmDone(id="a", outcome="refused")
