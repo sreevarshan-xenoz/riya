@@ -5,7 +5,7 @@ import pytest
 from riya.core.clock import FakeClock
 from riya.core.learn.dials import BANDS, DIALS
 from riya.core.learn.records import DIALS_KEY, DRIFT_KEY, EVENTS_KEEP_S, MAX_NOTES, POLARITIES, LearnDB
-from riya.core.learn.twin import Cell, Twin
+from riya.core.learn.twin import Cell, Twin, evidence, mean
 from riya.core.persona import load_traits
 from riya.core.settings import Settings, apply_patch
 from riya.core.store import KV, open_db
@@ -270,3 +270,20 @@ def test_a_v1_shaped_defaults_dict_gets_emoji_0_3():
 def test_traits_file_ends_with_a_newline():
     from riya.core.persona import TRAITS_PATH
     assert TRAITS_PATH.read_bytes().endswith(b"\n")
+
+
+@pytest.mark.parametrize("a,b,t", [(5.0, 2.0, "oops"), (5.0, 2.0, b"\x00"), (5.0, 2.0, float("inf")),
+                                   (5.0, 2.0, float("-inf")), ("x", 2.0, "oops")])
+def test_a_corrupt_twin_updated_at_reads_as_the_prior(a, b, t):
+    d = db()
+    d.conn.execute("insert into twin(kind, bucket, alpha, beta, updated_at) values('bid', 'x', ?, ?, ?)", (a, b, t))
+    d.conn.commit()
+    tw = Twin(d, FakeClock(NOW))
+    assert tw.p_engage("bid", "x") == 0.5 and tw.chance("bid", "x") == 1.0
+    assert mean(d.cells()[0][2], NOW) == 0.5 and evidence(d.get_cell("bid", "x"), NOW) == 0.0
+    tw.record("bid", "x", True)
+    assert d.get_cell("bid", "x") == Cell(3.0, 2.0, NOW)
+
+
+def test_a_cell_with_a_bad_time_decays_as_the_prior():
+    assert mean(Cell(5.0, 2.0, "oops"), NOW) == 0.5 and mean(Cell(5.0, 2.0, float("nan")), NOW) == 0.5
