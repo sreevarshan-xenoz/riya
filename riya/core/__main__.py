@@ -19,7 +19,7 @@ from riya.core.eyes.capture import make_window_source, set_dpi_awareness
 from riya.core.hands.effects import WindowsEffects
 from riya.core.hands.net import UrlHttp
 from riya.core.listen import ListenGate
-from riya.core.models import load_dotenv, load_online_from_env, local_model
+from riya.core.models import VISION_TIMEOUT_S, load_dotenv, load_online_from_env, local_model
 from riya.core.presence import make_idle_source
 from riya.core.protocol import Mouth
 from riya.core.store import open_db
@@ -27,7 +27,6 @@ from riya.core.store import open_db
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOGWATCH_EVERY_S = 60.0
-VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
