@@ -411,3 +411,28 @@ def test_style_phrases_are_the_probe_files_own():
     phrases = default_style_phrases()
     assert phrases == persona_eval.style_phrases(probes)
     assert phrases and set(probes["style_phrases"]) <= set(phrases)
+
+
+# ---- fix round 2: a capitalised sentence opener that is no common word is a name ------------------------------------
+def test_an_unknown_capitalised_opener_is_an_invented_name():
+    r = req(must_not_invent=True)
+    assert reasons(r, "Max misses you~", STYLE) == ["invented"]
+    assert reasons(r, "Hehe, you're back~ Livia would be proud.", STYLE) == ["invented"]
+    assert reasons(req(must_not_invent=True, facts=["The user has a dog called Max"]), "Max misses you~", STYLE) == []
+    assert reasons(req(must_not_invent=True, user="my dog Max is sick"), "Max will be fine~", STYLE) == []
+    assert reasons(req(must_not_invent=False), "Max misses you~", STYLE) == []  # only when the row forbids inventing
+
+
+def test_common_and_her_own_openers_are_kept():
+    r = req(must_not_invent=True, max_sentences=4)
+    for ok in ("Sometimes I wonder~", "Okay~ got it.", "Hmm, that's tough.", "Ehh, fine~", "Aww, come here~",
+               "Honestly, I'd stay in~", "Don't make me wait~", "Didn't I say so?", "That's cute, dummy~",
+               "Finally! Where were you?", "Riya is right here~", "Hmph. Whatever you say~", "Noted, silly~"):
+        assert reasons(r, ok, STYLE) == [], ok
+
+
+def test_the_opener_list_is_a_constant():
+    from riya.train.filter_sft import COMMON_WORDS
+    assert len(COMMON_WORDS) >= 500
+    assert {"sometimes", "okay", "hmm", "ehh", "aww", "riya", "that", "don", "i"} <= COMMON_WORDS
+    assert "max" not in COMMON_WORDS and "livia" not in COMMON_WORDS
