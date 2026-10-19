@@ -62,6 +62,7 @@ def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, 
     emitted, src, local = [], FakeIdleSource(), FakeModel("local", local_replies)
     core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=src, local=local, online=online,
                     emit=emitted.append, effects=FakeEffects(), http=FakeHttp({}), riya_dir=riya_dir, tz=tz, **eyes)
+    core.twin_rng = FixedRng(0.0)  # the twin never suppresses unless a test says so
     return core, emitted, src, local
 
 

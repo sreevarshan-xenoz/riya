@@ -252,7 +252,10 @@ def test_injected_feedback_never_moves_dials():
     injected_flows(core, clock, src, local)
     assert core.learn.dials() == load_traits()
     assert core.learn.notes() == [] and core.learn.history() == []
-    assert of(emitted, LearningMsg) == [] and not {m.text for m in of(emitted, Say)} & acks()
+    # the twin may learn that the agent report was heard out; no message ever carries a moved dial or a note
+    assert all(not m.history and not m.notes and {d: i.value for d, i in m.dials.items()} == load_traits()
+               for m in of(emitted, LearningMsg))
+    assert not {m.text for m in of(emitted, Say)} & acks()
 
 
 def test_only_user_turns_reach_detect_feedback(monkeypatch):

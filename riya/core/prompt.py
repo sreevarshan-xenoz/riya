@@ -299,13 +299,15 @@ def _duration(away_s: float) -> str:
     return f"{d} day" + ("" if d == 1 else "s")
 
 
-def greeting_situation(away_s: float, missing: float, thread: Thread | None) -> str:
+def greeting_situation(away_s: float, missing: float, thread: Thread | None, short: bool = False) -> str:
+    """short: they've been ignoring her greetings lately (the twin), so just a quick hello."""
     s = f"The user just came back after being away for {_duration(away_s)}."
     if missing >= 0.4:
         s += " You missed them and can say so."
     s += (f" Greet them warmly and ask about this: {thread.text}." if thread
           else " Greet them warmly and ask how their day went.")
-    return s + " Keep it to one or two short sentences."
+    return s + (" Just a quick, warm hello in one short sentence." if short
+                else " Keep it to one or two short sentences.")
 
 
 def remember_situation(fact: str) -> str:

@@ -5,6 +5,7 @@ import queue
 import random
 import re
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -26,7 +27,7 @@ from riya.core.feelings import Feelings
 from riya.core.learn.dials import BANDS
 from riya.core.learn.feedback import ack_line, detect_feedback
 from riya.core.learn.records import LearnDB
-from riya.core.learn.twin import evidence, mean
+from riya.core.learn.twin import Twin, bucket, evidence, mean
 from riya.core.hands import online as hands_online
 from riya.core.hands.intent import is_command_form, is_forbidden, match
 from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
@@ -90,6 +91,14 @@ BUSY = frozenset({"busy", "running"})  # an agent at work: her bids may offer a 
 HOOKS_SEEN_KEY = "agents.hooks_seen_at"
 HOOKS_SEEN_EVERY_S = 60  # hooks_seen_at (KV and AgentsMsg) moves at most this often: a tool-call flood isn't news
 REPORTS_KEY = "agents.reports"  # pending reports survive a restart
+# the decision twin and the implicit signals (v0.6)
+BARGE_S = 2.0  # closed within this long of her first sentence: a barge-in
+GREET_ENGAGED_S = 120  # a greeting answered by their next turn within this long engaged them
+DRIFT_WINDOW = 10  # the verbosity drift looks at her last 10 replies...
+DRIFT_MIN = 5  # ...and moves when at least 5 were barged in on
+DRIFT_STEP = -0.05
+DRIFT_EVERY_S = 86400  # at most once a day
+MOOD_MOVE = 0.1  # their mood estimate moved at least this much after her line: "up" or "down"
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
 # her hands: every line here is a template (the model never words a refusal or a confirmation)
 FORBIDDEN = "forbidden"  # a T3 request: there's no tool for it, only the kind refusal
@@ -229,6 +238,15 @@ class RiyaCore:
         self.feelings = (Feelings.from_dict(saved, clock, self.learn.dials) if saved
                          else Feelings(clock, self.learn.dials))
         self.presence = Presence(idle_source, clock, self.kv)
+        # the decision twin: one roll of twin_rng per bid or offer. The outstanding bid or offer (kind, bucket, when)
+        # and greeting (bucket, when) wait here for their engagement; they're only opened while learning is on
+        self.twin, self.twin_rng = Twin(self.learn, clock), random.Random()
+        self._twin_open: tuple[str, str, float] | None = None
+        self._greet_open: tuple[str, float] | None = None
+        self._greet_bucket: str | None = None  # the came-back bucket and greeting style, for speak_first
+        self._greet_short = False
+        self._barges: deque[bool] = deque(maxlen=DRIFT_WINDOW)  # her last replies: barged in on or not
+        self._last_barged = False  # the last utterance was barged in on (read by a report's after)
         self.initiative = Initiative(clock, lambda: self.settings, tz)
         self.router = Router(local, online, self.settings.online_enabled)
         self.consolidator = Consolidator(self.memory, self._consolidation_model, clock)
@@ -371,6 +389,10 @@ class RiyaCore:
         offer, self._offer = self._offer, None
         offered = offer[0] if offer and now - offer[1] < BID_IGNORED_S else None
         g = self.game
+        if offer is not None and self._twin_open is not None and self._twin_open[0] == "game_offer":
+            (_, b, _), self._twin_open = self._twin_open, None  # accepted: a game starts from it, in time
+            accepted = offered is not None and g is None and games.detect_start(text, offered) is not None
+            self._engage("game_offer", b, accepted)
         if g is not None and games.is_stop(text):
             self.game = None
             return g, games.stop(g, text)
@@ -402,18 +424,30 @@ class RiyaCore:
 
     def _take_user_turn(self, text: str, remember: bool = True, consolidate: bool = True) -> str | None:
         """Records the user's turn; returns the fact text when it was a remember-that turn (saved right away). A game
-        turn (remember and consolidate off) never saves a fact and never reaches consolidation."""
+        turn (remember and consolidate off) never saves a fact and never reaches consolidation. An open bid or
+        greeting gets its engagement here (a game offer in _game_move), and right after her line the move in their
+        mood estimate is logged."""
         now = self.clock.now()
         answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
         if answered_bid and self._bid_thread is not None:
             self.memory.mark_thread(self._bid_thread, status="followed_up")
         self.last_turn_at, self.pending_bid_at, self._bid_thread = now, None, None
+        if self._twin_open is not None and self._twin_open[0] == "bid":  # a game offer is judged by _game_move
+            (_, b, _), self._twin_open = self._twin_open, None
+            self._engage("bid", b, answered_bid)
+        if self._greet_open is not None:
+            (b, at), self._greet_open = self._greet_open, None
+            self._engage("greeting", b, now - at <= GREET_ENGAGED_S)
         self.memory.append_transcript("user", text, consolidate=consolidate)
         saved = None
         if remember and (said := remember_intent(text)) is not None:
             saved = f"The user said: {third_person(said)}"
             self.memory.add_fact(saved, source="user_said")
+        after_her = bool(self.turns) and self.turns[-1]["role"] == "assistant"
+        before = self.feelings.state.user_mood.valence
         self.feelings.on_user_text(text)
+        if after_her:
+            self._mood_event(before)
         self.presence.note_turn()
         self._sync_expression()
         return saved
@@ -421,14 +455,17 @@ class RiyaCore:
     def speak_first(self, action: Action) -> Iterator[str]:
         """The greeting. Reminders that fell due while they were away (_greet_reminders) are its templated tail, said
         even when the model fails, and marked fired once it went out (due() and mark_fired() both here, under the
-        core lock); the claim on them ends with the greeting."""
+        core lock); the claim on them ends with the greeting. The twin's short style (from _came_back) applies only
+        to a greeting that carries no news: reports and reminders are never shortened away."""
         with self._lock:
             with self._hands_lock:
                 greet, self._greet_reminders = self._greet_reminders, []
             ids = {r.id for r in greet}
             try:
                 reports, self._greet_reports = self._greet_reports, []
-                situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
+                b, short = self._greet_bucket or self._bucket(), self._greet_short and not (reports or greet)
+                self._greet_bucket, self._greet_short = None, False  # never reused by a later greeting
+                situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread, short=short)
                 if reports:  # what her agents did while they were away
                     situation += " " + greeting_reports([ev for ev, _ in reports])
                 now = self.clock.now()
@@ -442,9 +479,12 @@ class RiyaCore:
                         self._fire([r.id for r in due], self._last_remind_at)
                     mine = [x for x in said if x != tail]  # the reminder tail isn't the greeting itself
                     self._greeted(action, outcome if mine or not tail else "failed", reports, bool(mine))
+                    if mine:  # their next turn within GREET_ENGAGED_S says it was welcome
+                        self._greet_open = (b, self.clock.now()) if self.settings.learning_enabled else None
                 yield from self._counted(self._speak(
                     "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
-                    threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail), said)
+                    threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail,
+                    short=short), said)
             finally:
                 self._release(ids)
 
@@ -474,7 +514,7 @@ class RiyaCore:
                lead: str | None = None, ack: str | None = None, small: bool = False,
                seeing: SimpleNamespace | None = None,
                game: SimpleNamespace | None = None, consolidate: bool = True, shape: str | None = None,
-               tail: str | None = None, tail_if_silent: bool = False) -> Iterator[str]:
+               tail: str | None = None, tail_if_silent: bool = False, short: bool = False) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more. ack (a
@@ -490,10 +530,17 @@ class RiyaCore:
         shape="tool": her line about a tool's result, on the local model only, with the tool budget and cap and no
         reply-rules line. tail (never with game): one engine line after the model's sentences, said like the game's
         (even when the model failed; shown, not spoken, on a barge-in); tail_if_silent: only when the model said
-        nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line)."""
+        nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line). short (the twin's
+        short greeting) makes the cap 1. The core times her first sentence: closed within BARGE_S of it is a
+        barge-in (_last_barged, before after runs), and a plain reply feeds the verbosity drift."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
-        tool = shape == "tool"
+        tool, first_at = shape == "tool", None
+
+        def say(text: str, aloud: bool) -> None:
+            nonlocal first_at
+            first_at = self.clock.now() if first_at is None else first_at
+            self.emit(Say(utterance_id=uid, text=text, spoken=aloud, kind=kind))
 
         def engine_line() -> str | None:
             """The engine's line, at most once: the game's (unless she already said its key), or the tail."""
@@ -510,7 +557,7 @@ class RiyaCore:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
             if first := lead or ack:
-                self.emit(Say(utterance_id=uid, text=first, spoken=spoken, kind=kind))
+                say(first, spoken)
                 said.append(first)
                 yield first
             route_text = "" if small or game or tool else user_text or ""
@@ -518,6 +565,7 @@ class RiyaCore:
             emoji_max = emoji_limit(dials["emoji"])
             turn, budget, cap = (("game", BUDGETS["small"], 1) if game else (None, BUDGETS["tool"], CAPS["tool"])
                                  if tool else self._shape(kind, route_text, dials["verbosity"]))
+            cap = 1 if short else cap
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
@@ -553,12 +601,12 @@ class RiyaCore:
                 thinking = self._end_thinking(thinking)
                 if game:
                     sentence = game.guard(sentence)
-                self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
+                say(sentence, spoken)
                 said.append(sentence)
                 model_said.append(sentence)
                 yield sentence
             if line := engine_line():
-                self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
+                say(line, spoken)
                 said.append(line)
                 yield line
             outcome = "done"
@@ -570,7 +618,7 @@ class RiyaCore:
             if not (tail_if_silent and tail and not model_said):  # else the tail stands in for her line
                 self.emit(ErrorMsg(message=MODEL_DOWN))
             if line := engine_line():  # the game moved on (her word, the riddle, the reveal), or the tail
-                self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
+                say(line, spoken)
                 said.append(line)
                 outcome = "done"
                 yield line
@@ -593,6 +641,12 @@ class RiyaCore:
                                   quoted=tool)
             except Exception:
                 log.exception("couldn't record the %s", kind)
+            barged = outcome == "closed" and first_at is not None and self.clock.now() - first_at <= BARGE_S
+            self._last_barged = barged
+            if barged:
+                self._event("barge", "barged", {"kind": kind})
+            if kind == "reply" and not game and not tool and outcome != "failed":
+                self._note_reply(barged)
             if after:  # even when the recording failed (a greeting's after marks its reminders fired)
                 try:
                     after(outcome)
@@ -651,6 +705,8 @@ class RiyaCore:
             self.learn.reset_dials(now)
             self.learn.clear_notes()
             self.learn.reset_twin(None)
+            self._barges.clear()
+            self._twin_open = self._greet_open = None
             self._emit_learning()
 
     @staticmethod
@@ -773,12 +829,17 @@ class RiyaCore:
         return f"{action.reason}; last you saw, they were {g.activity} in {g.app}" + (
             f" ({g.notable})" if g.notable else "")
 
-    def _bid(self, action: Action) -> None:
+    def _may_offer(self) -> bool:
+        """A bid now would offer a game: no game is on and an agent is at work."""
+        return self.game is None and any(a["status"] in BUSY for a in self.agents.snapshot())
+
+    def _bid(self, action: Action, bucket: str | None = None) -> None:
         """A silent bid. While an agent is busy (and no game is on) it offers a random game, named by the engine if
-        the model's line doesn't; a yes within BID_IGNORED_S starts it."""
+        the model's line doesn't; a yes within BID_IGNORED_S starts it. bucket (the twin's, from _maybe_bid): once
+        the line went out it waits in _twin_open for its engagement; a direct call records nothing."""
         offer = None
         try:
-            if self.game is None and any(a["status"] in BUSY for a in self.agents.snapshot()):
+            if self._may_offer():
                 offer = self.game_rng.choice(games.GAMES)
             situation = bid_situation(self._bid_reason(action), action.thread)
             if offer:
@@ -808,6 +869,9 @@ class RiyaCore:
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.pending_bid_at = self.clock.now()
         self._bid_thread = action.thread.id if action.thread else None
+        if bucket is not None:  # never opened while learning is off
+            open_ = ("game_offer" if offer else "bid", bucket, self.pending_bid_at)
+            self._twin_open = open_ if self.settings.learning_enabled else None
         if self.presence.state == "gaming":  # only the hotkey opens the mic during a game
             return
         try:
@@ -1085,6 +1149,7 @@ class RiyaCore:
                 self._step("bid", self._maybe_bid)
         self._step("reports", self._save_reports)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
+        self._step("twin", lambda: self._twin_step(now))
         self._step("game", lambda: self._end_idle_game(now))
         self._step("eyes", lambda: self._eyes_step(now))
         self._step("feelings", lambda: self.feelings.tick(present=self.presence.state != "away"))
@@ -1128,16 +1193,95 @@ class RiyaCore:
         return action
 
     def _maybe_bid(self) -> None:
-        """No bids while a game is on, or while a confirmation waits (its mic would take the answer)."""
+        """No bids while a game is on, or while a confirmation waits (its mic would take the answer). The twin gates
+        the opportunity with one roll (frozen, but still asked, while learning is off): a suppressed one has used up
+        the cooldown (on_break set last_bid_at), is logged and never updates the twin."""
         if self.presence.state == "break" and self.game is None and not self._asking():
             bid = self.initiative.on_break("break", self.presence.work_stretch_s(), self.memory.due_threads())
             if bid:
-                self._bid(bid)
+                kind, b = "game_offer" if self._may_offer() else "bid", self._bucket()
+                if not self.twin.should(kind, b, self.twin_rng):
+                    self._event(kind, "suppressed", {"bucket": b})
+                    return
+                self._bid(bid, bucket=b)
 
     def _check_bid_ignored(self, now: float) -> None:
         if self.pending_bid_at is not None and now - self.pending_bid_at >= BID_IGNORED_S:
             self.feelings.on_event("bid_ignored")
             self.pending_bid_at = self._bid_thread = None
+
+    def _twin_step(self, now: float) -> None:
+        """An open bid or offer with no answer for BID_IGNORED_S, or a greeting with no turn for GREET_ENGAGED_S:
+        ignored. While learning is off both are only dropped."""
+        if not self.settings.learning_enabled:
+            self._twin_open = self._greet_open = None
+            return
+        if self._twin_open is not None and now - self._twin_open[2] >= BID_IGNORED_S:
+            (kind, b, _), self._twin_open = self._twin_open, None
+            self._engage(kind, b, False)
+        if self._greet_open is not None and now - self._greet_open[1] > GREET_ENGAGED_S:
+            (b, _), self._greet_open = self._greet_open, None
+            self._engage("greeting", b, False)
+
+    # ---- learning: the twin, the events and the drift -------------------------------------------------------------
+    def _bucket(self) -> str:
+        """The twin's context right now: hour band (in the core's tz), presence, short or long work stretch."""
+        return bucket(self.clock.now(), self.tz, self.presence.state, self.presence.work_stretch_s())
+
+    def _engage(self, kind: str, b: str, engaged: bool) -> None:
+        """One engagement outcome for the twin, logged; only while learning is on. Never raises."""
+        try:
+            if not self.settings.learning_enabled:
+                return
+            self.twin.record(kind, b, engaged)
+            self.learn.log_event(self.clock.now(), kind, "engaged" if engaged else "ignored", {"bucket": b})
+        except Exception:
+            log.exception("couldn't record the %s outcome", kind)
+            return
+        self._emit_learning()
+
+    def _event(self, kind: str, outcome: str, context: dict) -> None:
+        """A signal for the log, only while learning is on. Never raises."""
+        try:
+            if self.settings.learning_enabled:
+                self.learn.log_event(self.clock.now(), kind, outcome, context)
+        except Exception:
+            log.exception("couldn't log the %s event", kind)
+
+    def _mood_event(self, before: float) -> None:
+        """How their mood estimate moved with the turn right after her line; only once there's an estimate."""
+        try:
+            um = self.feelings.state.user_mood
+            if um.confidence > 0:
+                d = um.valence - before
+                self._event("mood", "up" if d >= MOOD_MOVE else "down" if d <= -MOOD_MOVE else "flat",
+                            {"delta": round(d, 2)})
+        except Exception:
+            log.exception("couldn't log the mood event")
+
+    def _note_reply(self, barged: bool) -> None:
+        """The verbosity drift, the one implicit dial change: barged in on within BARGE_S in at least DRIFT_MIN of
+        her last DRIFT_WINDOW replies moves verbosity by DRIFT_STEP, at most once every DRIFT_EVERY_S (drift_at is
+        kept in the DB, so a restart can't repeat it). Only while learning is on. Never raises."""
+        try:
+            if not self.settings.learning_enabled:
+                return
+            self._barges.append(barged)
+            n, now = sum(self._barges), self.clock.now()
+            if len(self._barges) < DRIFT_WINDOW or n < DRIFT_MIN:
+                return
+            last = self.learn.drift_at()
+            if last is not None and now - last < DRIFT_EVERY_S:
+                return
+            reason = f"they cut in within 2 s on {n} of her last {DRIFT_WINDOW} replies"
+            old, new = self.learn.nudge("verbosity", DRIFT_STEP, reason, "drift", now)
+            self.learn.set_drift_at(now)
+            self._barges.clear()
+        except Exception:
+            log.exception("couldn't apply the verbosity drift")
+            return
+        if old != new:
+            self._emit_learning()
 
     def _end_idle_game(self, now: float) -> None:
         """A game with no turn for 10 min ends, silently."""
@@ -1159,6 +1303,7 @@ class RiyaCore:
             self.memory.purge_glances()
             self.memory.resolve_stale_threads()
             self.hands.purge(now)
+            self.learn.purge(now)
 
     def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
@@ -1180,6 +1325,8 @@ class RiyaCore:
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
+            self._greet_bucket = b = self._bucket()  # the twin's greeting style for this bucket
+            self._greet_short = self.twin.greet_style(b) == "short"
             now = self.clock.now()
             if not self._restricted(now):  # else they stay pending: the report and reminder bubbles
                 self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
@@ -1401,6 +1548,8 @@ class RiyaCore:
         def after(outcome: str) -> None:
             if not said:
                 self._report_bubble(events)
+            elif all(ev.kind == "finished" for ev in events):  # heard out unless barged in on (urgent: never gated)
+                self._engage("report", self._bucket(), not self._last_barged)
 
         with self._lock:
             yield from self._counted(self._speak("report", user_text=None, query=report_line(events, detail=False),
