@@ -127,10 +127,12 @@ function settingPatch(key, raw) {
   return { ok: false, error: `${key} can't be changed here.` };
 }
 
-/** Options for the voice <select>: the presets, led by the current voice marked "(custom)" if it isn't one. */
-function voiceOptions(current) {
-  const presets = VOICES.map((v) => ({ value: v, label: v }));
-  if (typeof current !== "string" || !current || VOICES.includes(current)) return presets;
+/** Options for the voice <select>: the core's voice `list` (the static VOICES until a non-empty list of names arrives),
+ *  led by the current voice marked "(custom)" if it isn't one of them. */
+function voiceOptions(current, list) {
+  const names = Array.isArray(list) && list.length > 0 && list.every((v) => typeof v === "string") ? list : VOICES;
+  const presets = names.map((v) => ({ value: v, label: v }));
+  if (typeof current !== "string" || !current || names.includes(current)) return presets;
   return [{ value: current, label: `${current} (custom)` }, ...presets];
 }
 

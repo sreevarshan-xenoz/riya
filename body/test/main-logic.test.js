@@ -263,3 +263,17 @@ test("learning is replayed to a new window but forgotten on disconnect, and its 
     assert.equal(shouldSendToCore({ type }, true), true, type);
   }
 });
+
+test("health is never replayed and is forgotten on disconnect; setup messages are never queued", () => {
+  for (const t of ["health", "voices", "setup_result", "setup_confirm"]) assert.ok(!REPLAY_TYPES.includes(t), t);
+  assert.ok(FORGET_ON_DISCONNECT.includes("health"));
+  const cache = new Map();
+  for (const msg of [{ type: "settings" }, { type: "health", items: [] }]) rememberForReplay(cache, msg);
+  forgetOnDisconnect(cache);
+  assert.ok(!cache.has("health"));
+  for (const type of ["setup_request", "setup_action", "onboarding_done"]) {
+    assert.ok(NOW_ONLY.includes(type), type);
+    assert.equal(shouldSendToCore({ type }, false), false, type);
+    assert.equal(shouldSendToCore({ type }, true), true, type);
+  }
+});

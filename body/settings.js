@@ -10,6 +10,10 @@
   const { dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage } = RiyaLearning;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
+  const {
+    REFRESH_MS, CONFIRM_EXPIRY_MS, CONFIRM_TITLES, STATUS_TEXT, healthRows, fixRequest, submitKey, saveKeyEnabled, clearKeyEnabled,
+    keySourceText, ConfirmGate, voiceItems, resultText, shouldRefresh,
+  } = RiyaHealth;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
   const errorEls = new Map(); // target -> its inline error element
@@ -292,10 +296,12 @@
   $("quiet_hours").addEventListener("keydown", (e) => { if (e.key === "Enter") changeSetting("quiet_hours", e.target.value); });
 
   const voiceDefer = new DeferWhileFocused();
+  let voiceList = []; // the core's voices; empty until a `voices` message arrives, so the select shows the static presets
+  let currentVoice = null; // the voice the core says is chosen
 
   function rebuildVoice(current) {
     const select = $("voice");
-    select.replaceChildren(...voiceOptions(current).map(({ value, label }) => {
+    select.replaceChildren(...voiceOptions(current, voiceList).map(({ value, label }) => {
       const option = h("option", null, label);
       option.value = value;
       return option;
@@ -319,7 +325,7 @@
   function applySettings(s) {
     const set = (id, prop, value) => { if (document.activeElement !== $(id)) $(id)[prop] = value; };
     if (typeof s.mode === "string") $("mode").value = s.mode;
-    if (typeof s.voice === "string") showVoice(s.voice);
+    if (typeof s.voice === "string") showVoice(currentVoice = s.voice);
     if (typeof s.volume === "number") {
       set("volume", "value", String(s.volume));
       $("volume-out").textContent = `${Math.round(s.volume * 100)}%`;
@@ -340,13 +346,14 @@
 
   // ---- confirm dialog ---------------------------------------------------------------------------------------------
 
-  /** Resolves { ok, checked }; `checkLabel` adds an unchecked checkbox. */
-  function confirmDialog({ title, body, okLabel, checkLabel }) {
+  /** Resolves { ok, checked }; `checkLabel` adds an unchecked checkbox; `cancelLabel` (default "Cancel") names the No. */
+  function confirmDialog({ title, body, okLabel, checkLabel, cancelLabel }) {
     const dlg = $("confirm");
     return new Promise((resolve) => {
       $("confirm-title").textContent = title;
       $("confirm-body").textContent = body;
       $("confirm-ok").textContent = okLabel;
+      $("confirm-cancel").textContent = cancelLabel || "Cancel";
       $("confirm-check").checked = false;
       $("confirm-check-label").textContent = checkLabel || "";
       $("confirm-check-row").hidden = !checkLabel;
@@ -357,6 +364,92 @@
       $("confirm-cancel").focus();
     });
   }
+
+  // ---- health: the checklist, the key editor and the confirm round trip -----------------------------------------------
+
+  const gate = new ConfirmGate(); // only a confirm for an action asked for in this window opens the modal
+  let openConfirm = null; // { action, closedByCore, timer } while the modal is up
+
+  /** Close the modal without answering (the core resolved the action, it expired, or the core went away). */
+  function closeConfirm(action) {
+    if (!openConfirm || (action !== undefined && openConfirm.action !== action)) return;
+    const open = openConfirm;
+    openConfirm = null;
+    open.closedByCore = true;
+    clearTimeout(open.timer);
+    if ($("confirm").open) $("confirm").close("cancel");
+  }
+
+  /** Show the core's exact text and answer it once: Yes or No (closing it any other way is a No). */
+  async function askConfirm(msg) {
+    closeConfirm();
+    const open = { action: msg.action, closedByCore: false, timer: null };
+    openConfirm = open;
+    open.timer = setTimeout(() => closeConfirm(msg.action), CONFIRM_EXPIRY_MS);
+    const r = await confirmDialog({
+      title: CONFIRM_TITLES[msg.action], body: msg.text, okLabel: "Yes", cancelLabel: "No",
+    });
+    if (open.closedByCore) return;
+    openConfirm = null;
+    clearTimeout(open.timer);
+    send(gate.answer(msg.nonce, r.ok));
+  }
+
+  function healthRow(row) {
+    const li = h("li", "health-row");
+    li.append(h("span", `chip ${row.status}`, STATUS_TEXT[row.status]));
+    const body = h("div");
+    body.append(h("span", "health-label", row.label), h("span", "health-detail", row.detail));
+    li.append(body);
+    const fix = fixRequest(row, latest);
+    if (fix) {
+      const b = button(fix.label, () => {
+        b.disabled = true; // the next checklist (after the result) brings it back
+        if (fix.confirm) gate.request(fix.message.action);
+        send(fix.message);
+      });
+      li.append(b);
+    }
+    return li;
+  }
+
+  let keySource = null;
+
+  function updateKeyButtons() {
+    $("online-key-save").disabled = !saveKeyEnabled(coreConnected);
+    $("online-key-clear").disabled = !clearKeyEnabled(keySource);
+  }
+
+  /** The checklist from a `health` message; null (the core is away) empties it so stale rows never pass for live. */
+  function renderHealth(msg) {
+    const rows = healthRows(msg);
+    $("health").replaceChildren(...rows.map(healthRow));
+    $("health-empty").hidden = rows.length > 0;
+    keySource = msg && typeof msg.key_source === "string" ? msg.key_source : null;
+    $("online-key-source").textContent = keySourceText(keySource);
+    updateKeyButtons();
+  }
+
+  function saveKey() {
+    const err = $("online-key-err");
+    const sent = submitKey($("online-key"), send, coreConnected);
+    err.textContent = sent ? "" : coreConnected ? "That doesn't look like a key (no spaces, at most 200 characters)."
+      : "Her core isn't connected, so the key wasn't sent.";
+    err.hidden = sent;
+  }
+
+  $("online-key-save").addEventListener("click", saveKey);
+  $("online-key").addEventListener("keydown", (e) => { if (e.key === "Enter") saveKey(); });
+  $("online-key-clear").addEventListener("click", () => {
+    $("online-key-err").hidden = true;
+    send({ type: "setup_request", action: "online_key_clear", args: {} });
+  });
+
+  const refreshHealth = () => send({ type: "health_get" });
+  setInterval(() => { if (shouldRefresh({ hidden: document.hidden, connected: coreConnected })) refreshHealth(); }, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (shouldRefresh({ hidden: document.hidden, connected: coreConnected })) refreshHealth();
+  });
 
   // ---- memory lists -----------------------------------------------------------------------------------------------
 
@@ -602,8 +695,15 @@
     if (!connected) { // a stale log or stale dials would pass for live; the core sends them again on change
       renderActions(null);
       renderLearning(null);
+      renderHealth(null);
+      gate.clear();
+      closeConfirm();
     }
-    if (connected) send({ type: "get_memories" });
+    updateKeyButtons();
+    if (connected) {
+      send({ type: "get_memories" });
+      refreshHealth();
+    }
   });
 
   window.riya.onCoreMessage((msg) => {
@@ -622,6 +722,20 @@
       hooksSeenAt = typeof msg.hooks_seen_at === "number" ? msg.hooks_seen_at : null;
       lastAgents = msg;
       renderHooks();
+    } else if (msg.type === "health") {
+      renderHealth(msg);
+    } else if (msg.type === "voices") {
+      voiceList = voiceItems(msg).items;
+      showVoice(currentVoice !== null ? currentVoice : voiceItems(msg).current);
+    } else if (msg.type === "setup_confirm") {
+      if (gate.accepts(msg)) askConfirm(msg);
+    } else if (msg.type === "setup_result") {
+      if (typeof msg.action === "string") {
+        gate.release(msg.action);
+        closeConfirm(msg.action);
+      }
+      $("setup-result").textContent = resultText(msg);
+      refreshHealth();
     } else if (msg.type === "memories") {
       router.settle();
       renderMemories(msg);
@@ -636,6 +750,7 @@
 
   errorEls.set("learning", $("learning-reset-err"));
   renderLearning(null);
+  renderHealth(null);
   showVoice(null);
   window.riya.dontLookHotkey().then((accelerator) => { $("dontlook-hotkey").textContent = hotkeyText(accelerator); },
     () => { $("dontlook-hotkey").textContent = hotkeyText(null); });
