@@ -325,3 +325,52 @@ def test_riya_events_over_read_settings_shapes(tmp_path):
     with pytest.raises(ih.SettingsError):
         ih.read_settings(p)
     assert p.read_text() == "[" * 200_000
+
+
+def test_preview_and_print(env):
+    names = [e for e, _ in ih.EVENTS]
+    text = ih.preview("apply", env.settings)  # a missing file: every event will be added
+    assert text == (f"Riya will add her hook to 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file "
+                    f"is backed up first, and the RIYA_HOOK_TOKEN user environment variable is set to her token. "
+                    f"{ih.RESTART_LINE}")
+    assert ih.RESTART_LINE == "Restart Claude Code (and open a new terminal) afterwards."
+    assert ih.preview("remove", env.settings) == (
+        f"Riya's hook isn't in {env.settings}; nothing will change. {ih.RESTART_LINE}")
+    assert not env.settings.exists()
+
+    assert run(env, "--apply") == 0
+    assert ih.preview("apply", env.settings) == (
+        f"Riya's hook is already in all 10 events in {env.settings}; only the RIYA_HOOK_TOKEN variable is set again. "
+        f"{ih.RESTART_LINE}")
+    assert ih.preview("remove", env.settings) == (
+        f"Riya will remove her hook from 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file is "
+        f"backed up first; the RIYA_HOOK_TOKEN variable is left alone. {ih.RESTART_LINE}")
+
+    data = load(env)
+    del data["hooks"]["Stop"], data["hooks"]["SessionEnd"]
+    env.settings.write_text(json.dumps(data), encoding="utf-8")
+    assert "add her hook to 2 Claude Code event(s)" in ih.preview("apply", env.settings)
+    assert ": Stop, SessionEnd. The file" in ih.preview("apply", env.settings)
+    assert "remove her hook from 8 Claude Code event(s)" in ih.preview("remove", env.settings)
+
+    env.out.clear()
+    before = env.settings.read_bytes()
+    assert run(env, "--print") == 0
+    text = "\n".join(env.out)
+    assert ih.preview("apply", env.settings) in text
+    assert text.index("Settings file:") < text.index(ih.preview("apply", env.settings))
+    assert env.settings.read_bytes() == before and backups(env) == []  # --print still writes nothing
+
+
+def test_preview_raises_settings_error_and_print_skips_it(env):
+    env.settings.parent.mkdir(parents=True)
+    env.settings.write_text("{not json", encoding="utf-8")
+    for mode in ("apply", "remove"):
+        with pytest.raises(ih.SettingsError):
+            ih.preview(mode, env.settings)
+    env.settings.write_text(json.dumps({"hooks": {"Stop": "junk"}}), encoding="utf-8")
+    with pytest.raises(ih.SettingsError):  # --apply would refuse this file, so the preview does too
+        ih.preview("apply", env.settings)
+    env.settings.write_text("{not json", encoding="utf-8")
+    assert run(env, "--print") == 0
+    assert "Riya will" not in "\n".join(env.out) and env.settings.read_text(encoding="utf-8") == "{not json"
