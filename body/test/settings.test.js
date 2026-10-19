@@ -254,3 +254,11 @@ test("learning_enabled is a boolean setting", () => {
   assert.deepEqual(L.settingPatch("learning_enabled", false), { ok: true, patch: { learning_enabled: false } });
   assert.deepEqual(L.settingPatch("learning_enabled", 1), { ok: true, patch: { learning_enabled: true } });
 });
+
+test("every connection change clears the confirm state, so a gated request from before a drop never lingers", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "settings.js"), "utf8");
+  const start = src.indexOf("window.riya.onConnection(");
+  assert.ok(start >= 0);
+  const handler = src.slice(start, src.indexOf("\n  });", start));
+  assert.match(handler, /\n {4}if \(flow\.disconnect\(\)\) closeModal\(\); \/\/ on a reconnect too/, "outside the !connected branch");
+});

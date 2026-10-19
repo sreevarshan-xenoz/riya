@@ -143,3 +143,25 @@ test("confirm_done validates for all seven outcomes, and an unknown one is refus
   }
   assert.equal(validate({ type: "confirm_done", id: "c1", outcome: "exploded" }), false);
 });
+
+test("a now-only message is never queued across a drop: a stale setup_request can't reach the next connection", () => {
+  const { NOW_ONLY: CLIENT_NOW_ONLY } = require("../src/core-client");
+  const { NOW_ONLY } = require("../src/main-logic");
+  assert.deepEqual(CLIENT_NOW_ONLY, NOW_ONLY, "the core client drops what main drops while the core is away");
+  const { client, fire } = make();
+  const logs = [];
+  client.log = (...a) => logs.push(a);
+  client.connect();
+  client.send({ type: "setup_request", action: "hooks_connect", args: {} }); // still connecting: dropped
+  FakeWS.last.open();
+  client.send({ type: "setup_request", action: "mic_check", args: {} }); // open: sent at once
+  assert.deepEqual(FakeWS.last.sent.map((s) => JSON.parse(s).action), ["mic_check"]);
+  FakeWS.last.drop();
+  client.send({ type: "setup_action", nonce: "n1", yes: true });
+  client.send({ type: "onboarding_done" });
+  client.send({ type: "get_memories" }); // not now-only: still queued for the next connection
+  fire();
+  FakeWS.last.open();
+  assert.deepEqual(FakeWS.last.sent.map((s) => JSON.parse(s).type), ["get_memories"]);
+  assert.equal(logs.length, 3);
+});
