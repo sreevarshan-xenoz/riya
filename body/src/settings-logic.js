@@ -9,7 +9,7 @@ const Hands = typeof require === "function" ? require("./hands-logic") : globalT
 const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-  "eyes_enabled", "hands_online"];
+  "eyes_enabled", "hands_online", "learning_enabled"];
 const PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
 const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
 const MAX_PATTERNS = 100; // the core's limits
