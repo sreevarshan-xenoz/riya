@@ -169,3 +169,28 @@ def test_time_now_uses_the_zone():
 def test_unwritten_runs_raise_until_their_task():
     with pytest.raises(NotImplementedError):
         REGISTRY["note_add"].run({"text": "x"}, ToolCtx())
+
+
+def test_validate_call_never_raises_on_huge_or_odd_values(s):
+    for bad in (10**400, -10**400, float("nan"), float("inf"), {"a": 1}, [1], (1,), object()):
+        assert v(s, "timer_set", duration=bad) is None, bad
+        assert v(s, "reminder_cancel", id=bad) is None, bad
+        assert v(s, "calc", expr=bad) is None, bad
+    assert v(s, "reminder_cancel", id=2**31 - 1) and v(s, "reminder_cancel", id=2**31) is None
+    assert v(s, "reminder_cancel", id=3, text={"x": 1}) is None
+
+
+def test_write_file_filename_is_sanitised_in_the_normalized_call(s):
+    c = v(s, "write_file", filename="../../etc/passwd", text="hi")
+    assert c.args["filename"] == "etcpasswd.txt"
+    assert '"etcpasswd.txt"' in REGISTRY["write_file"].summary(c.args)  # the confirmation shows what is written
+    assert v(s, "write_file", filename="CON", text="x").args["filename"] == "_CON.txt"
+    assert v(s, "write_file", filename="notes.md", text="x").args["filename"] == "notes.md"
+    assert v(s, "write_file", filename="...", text="x") is None
+
+
+def test_calc_answer_survives_truncation():
+    ctx = ToolCtx(clock=FakeClock())
+    expr = "+".join(["1"] * 99)  # 197 chars
+    r = REGISTRY["calc"].run({"expr": expr}, ctx)
+    assert r.ok and r.text.startswith("= 99") and len(r.text) == 200

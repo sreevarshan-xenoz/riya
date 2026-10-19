@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 from .intent import parse_duration
-from .safe import calc, format_number, valid_url
+from .safe import calc, format_number, safe_filename, valid_url
 from .types import RESULT_MAX, Call, ParamSpec, ToolResult
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ def _calc(args: dict, ctx: ToolCtx) -> ToolResult:
     v = calc(args["expr"])
     if v is None:
         return ToolResult(False, "I couldn't work that out.")
-    return ToolResult(True, f"{args['expr']} = {format_number(v)}", {"value": v})
+    return ToolResult(True, f"= {format_number(v)} ({args['expr']})", {"value": v})  # the answer survives the cut
 
 
 def _q(s: str, n: int = 60) -> str:
@@ -96,7 +96,7 @@ REGISTRY: dict[str, Tool] = dict([
     _tool("reminder_set", {"when": _P("str", max_len=100), "text": _P("str")},
           lambda a: f"remind you {a['when']}: {a['text']}"),
     _tool("reminder_list", {}, lambda a: "list your reminders"),
-    _tool("reminder_cancel", {"id": _P("int", required=False, min=1), "text": _P("str", required=False)},
+    _tool("reminder_cancel", {"id": _P("int", required=False, min=1, max=2**31 - 1), "text": _P("str", required=False)},
           lambda a: f"cancel reminder {a['id']}" if "id" in a else f"cancel the reminder about {a['text']}",
           one_of=("id", "text")),
     _tool("note_add", {"text": _P("str", max_len=1000)}, lambda a: f"note down {_q(a['text'])}"),
@@ -112,7 +112,7 @@ REGISTRY: dict[str, Tool] = dict([
     _tool("clipboard_copy", {"text": _P("str", max_len=4000)}, lambda a: f"copy {_q(a['text'])} to the clipboard"),
     _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({' '.join(a['argv'])})"),
     _tool("write_file", {"filename": _P("str"), "text": _P("str", max_len=WRITE_MAX_CHARS)},
-          lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8'))} bytes): {_q(a['text'], 80)}"),
+          lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8', 'replace'))} bytes): {_q(a['text'], 80)}"),
 ])
 assert set(REGISTRY) == set(TIERS)
 
@@ -168,6 +168,10 @@ def validate_call(call: Call, settings: Settings) -> Call | None:
             if (app := _named(getattr(settings, "apps", None), args["name"])) is None:
                 return None
             args["name"] = app["name"]
+        elif tool.name == "write_file":  # the confirmed name is the written name
+            args["filename"] = safe_filename(args["filename"])
+            if args["filename"] is None:
+                return None
         elif tool.name == "run_command":
             if (cmd := _named(getattr(settings, "commands", None), args["name"])) is None:
                 return None
@@ -177,5 +181,5 @@ def validate_call(call: Call, settings: Settings) -> Call | None:
             args = {"name": cmd["name"], "argv": list(argv), "cwd": cmd.get("cwd"),
                     "timeout_s": max(1, min(60, timeout))}
         return Call(call.tool, args)
-    except (ValueError, TypeError, KeyError, AttributeError):
+    except Exception:  # the gate never raises: a bad call (even a 400-digit int) is just None
         return None

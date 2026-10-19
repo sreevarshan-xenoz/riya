@@ -75,3 +75,9 @@ def test_unique_path(tmp_path):
     (tmp_path / "a (2).txt").write_text("x")
     assert unique_path(tmp_path, "a.txt") == tmp_path / "a (3).txt"
     assert unique_path(tmp_path, "../x.txt") is None
+
+
+def test_unique_path_reapplies_the_name_rules(tmp_path):
+    for bad in ("CON.txt", "a.txt" + chr(58) + "evil", "x/y.txt", "..", "", "a.exe", "NUL"):
+        assert unique_path(tmp_path, bad) is None, bad
+    assert unique_path(tmp_path, "_CON.txt") == tmp_path / "_CON.txt"
