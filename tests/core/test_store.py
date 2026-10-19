@@ -45,14 +45,14 @@ def _v1_db(path):
     conn.close()
 
 
-def test_a_v1_database_migrates_to_v2_keeping_its_data(tmp_path):
+def test_a_v1_database_migrates_to_current_keeping_its_data(tmp_path):
     from riya.core.embed import HashEmbedder
     from riya.core.memory import Memory
     from riya.core.settings import load_settings
     p = tmp_path / "riya.db"
     _v1_db(p)
     db = open_db(p)
-    assert SCHEMA_VERSION == 2 and db.execute("pragma user_version").fetchone()[0] == 2
+    assert SCHEMA_VERSION == 3 and db.execute("pragma user_version").fetchone()[0] == 3
     mem = Memory(db, HashEmbedder(), FakeClock())
     assert [f.text for f in mem.list_facts()] == ["The user likes tea"]
     assert [r["text"] for r in mem.unconsolidated()] == ["hi"]
@@ -93,3 +93,102 @@ def test_kv_keys_with_a_prefix_and_delete():
     kv.delete("agents.logwatch.a")
     kv.delete("missing")
     assert kv.get("agents.logwatch.a") is None and kv.keys_with("agents.logwatch.") == ["agents.logwatch.b"]
+
+
+def _v2_db(path):
+    """A database exactly as v0.3 to v0.4 left it: schema 2 with a fact, a glance and a setting."""
+    import sqlite3
+
+    from riya.core import store
+    conn = sqlite3.connect(str(path))
+    conn.executescript(store._V1 + store._V2 + "pragma user_version=2;")
+    conn.execute("insert into facts(text, source, confidence, valid_from, status, created_at) "
+                 "values('The user likes tea', 'user_said', 1.0, 1.0, 'active', 1.0)")
+    conn.execute("insert into glances(at, app, title, activity, details) values(3.0, 'Code', 't', 'coding', '')")
+    conn.execute("""insert into kv(key, value) values('settings', '{"mode": "panel"}')""")
+    conn.commit()
+    conn.close()
+
+
+def test_a_v2_database_migrates_to_v3_keeping_its_rows(tmp_path):
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    db = open_db(p)
+    assert db.execute("pragma user_version").fetchone()[0] == 3
+    assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
+    assert db.execute("select count(*) from glances").fetchone()[0] == 1
+    assert KV(db).get("settings") == {"mode": "panel"}
+    names = {r[0] for r in db.execute("select name from sqlite_master")}
+    assert {"reminders", "notes", "actions", "reminders_due", "actions_at"} <= names
+    db.close()
+    assert open_db(p).execute("pragma user_version").fetchone()[0] == 3        # a second open doesn't migrate again
+
+
+def test_a_failed_v3_migration_leaves_the_v2_database_untouched(tmp_path, monkeypatch):
+    import sqlite3
+
+    import pytest
+
+    from riya.core import store
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    monkeypatch.setattr(store, "_MIGRATIONS", [store._V1, store._V2, "create table reminders(id integer primary key);"
+                                                                    "create table broken(;"])
+    with pytest.raises(sqlite3.Error):
+        open_db(p)
+    monkeypatch.undo()
+    conn = sqlite3.connect(str(p))
+    assert conn.execute("pragma user_version").fetchone()[0] == 2
+    assert conn.execute("select count(*) from sqlite_master where name='reminders'").fetchone()[0] == 0
+    conn.close()
+    assert open_db(p).execute("select count(*) from facts").fetchone()[0] == 1
+
+
+# ---- final review: a future schema is refused untouched; a migration keeps a backup first ---------------------------
+def test_a_db_from_a_newer_riya_is_refused_and_never_written(tmp_path):
+    import hashlib
+    import sqlite3
+
+    import pytest
+    p = tmp_path / "riya.db"
+    conn = sqlite3.connect(str(p))
+    conn.executescript(f"create table future(x); insert into future values(1); pragma user_version={SCHEMA_VERSION + 1};")
+    conn.close()
+    before = hashlib.sha256(p.read_bytes()).hexdigest()
+    with pytest.raises(RuntimeError, match=f"newer Riya.*schema {SCHEMA_VERSION + 1}"):
+        open_db(p)
+    assert hashlib.sha256(p.read_bytes()).hexdigest() == before
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["riya.db"]   # no -wal, no backup
+    conn = sqlite3.connect(str(p))
+    assert conn.execute("pragma journal_mode").fetchone()[0] == "delete"
+    conn.close()
+
+
+def test_a_migration_backs_the_db_up_first_once_per_version(tmp_path):
+    import sqlite3
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    open_db(p).close()
+    bak = tmp_path / f"riya.db.pre-v{SCHEMA_VERSION}.bak"
+    old = sqlite3.connect(str(bak))
+    assert old.execute("pragma user_version").fetchone()[0] == 2
+    assert old.execute("select text from facts").fetchone()[0] == "The user likes tea"
+    old.close()
+    first = bak.read_bytes()
+    open_db(p).close()                                    # already current: no new backup
+    assert bak.read_bytes() == first
+    assert sorted(x.name for x in tmp_path.iterdir() if x.suffix == ".bak") == [bak.name]
+
+
+def test_a_new_db_has_no_backup(tmp_path):
+    open_db(tmp_path / "riya.db").close()
+    assert not [x for x in tmp_path.iterdir() if x.suffix == ".bak"]
+
+
+def test_an_existing_backup_is_never_overwritten(tmp_path):
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    bak = tmp_path / f"riya.db.pre-v{SCHEMA_VERSION}.bak"
+    bak.write_bytes(b"the first backup")
+    open_db(p).close()
+    assert bak.read_bytes() == b"the first backup"

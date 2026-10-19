@@ -6,7 +6,7 @@ body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; color: #f1eef6; user-se
 #sprite { position: absolute; inset: 0; transform-origin: 50% 100%; will-change: transform; }
 .layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 150ms; pointer-events: none; -webkit-user-drag: none; }
 #status { position: absolute; left: 8px; right: 8px; bottom: 6px; padding: 2px 10px; border-radius: 10px; text-align: center; font-size: 12px; color: #d9d3e4; background: rgba(30, 27, 38, 0.72); pointer-events: none; }
-#status[hidden], #bubble[hidden] { display: none; }
+#status[hidden], #bubble[hidden], #confirm[hidden] { display: none; }
 
 /* buddy: only her and her bubble, over a transparent window. The bubble sits in the upper region and grows upward
    from its anchored bottom (40vh + 8px); renderer.js sizes the sprite so her face starts below that line. */
@@ -20,10 +20,20 @@ body.mode-buddy #bubble {
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
 }
 body.mode-buddy #bubble.bid { background: rgba(255, 240, 246, 0.96); }
+/* the confirmation takes the bubble's place in buddy (its summary is the question she just asked); its buttons are the only
+   clickable part, and renderer.js lets the mouse through to them only while it is shown */
+body.mode-buddy.confirming #bubble { display: none; }
+body.mode-buddy #confirm {
+  position: absolute; bottom: calc(60vh - 8px); left: 8px; right: 8px; box-sizing: border-box;
+  max-height: 40vh; overflow-y: auto; padding: 8px 12px; border-radius: 14px;
+  background: rgba(255, 250, 240, 0.97); color: #25222d; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
 
 /* panel and window: solid background, chat log and input, no bubble */
 body.mode-panel, body.mode-window { background: #1c1a24; }
 body.mode-panel #bubble, body.mode-window #bubble { display: none; }
+/* panel and window: the confirmation sits in the side column, above the input (renderer.js moves it there) */
+body.mode-panel #confirm, body.mode-window #confirm { flex: none; margin: 0 10px 6px; padding: 8px 12px; border-radius: 12px; background: #3a3148; color: #f1eef6; border: 1px solid #5a4a78; }
 body.mode-panel #app { flex-direction: column; }
 body.mode-panel #stage { flex: none; width: 100%; }
 body.mode-window #stage { flex: none; width: 38%; height: 100%; background: #23202d; }
@@ -61,3 +71,21 @@ body.mode-buddy #agent-badge:not([hidden]) { display: block; }
 #composer { flex: none; padding: 8px 10px 26px; }
 #input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid #3f3a52; border-radius: 18px; outline: none; background: #14121b; color: #f1eef6; font: inherit; user-select: text; }
 #input:focus { border-color: #8a63c4; }
+/* confirmation: summary and Yes/No. Text arrives through textContent only. */
+#confirm p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+#confirm-buttons { display: flex; gap: 8px; }
+#confirm button { padding: 4px 18px; border: 1px solid #8a63c4; border-radius: 14px; background: #5a3f86; color: #fff; font: inherit; cursor: pointer; }
+#confirm button#confirm-no { background: transparent; color: inherit; border-color: #8d86a0; }
+#confirm button:hover { filter: brightness(1.15); }
+#confirm button:focus-visible { outline: 2px solid #c9a8f0; outline-offset: 1px; }
+/* reminders: a list under the agents in panel and window, only while there are some */
+#reminders { display: none; flex: none; box-sizing: border-box; margin: 6px 10px 0; padding: 6px 10px; border: 1px solid #2c2838; border-radius: 10px; background: #211e2b; }
+#reminders h2 { margin: 0 0 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #8d86a0; }
+body.mode-panel #reminders:not(.empty), body.mode-window #reminders:not(.empty) { display: block; }
+#reminders-list { margin: 0; padding: 0; list-style: none; max-height: 112px; overflow-y: auto; }
+body.mode-window #reminders h2 { display: none; }
+.reminder { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; min-width: 0; }
+.reminder-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reminder-due { flex: none; color: #8d86a0; font-size: 11px; }
+.reminder button { flex: none; padding: 0 8px; border: 1px solid #3f3a52; border-radius: 9px; background: #322e40; color: #d9d3e4; font: inherit; font-size: 11px; line-height: 17px; cursor: pointer; }
+.reminder button:hover { background: #3d3850; }

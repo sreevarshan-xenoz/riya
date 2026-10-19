@@ -4,16 +4,19 @@
  *  Loads in Node (tests) and as a plain script in the settings page. */
 
 const Agents = typeof require === "function" ? require("./agents-logic") : globalThis.RiyaAgents;
+const Hands = typeof require === "function" ? require("./hands-logic") : globalThis.RiyaHands;
 
 const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-  "eyes_enabled"];
+  "eyes_enabled", "hands_online"];
 const PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
 const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
 const MAX_PATTERNS = 100; // the core's limits
 const MAX_PATTERN_LEN = 300;
-const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS, "agent_logs"];
+const HANDS_KEYS = ["tools_enabled", "tools_ask", "apps", "commands", "weather_place"];
+const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS, "agent_logs",
+  ...HANDS_KEYS];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const QUIET_ERROR = "Use HH:MM-HH:MM (24-hour), like 23:30-08:00, or leave it empty to turn quiet hours off.";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -107,6 +110,20 @@ function settingPatch(key, raw) {
     const r = Agents.validateAgentLogs(raw);
     return r.ok ? { ok: true, patch: { agent_logs: r.logs } } : r;
   }
+  if (key === "weather_place") {
+    const place = typeof raw === "string" ? raw.trim() : null;
+    if (place === null) return { ok: false, error: "Enter a place name." };
+    return place.length > Hands.MAX_PLACE ? { ok: false, error: `Use at most ${Hands.MAX_PLACE} characters.` }
+      : { ok: true, patch: { weather_place: place || null } };
+  }
+  if (key === "apps") {
+    const r = Hands.validateApps(raw);
+    return r.ok ? { ok: true, patch: { apps: r.apps } } : r;
+  }
+  if (key === "commands") {
+    const r = Hands.validateCommands(raw);
+    return r.ok ? { ok: true, patch: { commands: r.commands } } : r;
+  }
   return { ok: false, error: `${key} can't be changed here.` };
 }
 
@@ -177,10 +194,13 @@ function dueText(thread, opts) {
   return `due ${formatWhen(thread.due_at, opts)}`;
 }
 
-/** The lists a `memories` message carries; older cores omit episodes and threads. */
+/** The lists a `memories` message carries; older cores omit episodes, threads and notes. */
 function memoryLists(msg) {
   const list = (v) => (Array.isArray(v) ? v : []);
-  return { facts: list(msg.facts), episodes: list(msg.episodes), threads: list(msg.threads), days: list(msg.transcript_days) };
+  return {
+    facts: list(msg.facts), episodes: list(msg.episodes), threads: list(msg.threads), days: list(msg.transcript_days),
+    notes: list(msg.notes),
+  };
 }
 
 /** Errors carry only a message, so attribute each one: to the setting it names, else to the latest unanswered action. */

@@ -117,12 +117,16 @@ test("an agents fixture is a valid shape for the helpers", () => {
 
 test("agent text only reaches the DOM through textContent: no HTML sinks in the body scripts, and the scripts load in order", () => {
   const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
-  for (const f of ["renderer.js", "settings.js", "src/agents-logic.js", "src/settings-logic.js"]) {
+  for (const f of ["renderer.js", "settings.js", "src/agents-logic.js", "src/settings-logic.js", "src/hands-logic.js", "src/bubble.js"]) {
     assert.doesNotMatch(read(f), /innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment/, f);
   }
   const before = (html, a, b) => html.indexOf(a) !== -1 && html.indexOf(a) < html.indexOf(b);
   assert.ok(before(read("index.html"), "src/agents-logic.js", "renderer.js"));
   assert.ok(before(read("settings.html"), "src/agents-logic.js", "src/settings-logic.js"));
+  assert.ok(before(read("index.html"), "src/hands-logic.js", "renderer.js"));
+  assert.ok(before(read("index.html"), "src/bubble.js", "renderer.js"));
+  assert.ok(before(read("settings.html"), "src/hands-logic.js", "settings.js"));
+  assert.ok(before(read("settings.html"), "src/hands-logic.js", "src/settings-logic.js"), "settings-logic reads RiyaHands at load");
 });
 
 test("the token path and setup command are shown exactly, backslashes intact", () => {

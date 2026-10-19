@@ -10,3 +10,4 @@ moonshine-voice
 jsonschema
 pillow
 mss
+tzdata

@@ -96,3 +96,90 @@ test("hidesAt is when a finished bubble disappears, so it can be hidden by a tim
   b.onUserInput();
   assert.equal(b.hidesAt(2001), null, "an answered bid is gone");
 });
+
+// ---- the confirmation (epoch-ms clock: expires_at arrives in seconds) ----
+
+const conf = (id, summary = 'Run "backup" (robocopy a b)? (yes / no)', expires_at = 1000) => ({ id, summary, expires_at });
+
+test("a confirm request shows until expiry, which is stored as epoch ms", () => {
+  const b = new BubbleModel();
+  assert.equal(b.confirm(0), null);
+  b.onConfirmRequest(conf("c1", "Run it?", 1000));
+  assert.deepEqual(b.confirm(999_999), { id: "c1", summary: "Run it?" });
+  assert.equal(b.confirm(1_000_000), null, "hides at expiresAtMs");
+  assert.equal(b.confirmExpiresAt(), 1_000_000);
+});
+
+test("confirm_done hides it, and only the pending one's done does", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1"));
+  b.onConfirmDone("other");
+  assert.equal(b.confirm(0).id, "c1", "a done for a replaced confirmation doesn't clear the new one");
+  b.onConfirmDone("c1");
+  assert.equal(b.confirm(0), null);
+  assert.equal(b.confirmExpiresAt(), null);
+});
+
+test("a newer confirm replaces the pending one", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1", "one"));
+  b.onConfirmRequest(conf("c2", "two", 2000));
+  assert.deepEqual(b.confirm(0), { id: "c2", summary: "two" });
+  b.onConfirmDone("c1");
+  assert.equal(b.confirm(0).id, "c2");
+});
+
+test("answering takes the confirmation once: a second click gets nothing", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1"));
+  assert.deepEqual(b.answerConfirm(0), { id: "c1", summary: conf("c1").summary });
+  assert.equal(b.answerConfirm(0), null);
+  assert.equal(b.confirm(0), null);
+  b.onConfirmRequest(conf("c2"));
+  assert.equal(b.answerConfirm(1_000_000), null, "an expired one can't be answered");
+});
+
+test("malformed confirm requests are ignored, and clearConfirm drops the pending one", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest({ id: "", summary: "x", expires_at: 5 });
+  b.onConfirmRequest({ id: "c", summary: "x", expires_at: "soon" });
+  b.onConfirmRequest({ id: "c", summary: 5, expires_at: 5 });
+  b.onConfirmRequest(null);
+  assert.equal(b.confirm(0), null);
+  b.onConfirmRequest(conf("c1"));
+  b.clearConfirm();
+  assert.equal(b.confirm(0), null);
+});
+
+test("every confirm_done outcome takes the buttons away, and none of them can be clicked afterwards", () => {
+  for (const outcome of ["ran", "started", "failed", "declined", "expired", "replaced", "cancelled"]) {
+    const b = new BubbleModel();
+    b.onConfirmRequest(conf("c1"));
+    b.onConfirmDone("c1", outcome);
+    assert.equal(b.confirm(0), null, outcome);
+    assert.equal(b.answerConfirm(0), null, outcome);
+    assert.equal(b.confirmExpiresAt(), null, outcome);
+  }
+});
+
+test("a click answers only the confirmation its buttons were drawn for", () => {
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1"));
+  b.onConfirmRequest(conf("c2", "two", 2000));
+  assert.equal(b.answerConfirm(0, "c1"), null, "the old buttons can't answer the new question");
+  assert.equal(b.confirm(0).id, "c2", "and it stays pending");
+  assert.deepEqual(b.answerConfirm(0, "c2"), { id: "c2", summary: "two" });
+  assert.equal(b.answerConfirm(0, "c2"), null);
+});
+
+test("a click just after a swap is ignored, and the new question stays answerable after the guard", () => {
+  const { CONFIRM_SWAP_GUARD_MS } = require("../src/bubble");
+  const b = new BubbleModel();
+  b.onConfirmRequest(conf("c1", "one", 1000), 10_000);
+  assert.equal(b.answerConfirm(10_000, "c1")?.id, "c1", "a first confirmation is answerable at once");
+  b.onConfirmRequest(conf("c3", "three", 1000), 10_000);
+  b.onConfirmRequest(conf("c4", "four", 1000), 20_000);
+  assert.equal(b.answerConfirm(20_000 + CONFIRM_SWAP_GUARD_MS - 1, "c4"), null);
+  assert.equal(b.confirm(20_000 + CONFIRM_SWAP_GUARD_MS).id, "c4");
+  assert.equal(b.answerConfirm(20_000 + CONFIRM_SWAP_GUARD_MS, "c4").id, "c4");
+});

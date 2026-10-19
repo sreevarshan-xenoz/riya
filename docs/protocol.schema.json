@@ -1,6 +1,18 @@
 {
   "body_to_core": {
     "$defs": {
+      "ActionsClear": {
+        "properties": {
+          "type": {
+            "const": "actions_clear",
+            "default": "actions_clear",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "ActionsClear",
+        "type": "object"
+      },
       "BodyReady": {
         "properties": {
           "mode": {
@@ -18,6 +30,31 @@
           "mode"
         ],
         "title": "BodyReady",
+        "type": "object"
+      },
+      "Confirm": {
+        "description": "The confirmation bubble's Yes/No button for confirmation `id`.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "confirm",
+            "default": "confirm",
+            "title": "Type",
+            "type": "string"
+          },
+          "yes": {
+            "title": "Yes",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "yes"
+        ],
+        "title": "Confirm",
         "type": "object"
       },
       "DontLook": {
@@ -138,6 +175,25 @@
         "title": "MemoryDelete",
         "type": "object"
       },
+      "NoteDelete": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "note_delete",
+            "default": "note_delete",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "NoteDelete",
+        "type": "object"
+      },
       "QuitCore": {
         "description": "The user chose Quit in the tray: the core stops too.",
         "properties": {
@@ -149,6 +205,25 @@
           }
         },
         "title": "QuitCore",
+        "type": "object"
+      },
+      "ReminderCancel": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "reminder_cancel",
+            "default": "reminder_cancel",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ReminderCancel",
         "type": "object"
       },
       "SetSettings": {
@@ -245,14 +320,18 @@
     },
     "discriminator": {
       "mapping": {
+        "actions_clear": "#/$defs/ActionsClear",
         "body_ready": "#/$defs/BodyReady",
+        "confirm": "#/$defs/Confirm",
         "dont_look": "#/$defs/DontLook",
         "episode_delete": "#/$defs/EpisodeDelete",
         "get_memories": "#/$defs/GetMemories",
         "glance_delete": "#/$defs/GlanceDelete",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
+        "note_delete": "#/$defs/NoteDelete",
         "quit_core": "#/$defs/QuitCore",
+        "reminder_cancel": "#/$defs/ReminderCancel",
         "set_settings": "#/$defs/SetSettings",
         "talk_hotkey": "#/$defs/TalkHotkey",
         "thread_resolve": "#/$defs/ThreadResolve",
@@ -300,11 +379,84 @@
       },
       {
         "$ref": "#/$defs/QuitCore"
+      },
+      {
+        "$ref": "#/$defs/Confirm"
+      },
+      {
+        "$ref": "#/$defs/ReminderCancel"
+      },
+      {
+        "$ref": "#/$defs/NoteDelete"
+      },
+      {
+        "$ref": "#/$defs/ActionsClear"
       }
     ]
   },
   "core_to_body": {
     "$defs": {
+      "ActionInfo": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "integer"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "tool",
+          "tier",
+          "summary",
+          "outcome"
+        ],
+        "title": "ActionInfo",
+        "type": "object"
+      },
+      "ActionsMsg": {
+        "description": "Her action log for the settings page, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ActionInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "type": {
+            "const": "actions",
+            "default": "actions",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ActionsMsg",
+        "type": "object"
+      },
       "AgentInfo": {
         "description": "One of the user's agents (a Claude Code session or a Colab run); detail is a sanitized summary, <= 80 chars.",
         "properties": {
@@ -392,6 +544,70 @@
           "items"
         ],
         "title": "AgentsMsg",
+        "type": "object"
+      },
+      "ConfirmDone": {
+        "description": "A confirmation is over: the body drops its bubble and buttons. outcome is what actually happened: ran (and\nworked), started (a command went to the worker), failed (it ran and failed, or couldn't run: the tool was switched\noff since, or a command is still running), declined, expired, replaced or cancelled.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "ran",
+              "started",
+              "failed",
+              "declined",
+              "expired",
+              "replaced",
+              "cancelled"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "type": {
+            "const": "confirm_done",
+            "default": "confirm_done",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome"
+        ],
+        "title": "ConfirmDone",
+        "type": "object"
+      },
+      "ConfirmRequest": {
+        "description": "A T2 (or raised T1) action waiting for the user's yes: the templated summary, and when it expires (epoch s).",
+        "properties": {
+          "expires_at": {
+            "title": "Expires At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "type": {
+            "const": "confirm_request",
+            "default": "confirm_request",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "summary",
+          "expires_at"
+        ],
+        "title": "ConfirmRequest",
         "type": "object"
       },
       "EpisodeInfo": {
@@ -633,6 +849,13 @@
             "title": "Glances",
             "type": "array"
           },
+          "notes": {
+            "items": {
+              "$ref": "#/$defs/NoteInfo"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
           "threads": {
             "items": {
               "$ref": "#/$defs/ThreadInfo"
@@ -680,6 +903,85 @@
           "level"
         ],
         "title": "Mouth",
+        "type": "object"
+      },
+      "NoteInfo": {
+        "description": "A note she took for the user (\"note that ...\"): never a fact.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "text"
+        ],
+        "title": "NoteInfo",
+        "type": "object"
+      },
+      "ReminderInfo": {
+        "properties": {
+          "due_at": {
+            "title": "Due At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "timer",
+              "reminder"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "due_at",
+          "text"
+        ],
+        "title": "ReminderInfo",
+        "type": "object"
+      },
+      "RemindersMsg": {
+        "description": "The active reminders and timers, soonest first (on change and on hello).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ReminderInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "type": {
+            "const": "reminders",
+            "default": "reminders",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RemindersMsg",
         "type": "object"
       },
       "Say": {
@@ -819,7 +1121,10 @@
     },
     "discriminator": {
       "mapping": {
+        "actions": "#/$defs/ActionsMsg",
         "agents": "#/$defs/AgentsMsg",
+        "confirm_done": "#/$defs/ConfirmDone",
+        "confirm_request": "#/$defs/ConfirmRequest",
         "error": "#/$defs/ErrorMsg",
         "expression": "#/$defs/ExpressionMsg",
         "eyes": "#/$defs/EyesMsg",
@@ -827,6 +1132,7 @@
         "look": "#/$defs/Look",
         "memories": "#/$defs/MemoriesMsg",
         "mouth": "#/$defs/Mouth",
+        "reminders": "#/$defs/RemindersMsg",
         "say": "#/$defs/Say",
         "say_end": "#/$defs/SayEnd",
         "settings": "#/$defs/SettingsMsg",
@@ -870,6 +1176,18 @@
       },
       {
         "$ref": "#/$defs/AgentsMsg"
+      },
+      {
+        "$ref": "#/$defs/ConfirmRequest"
+      },
+      {
+        "$ref": "#/$defs/ConfirmDone"
+      },
+      {
+        "$ref": "#/$defs/RemindersMsg"
+      },
+      {
+        "$ref": "#/$defs/ActionsMsg"
       }
     ]
   },
