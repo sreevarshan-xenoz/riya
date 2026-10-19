@@ -142,3 +142,53 @@ def test_a_failed_v3_migration_leaves_the_v2_database_untouched(tmp_path, monkey
     assert conn.execute("select count(*) from sqlite_master where name='reminders'").fetchone()[0] == 0
     conn.close()
     assert open_db(p).execute("select count(*) from facts").fetchone()[0] == 1
+
+
+# ---- final review: a future schema is refused untouched; a migration keeps a backup first ---------------------------
+def test_a_db_from_a_newer_riya_is_refused_and_never_written(tmp_path):
+    import hashlib
+    import sqlite3
+
+    import pytest
+    p = tmp_path / "riya.db"
+    conn = sqlite3.connect(str(p))
+    conn.executescript(f"create table future(x); insert into future values(1); pragma user_version={SCHEMA_VERSION + 1};")
+    conn.close()
+    before = hashlib.sha256(p.read_bytes()).hexdigest()
+    with pytest.raises(RuntimeError, match=f"newer Riya.*schema {SCHEMA_VERSION + 1}"):
+        open_db(p)
+    assert hashlib.sha256(p.read_bytes()).hexdigest() == before
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["riya.db"]   # no -wal, no backup
+    conn = sqlite3.connect(str(p))
+    assert conn.execute("pragma journal_mode").fetchone()[0] == "delete"
+    conn.close()
+
+
+def test_a_migration_backs_the_db_up_first_once_per_version(tmp_path):
+    import sqlite3
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    open_db(p).close()
+    bak = tmp_path / f"riya.db.pre-v{SCHEMA_VERSION}.bak"
+    old = sqlite3.connect(str(bak))
+    assert old.execute("pragma user_version").fetchone()[0] == 2
+    assert old.execute("select text from facts").fetchone()[0] == "The user likes tea"
+    old.close()
+    first = bak.read_bytes()
+    open_db(p).close()                                    # already current: no new backup
+    assert bak.read_bytes() == first
+    assert sorted(x.name for x in tmp_path.iterdir() if x.suffix == ".bak") == [bak.name]
+
+
+def test_a_new_db_has_no_backup(tmp_path):
+    open_db(tmp_path / "riya.db").close()
+    assert not [x for x in tmp_path.iterdir() if x.suffix == ".bak"]
+
+
+def test_an_existing_backup_is_never_overwritten(tmp_path):
+    p = tmp_path / "riya.db"
+    _v2_db(p)
+    bak = tmp_path / f"riya.db.pre-v{SCHEMA_VERSION}.bak"
+    bak.write_bytes(b"the first backup")
+    open_db(p).close()
+    assert bak.read_bytes() == b"the first backup"
