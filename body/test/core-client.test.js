@@ -103,12 +103,22 @@ test("fixtures match the committed protocol schema", () => {
   const validators = { core: ajv.compile(schema.core_to_body), body: ajv.compile(schema.body_to_core) };
   const dir = path.join(__dirname, "fixtures");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
-  assert.equal(names.filter((n) => n.startsWith("core_")).length, 18);
-  assert.equal(names.filter((n) => n.startsWith("body_")).length, 21);
+  assert.equal(names.filter((n) => n.startsWith("core_")).length, 22);
+  assert.equal(names.filter((n) => n.startsWith("body_")).length, 25);
   for (const n of names) {
     const validate = n.startsWith("core_") ? validators.core : validators.body;
     const obj = JSON.parse(fs.readFileSync(path.join(dir, n), "utf8"));
     assert.ok(validate(obj), `${n}: ${JSON.stringify(validate.errors)}`);
+  }
+});
+
+test("no fixture carries a key", () => {
+  const dir = path.join(__dirname, "fixtures");
+  for (const n of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const text = fs.readFileSync(path.join(dir, n), "utf8");
+    const obj = JSON.parse(text);
+    assert.ok(!(obj.type === "setup_request" && obj.action === "online_key_set"), n);
+    assert.ok(!text.includes("online_key_set"), n);
   }
 });
 

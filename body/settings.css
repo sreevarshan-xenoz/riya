@@ -19,8 +19,8 @@ h2 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
 .empty { margin: 4px 0; font-size: 12px; color: #8d86a0; }
 .inline { display: flex; gap: 8px; }
 code { padding: 1px 4px; border-radius: 4px; background: #14121b; font-size: 12px; }
-input[type="text"], select { box-sizing: border-box; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: inherit; }
-input[type="text"], textarea { width: 100%; }
+input[type="text"], input[type="password"], select { box-sizing: border-box; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: inherit; }
+input[type="text"], input[type="password"], textarea { width: 100%; }
 textarea { box-sizing: border-box; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: 12px/1.4 Consolas, monospace; resize: vertical; margin-bottom: 6px; }
 input[type="number"] { box-sizing: border-box; width: 120px; padding: 6px 10px; border: 1px solid #3f3a52; border-radius: 8px; outline: none; background: #14121b; color: #f1eef6; font: inherit; }
 select { min-width: 140px; }
@@ -71,3 +71,12 @@ dialog p { margin: 0 0 10px; overflow-wrap: anywhere; }
 .dial-band { position: absolute; top: 0; bottom: 0; border-radius: 5px; background: #4a3a6e; }
 .dial-marker { position: absolute; top: -2px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px; background: #f1eef6; }
 .buckets { margin: 4px 0 0; padding: 0; list-style: none; font-size: 12px; color: #8d86a0; font-variant-numeric: tabular-nums; }
+.health { margin: 0 0 6px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.health-row { display: grid; grid-template-columns: 96px 1fr auto; align-items: start; column-gap: 10px; padding: 8px 10px; border-radius: 10px; background: #26222f; }
+.health-row .health-label { display: block; font-weight: 600; }
+.health-row .health-detail { display: block; color: #d9d3e4; overflow-wrap: anywhere; user-select: text; }
+.chip { display: inline-block; justify-self: start; padding: 1px 8px; border-radius: 9px; font-size: 11px; background: #3a3550; color: #e6e0f2; white-space: nowrap; }
+.chip.ok { background: #254a3a; color: #b8f0d2; }
+.chip.warn { background: #6b4a2a; color: #ffd9a8; }
+.chip.off { background: #3a3550; color: #b9b2cc; }
+button:disabled { opacity: 0.5; cursor: default; }

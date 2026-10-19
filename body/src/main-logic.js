@@ -6,7 +6,7 @@ const MODES = ["buddy", "panel", "window"];
 const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents", "reminders", "actions", "learning"];
 const DONT_LOOK_HOTKEYS = ["Control+Alt+H", "Control+Alt+F10"]; // first one that registers wins
 const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm", "actions_clear", "reminder_cancel", "note_delete",
-  "note_delete_style", "twin_reset", "learning_reset"]; // never queued for replay after a reconnect
+  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done"]; // never queued for replay after a reconnect
 const QUIT_FLUSH_MS = 300; // the tray's Quit: time for quit_core to reach the core before the body exits
 
 /** First accelerator for which `register` returns true (a throw counts as a failure), or null. */
@@ -110,7 +110,7 @@ function rememberForReplay(cache, msg) {
 }
 
 /** On a core disconnect: drop what would replay as live but isn't (the core sends a fresh look and agents on hello). */
-const FORGET_ON_DISCONNECT = ["look", "agents", "reminders", "actions", "learning", "confirm_request"];
+const FORGET_ON_DISCONNECT = ["look", "agents", "reminders", "actions", "learning", "confirm_request", "health"];
 function forgetOnDisconnect(cache) {
   for (const type of FORGET_ON_DISCONNECT) cache.delete(type);
 }
