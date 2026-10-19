@@ -4,6 +4,7 @@ chat rows the trainer reads, the LFM2 chat template and the assistant-only label
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.1, §2.3 and §4."""
 import json
 import re
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -12,9 +13,27 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 EXPECT_KEYS = ("must_mention", "must_not_invent", "must_admit_unknown", "must_say_ai", "max_sentences", "max_emoji")
 
 
+def read_jsonl_checked(path: Path) -> tuple[list[dict], int]:
+    """(rows, dropped): one JSON value per line (utf-8), blank lines skipped. A last line that isn't valid JSON, the
+    mark of a run killed mid-write, is dropped and counted (1) and reported on stderr; a broken line anywhere else
+    still raises ValueError (json.JSONDecodeError)."""
+    lines = [line for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows, dropped = [], 0
+    for i, line in enumerate(lines):
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:
+                raise
+            dropped = 1
+            print(f"{path}: ignoring a broken last line (an interrupted write): {line[:60]!r}", file=sys.stderr)
+    return rows, dropped
+
+
 def read_jsonl(path: Path) -> list[dict]:
-    """One JSON value per line (utf-8); blank lines are skipped."""
-    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    """One JSON value per line (utf-8); blank lines are skipped, and so is a broken last line (see
+    read_jsonl_checked)."""
+    return read_jsonl_checked(path)[0]
 
 
 def write_jsonl(rows: Iterable[dict], path: Path) -> None:

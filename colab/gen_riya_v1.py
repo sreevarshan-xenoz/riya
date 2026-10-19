@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from colab.gen_riya_data import find_teacher
-from riya.train.fmt import read_jsonl, validate_request
+from riya.train.fmt import read_jsonl, read_jsonl_checked, validate_request, write_jsonl
 
 RIYA_V1_DIR = os.environ.get("RIYA_V1_DIR", "/content/drive/MyDrive/riya_v1")
 PORT = 8095
@@ -81,7 +81,8 @@ def _online_chat(environ: Mapping[str, str]) -> Callable[[dict], str]:
     key = environ["RIYA_ONLINE_API_KEY"].strip()
 
     def chat(body: dict) -> str:
-        sent = {"model": ONLINE_MODEL, "messages": body["messages"], "max_tokens": body["max_tokens"],
+        # Gemini's thinking tokens count against max_tokens, so leave room or the reply comes back empty or clipped
+        sent = {"model": ONLINE_MODEL, "messages": body["messages"], "max_tokens": body["max_tokens"] * 4,
                 "temperature": body["temperature"]}  # no chat_template_kwargs: that is llama-server's
         return _post(f"{ONLINE_BASE_URL.rstrip('/')}/chat/completions", sent, {"Authorization": f"Bearer {key}"}, 120)
     return chat
@@ -112,6 +113,7 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
     answers blank, by online_chat (throttled to one call per gap_s). Returns (answered, failed); a failed row is
     written nowhere, so the next run retries it."""
     throttle = _Throttle(online_gap_s() if gap_s is None else gap_s, clock, sleep)
+    stopping = threading.Event()  # set on an interrupt: queued work must not go online or write
 
     def work(r: dict) -> dict | None:
         body = teacher_body(r["messages"])
@@ -120,7 +122,7 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
             text = clean_response(teacher_chat(body))
         except Exception as e:
             print(f"{r['id']}: teacher failed ({e})", flush=True)
-        if not text and online_chat is not None:
+        if not text and online_chat is not None and not stopping.is_set():
             throttle.wait()
             try:
                 text = clean_response(online_chat(body))
@@ -132,17 +134,35 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
     out.parent.mkdir(parents=True, exist_ok=True)
     done = failed = 0
     t0 = time.time()
-    with out.open("a", encoding="utf-8", newline="\n") as f, ThreadPoolExecutor(workers) as ex:
-        for row in ex.map(work, requests):
-            if row is None:
-                failed += 1
-                continue
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            done += 1
-            if done % 100 == 0:
-                f.flush()
-                print(f"{done}/{len(requests)} ({done / (time.time() - t0):.1f}/s)", flush=True)
+    ex = ThreadPoolExecutor(workers)
+    try:
+        with out.open("a", encoding="utf-8", newline="\n") as f:
+            for row in ex.map(work, requests):
+                if row is None:
+                    failed += 1
+                    continue
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.flush()  # every row: a killed run loses at most the line being written
+                done += 1
+                if done % 100 == 0:
+                    print(f"{done}/{len(requests)} ({done / (time.time() - t0):.1f}/s)", flush=True)
+    finally:
+        stopping.set()
+        ex.shutdown(wait=False, cancel_futures=True)  # on an error or Ctrl-C, drop the queue instead of draining it
     return done, failed
+
+
+def resume_ids(out: Path) -> set[str]:
+    """The ids already answered in out (empty when it doesn't exist). A last line cut off by an interrupted write is
+    reported and removed (the file is rewritten without it), so the rows appended next start on a clean line."""
+    out = Path(out)
+    if not out.exists():
+        return set()
+    rows, dropped = read_jsonl_checked(out)
+    text = out.read_text(encoding="utf-8")
+    if dropped or (text and not text.endswith("\n")):
+        write_jsonl(rows, out)
+    return {r["id"] for r in rows}
 
 
 def _wait_healthy(base: str, proc: subprocess.Popen | None) -> None:
@@ -171,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     for r in requests:
         validate_request(r)
     out = Path(args.out)
-    done_ids = {r["id"] for r in read_jsonl(out)} if out.exists() else set()
+    done_ids = resume_ids(out)
     pending = todo(requests, done_ids)
     print(f"{len(done_ids)} done, {len(pending)} to generate", flush=True)
 

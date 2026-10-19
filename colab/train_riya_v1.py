@@ -66,6 +66,12 @@ def selected_modules(names: Iterable[str]) -> list[str]:
     return [n for n in names if re.fullmatch(TARGET_REGEX, n)]
 
 
+def bf16_capable(capability: tuple[int, int]) -> bool:
+    """bf16 only on Ampere or newer (compute capability 8+). torch.cuda.is_bf16_supported() also says yes on a T4
+    (sm75) by emulation, which is slow, so the decision is made from the capability itself."""
+    return capability[0] >= 8
+
+
 def train_settings(bf16_supported: bool) -> dict:
     """TRAIN plus the compute dtype: bf16 where the GPU supports it, fp16 otherwise (a T4)."""
     return TRAIN | {"dtype": "bfloat16" if bf16_supported else "float16"}
@@ -159,8 +165,16 @@ def hf_safetensors_search(query: str) -> list[str]:
     from huggingface_hub import HfApi
 
     api = HfApi()
-    return [m.id for m in api.list_models(search=query, sort="downloads", limit=10)
-            if plain_weights(m.id) and any(f.endswith(".safetensors") for f in api.list_repo_files(m.id))]
+    hits = []
+    for m in api.list_models(search=query, sort="downloads", limit=10):
+        if not plain_weights(m.id):
+            continue
+        try:  # one flaky repo listing must not sink the whole search (that would train on the wrong base)
+            if any(f.endswith(".safetensors") for f in api.list_repo_files(m.id)):
+                hits.append(m.id)
+        except Exception as e:
+            print(f"couldn't list {m.id} ({e})", flush=True)
+    return hits
 
 
 def download_served_gguf() -> str:
@@ -236,11 +250,13 @@ def _run(args: argparse.Namespace) -> int:
         bar = "!" * 78
         print(f"{bar}\n{MISMATCH_BANNER}\n{bar}", flush=True)
     print("base:", base_id, flush=True)
-    base_dir = snapshot_download(base_id, local_dir=f"{WORK_DIR}/base", ignore_patterns=["*.gguf"])
+    base_dir = snapshot_download(base_id, local_dir=f"{WORK_DIR}/base/{base_id.replace('/', '__')}",
+                                ignore_patterns=["*.gguf"])  # one folder per repo: no overlay on a rerun
 
     # 2. the model, with LoRA on attention and MLP only
-    settings = train_settings(torch.cuda.is_bf16_supported())
+    settings = train_settings(bf16_capable(torch.cuda.get_device_capability()))
     dtype = getattr(torch, settings["dtype"])
+    print(f"GPU {torch.cuda.get_device_name(0)}: training in {settings['dtype']}", flush=True)
     tok = AutoTokenizer.from_pretrained(base_dir)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
@@ -280,7 +296,8 @@ def _run(args: argparse.Namespace) -> int:
     accum = min(settings["grad_accum"], math.ceil(len(data) / settings["batch"]))
     steps = 1 if args.smoke else total_steps(len(data), settings["epochs"], settings["batch"], accum)
     opt = torch.optim.AdamW([p for _, p in trainable], lr=settings["lr"], weight_decay=0.0)
-    sched = get_cosine_schedule_with_warmup(opt, math.ceil(settings["warmup_ratio"] * steps), steps)
+    warmup = 0 if args.smoke else math.ceil(settings["warmup_ratio"] * steps)  # the smoke step must have a real lr
+    sched = get_cosine_schedule_with_warmup(opt, warmup, steps)
     fp16 = settings["dtype"] == "float16"
     scaler = torch.amp.GradScaler("cuda", enabled=fp16)
     model.train()
@@ -324,16 +341,16 @@ def _run(args: argparse.Namespace) -> int:
     out_gguf = str(out_dir / OUT_NAME)
     subprocess.run(convert_cmd(LLAMA_DIR, adapter_dir, base_dir, out_gguf), check=True)
 
-    # 6. smoke: llama-server loads the adapter, and the HF template matches llama-server's
+    # 6. report (before the smoke, so a failed load keeps the loss curve)
+    report = make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped, losses=losses,
+                         smoke=args.smoke, gpu=gpu, settings=settings)
+    (out_dir / REPORT_NAME).write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    # 7. smoke: llama-server loads the adapter, and the HF template matches llama-server's
     served_gguf = args.served_gguf or download_served_gguf()
     prompt_msgs = sft[0]["messages"][:-1]
     hf_prompt = tok.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
     problems = smoke_load(served_gguf, out_gguf, prompt_msgs, hf_prompt)
-
-    # 7. report
-    report = make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped, losses=losses,
-                         smoke=args.smoke, gpu=gpu, settings=settings)
-    (out_dir / REPORT_NAME).write_text(json.dumps(report, indent=2), encoding="utf-8")
     if problems:
         raise SystemExit("smoke failed: " + "; ".join(problems))
     if mismatch:
