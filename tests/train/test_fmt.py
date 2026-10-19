@@ -29,7 +29,8 @@ class ToyTok:
 def good_request():
     return {"id": "r1", "kind": "small", "messages": [SYSTEM, USER], "facts": [],
             "expect": {"must_mention": [], "must_not_invent": False, "must_admit_unknown": False,
-                       "must_say_ai": False, "max_sentences": 3, "max_emoji": 1}, "fp": "0" * 64}
+                       "must_say_ai": False, "max_sentences": 3, "max_emoji": 1}, "meta": {"facts": [], "asks": None},
+            "fp": "0" * 64}
 
 
 def test_constants():
@@ -137,3 +138,22 @@ def test_row_validation():
     validate_request(request)
     with pytest.raises(ValueError):  # a request ends with a user message
         validate_request({**request, "messages": [SYSTEM, USER, ANSWER]})
+
+
+def test_request_meta_validation():
+    good = good_request()
+    validate_request(good)
+    rec = {"attr": "dog", "value_words": ["jessamy"], "species": "dog", "words": ["dog"]}
+    with_fact = {**good, "facts": ["The user has a dog called Jessamy"], "meta": {"facts": [rec], "asks": None}}
+    validate_request(with_fact)
+    asks = {"attr": "cat", "words": ["cat"], "values": ["Pim"]}
+    validate_request({**good, "meta": {"facts": [], "asks": asks}})
+    for bad in ({k: v for k, v in good.items() if k != "meta"},
+                {**good, "meta": {"facts": []}},  # no asks
+                {**good, "meta": {"facts": [rec], "asks": None}},  # a record without a fact
+                {**with_fact, "meta": {"facts": [{**rec, "value_words": "jessamy"}], "asks": None}},
+                {**with_fact, "meta": {"facts": [{"attr": "dog"}], "asks": None}},
+                {**good, "meta": {"facts": [], "asks": {"attr": "cat"}}},
+                {**good, "meta": None}):
+        with pytest.raises(ValueError):
+            validate_request(bad)

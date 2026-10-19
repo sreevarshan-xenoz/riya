@@ -19,6 +19,7 @@ from evaluation.style_metrics import (STOP, about_me_recalls, asserts_value, cou
 from riya.core.shaping import CODE_BLOCK, EMOJI, STAGE_WORDS, strip_label
 from riya.train import build_sft
 from riya.train.fmt import read_jsonl, sft_row, validate_request, validate_teacher, write_jsonl
+from riya.train.scenarios import ATTR_WORDS, value_words
 
 MIN_KEPT_PER_KIND = 40
 REASONS = ("empty", "generic", "too_many_sentences", "too_many_emoji", "invented", "missed_fact",
@@ -41,19 +42,28 @@ _UNCLOSED_THINK = re.compile(r"<think>.*\Z", re.S | re.I)
 _TEMPLATE_TOKEN = re.compile(r"<\|[^|<>\s]{1,40}\|>")  # <|im_end|>, <|im_start|>, <|startoftext|>
 _EMOTICON_END = re.compile(r"(?:^|\s)(?::\)|:D|:P|xD|XD|lol|haha+|hehe+)\W*$", re.I)  # "ok :)", "ok lol" end a sentence
 _FINAL_MARKS = ".!?…。！？।~♪♫♡"
+_LEADING_ROLE = re.compile(r"\A\s*(?:<\|startoftext\|>)?\s*(?:<\|im_start\|>\s*assistant\s*)?", re.I)
 
 # --- support: what an answer may say about the user must be in the memory block or the user's own words -------------
 _NUMBER = re.compile(r"\d+")
 _NAME = re.compile(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)*(?:'s)?")
-_WORDS = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+_WORDS = re.compile(r"\d+|[a-z]+(?:'[a-z]+)?")
 _SENTENCE_START = re.compile(r"(?:^|[.!?…~\n])\s*[\"'“”‘’(\[*_]*")
 _MONTH_OR_DAY = re.compile(r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|april|june"
                            r"|july|august|september|october|november|december)s?\b", re.I)
 _QUESTION_END = re.compile(r"\?[\W_]*$")
 _NEGATIVE_TAG = re.compile(r"\b(?:didn't|don't|haven't|weren't|wasn't|aren't)\s+you\b", re.I)
-_YOUR = re.compile(r"\byour\s+([a-z][a-z'-]*(?:\s+[a-z][a-z'-]*)?)", re.I)
+_YOUR = re.compile(r"\byour\s+([a-z][a-z'-]*(?:\s+[a-z][a-z'-]*)?)", re.I)  # the word(s) right after "your"
+_QUESTION_WORDS = frozenset("how what when where why who which did do does are is was were can could would will have "
+                            "has should shall".split())  # a sentence starting with one asks, "?" or not ("how was it~")
+_INVITATION = re.compile(r"\b(?:tell|share|show|let) (?:me|us)\b|^\W*(?:tell|share|show|teach)\b", re.I)
+_SHARED = re.compile(r"\b(?:remember when|we (?:talked|chatted|spoke|went|did|said|met|saw|watched|played|had|used to)"
+                     r"|last (?:time|summer|winter|spring|autumn|week|night|year|month|weekend)|you always"
+                     r"|you used to)\b", re.I)  # a history the two of them don't share unless the row says so
+_COPULA = re.compile(r"^\W*(?:\w+\W+){0,2}?(?:is|was|are|were)\s+([^,;.!?~]+)", re.I)
 _CLAIM = re.compile(
-    r"\b(?:(?:didn't|don't|haven't|weren't|wasn't|aren't)\s+you\b"
+    r"\b(?:(?:didn't|don't|haven't|weren't|wasn't|aren't)\s+you\b(?!\s+(?:dare|even|forget|worry|think|stop|go|"
+    r"start|try|let|make|you)\b)"
     r"|you(?:'ve|\s+have|'d|\s+had|\s+also|\s+still|\s+always|\s+never|\s+really|\s+even|\s+just|\s+totally)?\s+"
     r"(?:have|had|were|was|love|loved|hate|hated|like|liked|play|played|live|lived|work|worked|went|go|said|got|own|"
     r"owned|study|studied|speak|spoke|moved|visited|visiting|adopted|bought|mentioned|told)\b"
@@ -66,7 +76,8 @@ _NOT_A_CLAIM_BEFORE = frozenset("what whatever how why when where if whether who
                                 "glad".split())
 # function words STOP lacks
 STOPS = STOP | frozenset("the not no yes yeah okay ok oh well now soon yet already always never ago once off out up "
-                         "down away back".split())
+                         "down away back around near roughly approximately toward along among across behind beside "
+                         "beyond within without during through".split())
 # The words that may open a sentence without being a name: pronouns, determiners, conjunctions, prepositions,
 # auxiliaries and contraction stems, interjections, common English words, and her own vocabulary. A capitalised
 # sentence opener that is none of these (and not in the row's own text) is read as an invented name ("Max misses you").
@@ -109,6 +120,15 @@ water home house room door window screen phone computer message messages message
 person people man woman boy girl friend friends family mom dad baby kid kids world place places school class
 okay riya noted understood done saved stored deal gotcha cool awesome perfect neat nope welcome cheers
 congrats congratulations
+not zero two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen
+eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand couple dozen half
+relax breathe pack grab share enjoy stretch wear rest hydrate sip nap dream hug cuddle cheer smile laugh sing dance
+hurry slow pause drop trust believe imagine remind wash clean cook bake tidy charge save plug unplug snack munch
+amazing wonderful excellent brilliant interesting careful lucky poor proud fantastic incredible gorgeous lovely
+delicious tasty yummy gentle patient honest brave kind strong calm anytime sounds sound looks seems feels goodnight
+lately recently technically pfft yikes whew whoops eek yuck blah bleh ahem tada voila ha mmhm uhhuh nah aye alas
+morning afternoon tonight tomorrow today yesterday sunday monday tuesday wednesday thursday friday saturday
+lets thats whats hows wheres agent agents task tasks build builds tests test
 """.split())
 
 # her own words, never an invented fact
@@ -125,12 +145,14 @@ PERSONA_WORDS = frozenset("cute silly dummy adorable funny sweet smart clever ti
 
 
 def clean_response(text: str) -> str:
-    """The teacher's text as it should be trained on: think blocks and chat-template tokens removed, whitespace
-    trimmed. An unclosed <think> block drops the rest (the generation was cut off inside it); a stray </think> drops
-    what came before it."""
+    """The teacher's text as it should be trained on: think blocks removed, a leading role marker dropped, the text cut
+    at the first chat-template token (what follows an end-of-turn token isn't her answer) and whitespace trimmed. An
+    unclosed <think> block drops the rest (the generation was cut off inside it); a stray </think> drops what came
+    before it."""
     text = _UNCLOSED_THINK.sub("", _THINK.sub("", text))
-    text = re.split(r"</think>", text, flags=re.I)[-1]
-    return _TEMPLATE_TOKEN.sub("", text).strip()
+    text = _LEADING_ROLE.sub("", re.split(r"</think>", text, flags=re.I)[-1], count=1)
+    token = _TEMPLATE_TOKEN.search(text)
+    return (text[:token.start()] if token else text).strip()
 
 
 def _norm(word: str) -> str:
@@ -201,11 +223,30 @@ def _claim_words(sentence: str, known: _Known) -> list[str]:
     return out
 
 
-def unsupported(response: str, known_texts: list[str], world: bool = False) -> list[str]:
-    """What the answer asserts about the user (or the moment) that known_texts don't back: a capitalised name, a
-    number, a month or weekday, the noun after "your", or a word of a second-person claim, each absent from the row's
-    facts and the user's own turns. world: the answer may name things from general knowledge (an explanation), so only
-    the "your" and "you ..." checks apply. [] when everything is backed."""
+def _is_question(sentence: str) -> bool:
+    """Asks something: ends with "?", or a clause of it starts with a question word ("how was your day~")."""
+    if _QUESTION_END.search(sentence):
+        return True
+    return any((_words(seg) or [""])[0].split("'")[0] in _QUESTION_WORDS for seg in re.split(r"[,;:]", sentence))
+
+
+_ATTR_WORD = re.compile(r"\b(?:" + "|".join(sorted({re.escape(w) for ws in ATTR_WORDS.values() for w in ws},
+                                                    key=len, reverse=True)) + r")\w*\b", re.I)
+
+
+PERSONAL_NOUNS = frozenset("""dog cat pet sister brother mother mom mum father dad cousin roommate friend girlfriend
+boyfriend wife husband partner son daughter kid hometown city town job boss school college university team
+neighbour neighbor teacher family friends parents grandma grandpa gran nan aunt uncle niece nephew ex crush
+landlord flatmate colleague coworker manager""".split())  # what an explanation may not invent about the user
+
+
+def unsupported(response: str, known_texts: list[str], world: bool = False, personal_only: bool = False) -> list[str]:
+    """What the answer asserts about the user (or the moment) that known_texts don't back: a capitalised name or
+    opener, a number, a month or weekday, the first noun after "your", the value in "your favourite colour is red", a
+    shared past ("remember when we ...") and the words of a second-person claim, each absent from the row's facts and
+    the user's own turns. world: the answer may name things from general knowledge (an explanation), so the name,
+    number and date checks are off. personal_only: the "your X" check only covers PERSONAL_NOUNS (an explanation
+    teaches in the second person: "your function", "your skin"). [] when everything is backed."""
     known, found = _Known(known_texts), []
     if not world:
         found += [f"name {n}" for n in _names(response) + _opening_names(response) if not known.has(n)]
@@ -214,12 +255,26 @@ def unsupported(response: str, known_texts: list[str], world: bool = False) -> l
         found += [f"date {m.group()}" for m in _MONTH_OR_DAY.finditer(response)
                   if m.start() not in starts and not known.has(m.group())]
     for sentence in _sentences(response):
-        question = bool(_QUESTION_END.search(sentence))
-        if not question:  # asking about "your X" claims nothing
+        question = _is_question(sentence)
+        found += [f"history {w}" for m in _SHARED.finditer(sentence) for w in _words(sentence[m.start():])
+                  if w not in STOPS and w not in PERSONA_WORDS and not known.has(w) and not w.isdigit()]
+        if not question and not _INVITATION.search(sentence):  # asking about "your X" claims nothing
             for m in _YOUR.finditer(sentence):
-                nouns = [w for w in _words(m.group(1)) if w not in _MODIFIERS and w not in STOPS][:2]
-                found += [f"your {w}" for w in nouns
-                          if w not in GENERIC_YOUR and _norm(w) not in GENERIC_YOUR and not known.has(w)]
+                noun = next((w for w in _words(m.group(1)) if w not in _MODIFIERS and w not in STOPS), None)
+                if not noun or noun.endswith("ly") or noun in GENERIC_YOUR or _norm(noun) in GENERIC_YOUR \
+                        or known.has(noun):
+                    continue
+                personal = noun in PERSONAL_NOUNS or _norm(noun) in PERSONAL_NOUNS
+                common = noun in COMMON_WORDS or _norm(noun) in COMMON_WORDS  # "enjoy your tea": no claim
+                if personal or not (personal_only or common):
+                    found.append(f"your {noun}")
+        if not question:  # "your favourite colour is red": the value must be the row's
+            for m in _ATTR_WORD.finditer(sentence):
+                tail = _COPULA.match(sentence[m.end():])
+                if tail:
+                    found += [f"value {w}" for w in _words(tail.group(1)) if len(w) >= 3 and w not in STOPS
+                              and w not in PERSONA_WORDS and w not in _CLAIM_VERBS and not known.has(w)
+                              and not w.isdigit()]
         if not question or _NEGATIVE_TAG.search(sentence):
             found += [f"claim {w}" for w in _claim_words(sentence, known)]
     return found
@@ -235,12 +290,30 @@ def _fact_parts(fact: str) -> tuple[set[str], set[str], list[str]]:
     return set(_NUMBER.findall(fact)), names, sorted(others)
 
 
-def recalls_fact(response: str, fact: str) -> bool:
-    """The answer states this fact, not just a word of it: every number and name of the fact appears, at least 60% of
-    its other content words appear, there's no denial ("I don't remember"), and no clause about the fact carries a
-    different number or name (a swapped or contradicted fact)."""
+def _tokens(text: str) -> list[str]:
+    """Stemmed words and digit runs, digits kept apart from letters ("11pm" -> 11, pm)."""
+    return [_norm(w) for w in re.findall(r"\d+|[a-z]+", text.lower().replace("’", "'"))]
+
+
+def _has_sequence(tokens: list[str], phrase: list[str]) -> bool:
+    n = len(phrase)
+    return n > 0 and any(tokens[i:i + n] == phrase for i in range(len(tokens) - n + 1))
+
+
+def _mentions(tokens: list[str], words: list[str] | tuple[str, ...]) -> bool:
+    return any(_has_sequence(tokens, _tokens(w)) for w in words)
+
+
+def recalls_fact(response: str, fact: str, record: dict | None = None) -> bool:
+    """The answer states this fact. With its structured record, every one of the fact's value words must appear
+    ("crimson", "table tennis", "11 pm"); a lone shared word never counts. Without one (a fact outside the pools):
+    every number and name appears, 60% of its other content words appear, and no clause about it carries a different
+    number or name. A denial ("I don't remember") never recalls anything."""
     if not about_me_recalls(response, [fact]):
         return False
+    if record and record["value_words"]:
+        have = set(_tokens(response))
+        return all(_norm(w) in have for w in record["value_words"])
     numbers, names, others = _fact_parts(fact)
     have_words = {_norm(w) for w in _words(response)}
     if not numbers <= set(_NUMBER.findall(response)) or not names <= {w.split("'")[0] for w in _words(response)}:
@@ -258,6 +331,30 @@ def recalls_fact(response: str, fact: str) -> bool:
     return True
 
 
+def contradicts(response: str, records: list[dict]) -> bool:
+    """A clause that pairs one fact with another's: it names fact F's attribute ("sister", "favourite colour") together
+    with a different fact's whole value, or it holds F's whole value ("Jessamy") next to another attribute's word
+    ("cat") and not F's own. So "your cat Jessamy" against a dog called Jessamy, and "your sister is Orla" against a
+    brother called Orla, are contradictions."""
+    facts = [r for r in records if r["attr"]]
+    for clause in re.split(r"[,;.!?…~\n]|\b(?:and|but|while|plus)\b", response):
+        tokens = _tokens(clause)
+        have = set(tokens)
+        if not tokens:
+            continue
+        for f in facts:
+            own = {_norm(w) for w in f["value_words"]}
+            if _mentions(tokens, f["words"]):
+                for g in facts:
+                    theirs = {_norm(w) for w in g["value_words"]}
+                    if g is not f and g["attr"] != f["attr"] and theirs and theirs <= have and not theirs <= own:
+                        return True
+            elif own and own <= have and any(k != f["attr"] and _mentions(tokens, words)
+                                             for k, words in ATTR_WORDS.items()):
+                return True
+    return False
+
+
 # --- unknown rows: an honest "I don't know" and no guess ------------------------------------------------------------
 _ADMITS = re.compile(
     r"\b(?:(?:don't|do not|doesn't) (?:know|remember|recall|have (?:that|any|a record))|can't (?:remember|say|tell)"
@@ -265,22 +362,40 @@ _ADMITS = re.compile(
     r"|(?:haven't|have not|hasn't|didn't|never) (?:told|mentioned|said|shared|tell|mention|say)"
     r"|(?:don't|do not) think you(?:'ve| have)? (?:told|mentioned|said|shared)|not something you(?:'ve| have)"
     r"|(?:i'm|i am) not certain)\b", re.I)
-_HEDGE = re.compile(r"\b(?:maybe|probably|perhaps|likely|i bet|i guess|might be|could be)\b(.*)", re.I | re.S)
-# "maybe you can tell me?" is an invitation, not a guess
+_HEDGE = re.compile(
+    r"\b(?:maybe|probably|perhaps|likely|i bet|i guess|might be|could be|must be|i'?d (?:guess|say|bet|imagine)"
+    r"|i(?:'m| am) guessing|i (?:imagine|suppose|reckon|figure|assume|presume)|my money(?:'s| is)? on"
+    r"|bet (?:it|you|that)"
+    r"|(?:seems?|looks?|sounds?) like|if i had to|you (?:must|might|may))\b(.*)",
+    re.I | re.S)
 _HEDGE_OK = re.compile(r"^\W*(?:you (?:can|could|should|will|want|wanna|tell|share|let|remind|ask)\b|tell me|ask|later|"
-                       r"next time|we\b|i (?:can|could|will)\b|i'll|let\b|share|remind)", re.I)
-_GUESS_QUESTION = re.compile(r"\b(?:is|was) it\b|\b(?:could|might) it be\b", re.I)
+                       r"next time|we\b|i (?:can|could|will)\b|i'll|let\b|share|remind)",
+                       re.I)  # "maybe you can tell me?" is an invitation, not a guess
+_GUESS_QUESTION = re.compile(r"\b(?:is|was) it\b|\b(?:could|might) it be\b|,\s*right\?|\bor (?:do|are|did) you\b|"
+                             r"\b(?:do|did|are|were|is|was) you\b(?!\s+(?:want|wanna|mind|like to|tell|say|mention"
+                             r"|share"
+                             r"|remember|think|ever))", re.I)
 _JOKE = re.compile(r"\b(?:just kidding|kidding|jk)\b", re.I)
 
 
-def admits_unknown(response: str, question: str = "") -> bool:
-    """She says she doesn't know (in any of the usual ways) and then guesses nothing: no made-up value (a name, a
-    number, "it's X"), no "is it ...?", no hedged answer ("maybe/probably/I bet ..."), no "just kidding"."""
+def admits_unknown(response: str, question: str = "", asks: dict | None = None, known_texts=()) -> bool:
+    """She says she doesn't know (in any of the usual ways) and then guesses nothing: no candidate answer from the asked
+    attribute's own value pool (asks["values"], minus any the row itself states), no made-up value (a name, a number,
+    "it's X"), no "is it ...?" or "or do you ...?", no hedged answer ("maybe", "I'd guess", "I imagine", "my money's
+    on", "bet it's", "seems like" ...) and no "just kidding"."""
     if not _ADMITS.search(response.replace("’", "'")):
         return False
     if asserts_value(response, question) or _GUESS_QUESTION.search(response) or _JOKE.search(response):
         return False
-    return all(_HEDGE_OK.match(m.group(1)) for m in _HEDGE.finditer(response))
+    if not all(_HEDGE_OK.match(m.group(1)) for m in _HEDGE.finditer(response)):
+        return False
+    if asks:
+        have, stated = set(_tokens(response)), set(_tokens(" ".join(known_texts)))
+        for value in asks["values"]:
+            words = {_norm(w) for w in value_words(value)}
+            if words and words <= have and not words <= stated:
+                return False  # a candidate answer: a guess
+    return True
 
 
 def default_style_phrases() -> list[str]:
@@ -326,16 +441,23 @@ def reasons(request: dict, response: str, style_phrases: list[str]) -> list[str]
     expect, kind = request["expect"], request["kind"]
     users = [m["content"] for m in request["messages"] if m["role"] == "user"]
     known = request["facts"] + users
+    records, asks = request["meta"]["facts"], request["meta"]["asks"]
+    if asks:  # the noun the user asked about may be repeated ("I don't know your cat's name")
+        known.append(" ".join(asks["words"]))
     if kind in SITUATIONAL_KINDS:
         known += [m["content"] for m in request["messages"] if m["role"] == "system"]
     failed = {
         "generic": has_generic(response),
         "too_many_sentences": count_sentences(response) > expect["max_sentences"],
         "too_many_emoji": count_emoji(response) > expect["max_emoji"],
-        "invented": expect["must_not_invent"] and bool(invented_memories(response, known, style_phrases)
-                                                       or unsupported(response, known, world=kind == "explain")),
-        "missed_fact": any(not recalls_fact(response, f) for f in expect["must_mention"]),
-        "no_unknown_admission": expect["must_admit_unknown"] and not admits_unknown(response, users[-1]),
+        "invented": expect["must_not_invent"] and bool(
+            invented_memories(response, known, style_phrases)
+            or unsupported(response, known, world=kind == "explain", personal_only=kind == "explain")
+            or contradicts(response, records)),
+        "missed_fact": any(not recalls_fact(response, f, records[request["facts"].index(f)]
+                                            if f in request["facts"] else None) for f in expect["must_mention"]),
+        "no_unknown_admission": expect["must_admit_unknown"] and not admits_unknown(
+            response, users[-1], asks, request["facts"] + users),
         "no_ai_admission": expect["must_say_ai"] and not says_ai(response),
         "disclaimer": kind != "identity" and has_disclaimer(response),
         "stage_direction": has_stage_direction(response),
