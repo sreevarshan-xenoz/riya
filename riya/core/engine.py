@@ -23,6 +23,7 @@ from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, c
 from riya.core.eyes.policy import GlancePolicy, window_refusal
 from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
+from riya.core.learn.records import LearnDB
 from riya.core.hands import online as hands_online
 from riya.core.hands.intent import is_command_form, is_forbidden, match
 from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
@@ -37,7 +38,7 @@ from riya.core.presence import Presence
 from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
                               build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
                               hands_situation, remember_situation, reminders_block, report_bubble, report_line,
-                              report_situation, tool_turn)
+                              report_situation, style_line, tool_turn)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
                                 Confirm, ConfirmDone, ConfirmRequest, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
                                 EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
@@ -46,8 +47,9 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, Actio
                                 TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, in_quiet_hours, load_settings, save_settings, set_autostart
-from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
-                               is_feelings_question, is_identity_question, limit_emoji, strip_label, turn_kind)
+from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_for, cap_sentences, count_emoji,
+                               drop_generic, emoji_limit, is_feelings_question, is_identity_question, limit_emoji,
+                               strip_label, turn_kind)
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
@@ -218,8 +220,10 @@ class RiyaCore:
         self._reminding: set[int] = set()
         self._greet_reminders: list = []
         self._last_remind_at: float | None = None  # the last spoken reminder line (REMIND_GAP_S apart)
-        traits, saved = load_traits(), self.kv.get("feelings")
-        self.feelings = Feelings.from_dict(saved, clock, traits) if saved else Feelings(clock, traits)
+        self.learn = LearnDB(db, self.memory.lock, load_traits())  # the live dials; Feelings reads them through it
+        saved = self.kv.get("feelings")
+        self.feelings = (Feelings.from_dict(saved, clock, self.learn.dials) if saved
+                         else Feelings(clock, self.learn.dials))
         self.presence = Presence(idle_source, clock, self.kv)
         self.initiative = Initiative(clock, lambda: self.settings, tz)
         self.router = Router(local, online, self.settings.online_enabled)
@@ -496,8 +500,10 @@ class RiyaCore:
                 said.append(lead)
                 yield lead
             route_text = "" if small or game or tool else user_text or ""
+            dials = self.learn.dials()
+            emoji_max = emoji_limit(dials["emoji"])
             turn, budget, cap = (("game", BUDGETS["small"], 1) if game else (None, BUDGETS["tool"], CAPS["tool"])
-                                 if tool else self._shape(kind, route_text))
+                                 if tool else self._shape(kind, route_text, dials["verbosity"]))
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
@@ -506,9 +512,10 @@ class RiyaCore:
             def build(persona: str, situation: str | None) -> list[dict]:
                 return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
-                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders)
+                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders,
+                                      cap=cap if turn == "small" else None)
 
-            messages = build(self.personas[route], situation)
+            messages = build(self._persona(route), situation)
             if route == "online":
                 thinking = True
                 self.feelings.on_event("thinking")
@@ -516,15 +523,15 @@ class RiyaCore:
             if seeing:
                 messages[-1] = vision_messages(seeing.jpeg, user_text)[-1]
                 stream = self._see_stream(messages, seeing,
-                                          lambda why: build(self.personas["local"], seeing.fallback(why)),
+                                          lambda why: build(self._persona("local"), seeing.fallback(why)),
                                           budget, max(ONLINE_BUDGETS.get(turn, budget), SEE_TOKENS))
                 ran_out = lambda: getattr(self.local if seeing.fell_back else self.vision,  # noqa: E731
                                           "finish_reason", None) == "length"
             else:
                 stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
                 ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
-            kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead)), others=bool(lead),
-                                dropped=dropped)
+            kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead), emoji_max=emoji_max),
+                                others=bool(lead), dropped=dropped)
             sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
@@ -561,7 +568,7 @@ class RiyaCore:
             whole = (outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
                      and not told["tail"])
             text = None if outcome == "failed" else (
-                " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip())])) if whole
+                " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip(), emoji_max)])) if whole
                 else " ".join(said))
             try:
                 self._end_thinking(thinking)
@@ -576,16 +583,24 @@ class RiyaCore:
                 except Exception:
                     log.exception("couldn't finish the %s", kind)
 
+    def _persona(self, route: Literal["local", "online"]) -> str:
+        """The persona for a route, plus the templated style line when the dials are off her defaults. Only that line
+        is ever added: never the notes or the dial values."""
+        line = style_line(self.learn.dials())
+        return self.personas[route] + (f"\n\n{line}" if line else "")
+
     @staticmethod
-    def _shape(kind: str, text: str) -> tuple[str | None, int, int]:
+    def _shape(kind: str, text: str, verbosity: float | None = None) -> tuple[str | None, int, int]:
         """(turn kind, token budget, sentence cap) for an utterance: a greeting has its own budget, cap and rules line;
-        a reply's depend on the turn."""
+        a reply's depend on the turn. With verbosity the caps of small, about_me and greeting scale (cap_for)."""
+        def cap(k: str) -> int:
+            return CAPS[k] if verbosity is None else cap_for(k, verbosity)
         if kind == "greet":
-            return "greeting", BUDGETS["greeting"], CAPS["greeting"]
+            return "greeting", BUDGETS["greeting"], cap("greeting")
         if kind == "report":
             return "report", BUDGETS["report"], CAPS["report"]
         k = turn_kind(text, about_me=about_me(text), needs_thinking=needs_thinking(text))
-        return k, BUDGETS[k], CAPS[k]
+        return k, BUDGETS[k], cap(k)
 
     @staticmethod
     def _boundary(buf: str) -> int | None:
@@ -621,18 +636,18 @@ class RiyaCore:
 
     @staticmethod
     def _sentences(stream: Iterator[str], parts: list[str], done: dict, ran_out: Callable[[], bool] = lambda: False,
-                   said: bool = False) -> Iterator[str]:
-        """The model's pieces as whole sentences (_cut), each with only the reply's first emoji (an emoji's leftovers
-        vanish) and the first without a leading "Riya:" label. When the model ran out of tokens (ran_out) after a
-        complete sentence was said (here, or before it: said), its unfinished last fragment is dropped and
-        done["cut"] set. Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
+                   said: bool = False, emoji_max: int = 1) -> Iterator[str]:
+        """The model's pieces as whole sentences (_cut), each with at most emoji_max emoji in the whole reply (an
+        emoji's leftovers vanish) and the first without a leading "Riya:" label. When the model ran out of tokens
+        (ran_out) after a complete sentence was said (here, or before it: said), its unfinished last fragment is
+        dropped and done["cut"] set. Closing this closes the model stream; done["stream"] is set once the model ended by itself."""
         buf, used, first = "", 0, True
 
         def tidy(sentence: str) -> str:
             nonlocal used, first
             sentence = strip_label(sentence).strip() if first else sentence.strip()
             first = first and not sentence
-            kept = limit_emoji(sentence, max(0, 1 - used))  # never touches fenced code
+            kept = limit_emoji(sentence, max(0, emoji_max - used))  # never touches fenced code
             used += count_emoji(CODE_BLOCK.sub("", kept))
             return kept if kept == sentence or any(c.isalnum() for c in kept) else ""  # an emoji's leftovers vanish
 
@@ -704,14 +719,14 @@ class RiyaCore:
             situation = bid_situation(self._bid_reason(action), action.thread)
             if offer:
                 situation += " " + games.offer_situation(offer)
-            messages = build_messages(persona=self.personas["local"], examples=self.examples,
+            messages = build_messages(persona=self._persona("local"), examples=self.examples,
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=situation,
                                       now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context(),
                                       reminders=self._reminders_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
-            line = limit_emoji(strip_label(line).strip())
+            line = limit_emoji(strip_label(line).strip(), emoji_limit(self.learn.dials()["emoji"]))
         except Exception:
             log.exception("model failed during a bid")
             return

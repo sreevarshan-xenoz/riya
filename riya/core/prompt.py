@@ -5,7 +5,7 @@ import re
 from riya.agents.hub import summarize
 from riya.core.hands.reminders import _clean, duration_parts, fmt_when
 from riya.core.memory import Fact, Glance, Retrieved, Thread
-from riya.core.shaping import CAPS, is_identity_question
+from riya.core.shaping import CAPS, VERBOSE_HIGH, VERBOSE_LOW, is_identity_question
 
 NO_MEMORY_LINE = "(nothing stored about this yet)"
 NO_ABOUT_ME_LINE = "Nothing yet. You don't know much about them so far: say so, and don't guess."
@@ -39,6 +39,17 @@ _ERROR_WORDS = {"rate_limit": "hit a rate limit", "overloaded": "the API is over
 REPLY_RULES = {"small": f"Reply in at most {CAPS['small']} sentences.",
                "explain": f"Explain clearly in at most {CAPS['explain']} sentences. No ~ in explanations.",
                "about_me": "List what's in the memory block, nothing else."}
+STYLE_LINE = "### Your style with them:"
+STYLE_KEEP = "Underneath it you're still yourself: sweet and playful."
+STYLE_RULES: tuple[tuple[str, str, float, str], ...] = (  # (dial, "<" or ">", threshold, sentence), in line order
+    ("teasing", "<", 0.4, "Keep teasing very light."), ("teasing", ">", 0.6, "Tease them freely; they enjoy it."),
+    ("verbosity", "<", VERBOSE_LOW, "Keep it short."),
+    ("verbosity", ">", VERBOSE_HIGH, "You can say a little more than usual."),
+    ("sweetness", "<", 0.75, "Be a little less cutesy; talk more plainly."),
+    ("sweetness", ">", 0.95, "Be extra sweet with them."),
+    ("clinginess", "<", 0.7, "Don't be clingy; give them space."),
+    ("clinginess", ">", 0.9, "Let them see how much you missed them."),
+    ("emoji", "<", 0.2, "Don't use emojis."), ("emoji", ">", 0.4, "An emoji now and then is fine."))
 # the last line of the system message is the one the small model reliably obeys, so the hard rules ride on it; the AI
 # clause only on an identity question (anywhere else it turned into "I'm just a chatbot, no feelings" small talk)
 AI_RULE = "You're an AI and say so if asked."
@@ -95,15 +106,23 @@ def _when(ended_at: float, now: float) -> str:
     return "today" if days == 0 else "1 day ago" if days == 1 else f"{days} days ago"
 
 
-def reply_rule(kind: str | None, identity: bool = False) -> str | None:
+def style_line(dials: dict[str, float]) -> str | None:
+    """The templated style line from the dials: STYLE_LINE, each matching STYLE_RULES sentence, then STYLE_KEEP. None
+    when no dial is past a threshold (her defaults). Every threshold is within one nudge of the default."""
+    said = [t for d, op, at, t in STYLE_RULES if d in dials and (dials[d] < at if op == "<" else dials[d] > at)]
+    return " ".join([STYLE_LINE, *said, STYLE_KEEP]) if said else None
+
+
+def reply_rule(kind: str | None, identity: bool = False, cap: int | None = None) -> str | None:
     """The `### Reply rules:` line for a reply's turn kind (small, explain, about_me): its length rule, the AI clause
     when they asked what she is (identity), and the memory clause. A greeting gets only its memory clause. None for
-    anything else."""
+    anything else. cap replaces the small-talk sentence limit (CAPS["small"])."""
     if kind == "greeting":
         return f"### Reply rules: {GREETING_RULE}"
     if kind not in REPLY_RULES:
         return None
-    return " ".join(["### Reply rules:", REPLY_RULES[kind], *([AI_RULE] if identity else []), MEMORY_RULE])
+    rule = f"Reply in at most {cap} sentences." if kind == "small" and cap is not None else REPLY_RULES[kind]
+    return " ".join(["### Reply rules:", rule, *([AI_RULE] if identity else []), MEMORY_RULE])
 
 
 def _memory_block(r: Retrieved, now: float, about_me: bool = False) -> str:
@@ -243,11 +262,12 @@ def greeting_reports(events: list) -> str:
 def build_messages(*, persona: str, feelings_tag: str, retrieved: Retrieved, turns: list[dict],
                    user_text: str | None, situation: str | None, now: float, examples: str = "",
                    kind: str | None = None, eyes: str | None = None, agents: str | None = None,
-                   reminders: str | None = None) -> list[dict]:
+                   reminders: str | None = None, cap: int | None = None) -> list[dict]:
     """examples (the made-up style exchanges) sit right after the persona, never inside the memory block; kind is
     the reply's turn kind (shaping.turn_kind, or "greeting"), which picks the reply-rules line and the facts-only
     about-me block; an about-me turn with facts also gets about_me_situation. eyes (eyes_block), agents
-    (agents_block) and reminders (reminders_block) go after the memory block and the honesty line, never inside it."""
+    (agents_block) and reminders (reminders_block) go after the memory block and the honesty line, never inside it. cap
+    is the small-talk sentence limit when the dials moved it (reply_rule)."""
     parts = [persona, *([examples] if examples else []), feelings_tag,
              _memory_block(retrieved, now, about_me=kind == "about_me"), HONESTY_LINE, *([eyes] if eyes else []),
              *([agents] if agents else []), *([reminders] if reminders else [])]
@@ -255,7 +275,8 @@ def build_messages(*, persona: str, feelings_tag: str, retrieved: Retrieved, tur
         situation = " ".join(filter(None, [situation, about_me_situation(retrieved.facts)]))
     if situation:
         parts.append("[Situation] " + situation)
-    if rule := reply_rule(kind, identity=user_text is not None and is_identity_question(user_text)):
+    if rule := reply_rule(kind, identity=user_text is not None and is_identity_question(user_text),
+                           cap=cap):
         parts.append(rule)
     last = {"role": "user", "content": SPEAK_FIRST_TURN if user_text is None else user_text}
     return [{"role": "system", "content": "\n\n".join(parts)}, *turns, last]

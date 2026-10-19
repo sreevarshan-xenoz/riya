@@ -3,9 +3,11 @@ from pathlib import Path
 import pytest
 
 from riya.core.memory import Episode, Fact, Retrieved, Thread
-from riya.core.persona import STYLE_HEADER, load_traits_file, persona_prompt, style_examples
+from riya.core.learn.dials import BANDS, DELTA, DIALS
+from riya.core.persona import STYLE_HEADER, load_traits, load_traits_file, persona_prompt, style_examples
 from riya.core.prompt import (AI_RULE, GREETING_RULE, MEMORY_RULE as HARD, HONESTY_LINE, MEMORY_END, MEMORY_START, NO_ABOUT_ME_LINE,
-                              NO_MEMORY_LINE, SPEAK_FIRST_TURN, build_messages, greeting_situation, reply_rule)
+                              NO_MEMORY_LINE, SPEAK_FIRST_TURN, STYLE_KEEP, STYLE_LINE, STYLE_RULES, build_messages, greeting_situation,
+                              reply_rule, style_line)
 
 NOW = 1_800_000_000.0
 EXAM = Fact(1, "The user has an exam on Thursday", "user.exam", "user_said", 0.9, NOW, None, "active", None)
@@ -334,3 +336,47 @@ def test_eyes_block_without_the_now_line():
     block = eyes_block([_glance(3, NOW - 120, notable="TypeError in test_x")], NOW, now_line=False)
     assert "What they're doing now" not in block and "TypeError" not in block
     assert "- 2 min ago, VS Code: fixing a failing test" in block
+
+
+def test_style_line_is_none_at_her_defaults():
+    assert style_line(load_traits()) is None
+
+
+def test_style_line_one_nudge_from_a_default():
+    line = style_line({**load_traits(), "teasing": 0.35})
+    assert line == f"{STYLE_LINE} Keep teasing very light. {STYLE_KEEP}"
+    assert line == "### Your style with them: Keep teasing very light. Underneath it you're still yourself: sweet and playful."
+
+
+@pytest.mark.parametrize("dial", DIALS)
+def test_one_nudge_from_the_default_changes_the_line(dial):
+    base = load_traits()
+    for sign in (-1, 1):
+        lo, hi = BANDS[dial]
+        value = min(hi, max(lo, base[dial] + sign * DELTA))
+        if value != base[dial]:
+            assert style_line({**base, dial: value}) is not None, (dial, value)
+
+
+def test_style_line_at_band_edges_stays_in_character():
+    low = style_line({d: BANDS[d][0] for d in DIALS})
+    high = style_line({d: BANDS[d][1] for d in DIALS})
+    for dial, op, _, sentence in STYLE_RULES:
+        assert (sentence in low) if op == "<" else (sentence in high)
+        assert (sentence not in high) if op == "<" else (sentence not in low)
+    assert low.startswith(STYLE_LINE) and low.endswith(STYLE_KEEP) and high.endswith(STYLE_KEEP)
+    for text in (low, high):
+        assert not any(w in text.lower() for w in ("never", "cold", "stop being"))
+
+
+def test_reply_rule_cap_changes_only_the_small_talk_limit():
+    assert "at most 4 sentences" in reply_rule("small", cap=4) and "at most 3 sentences" in reply_rule("small")
+    assert reply_rule("small", cap=3) == reply_rule("small")
+    assert reply_rule("explain", cap=2) == reply_rule("explain")
+
+
+def test_build_messages_passes_the_cap_to_the_rules_line():
+    r = Retrieved([], [], [])
+    system = build_messages(persona="P", feelings_tag="F", retrieved=r, turns=[], user_text="hi", situation=None,
+                            now=NOW, kind="small", cap=2)[0]["content"]
+    assert system.endswith(reply_rule("small", cap=2)) and "at most 2 sentences" in system

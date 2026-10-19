@@ -196,3 +196,22 @@ def test_from_dict_ignores_unknown_user_mood_keys():
     d["state"]["user_mood"] = {"valence": -0.6, "confidence": 0.5, "label": "down", "added_later": 1}
     g = Feelings.from_dict(d, clock, TRAITS)
     assert g.state.user_mood.label == "down" and g.state.user_mood.confidence == 0.5
+
+
+def test_traits_getter_is_read_live():
+    dials = {**TRAITS, "clinginess": 0.4}
+    f = Feelings(FakeClock(), lambda: dials)
+    f.on_return(away_s=30 * 3600)
+    low = f.state.missing
+    dials["clinginess"] = 1.0
+    g = Feelings(FakeClock(), lambda: dials)
+    g.on_return(away_s=30 * 3600)
+    assert g.state.missing > low and f.traits["clinginess"] == 1.0
+    assert Feelings(FakeClock(), TRAITS).traits is TRAITS  # a plain dict still works
+
+
+def test_from_dict_takes_a_getter_too():
+    clock, dials = FakeClock(), {**TRAITS}
+    g = Feelings.from_dict(Feelings(clock, TRAITS).to_dict(), clock, lambda: dials)
+    dials["sweetness"] = 0.6
+    assert g.traits["sweetness"] == 0.6
