@@ -738,3 +738,27 @@ def test_a_3000_char_write_file_saves_all_of_it(tmp_path):
     assert p is not None and p.call.args["text"] == text and f"({len(text)} bytes)" in p.summary
     list(core.reply("yes"))
     assert (Path(core.riya_dir) / "essay.txt").read_text(encoding="utf-8") == text
+
+
+# ---- final review: M7, a button's effect runs outside the hands lock ----------------------------------------------
+def test_a_button_yes_runs_its_effect_outside_the_hands_lock():
+    core, emitted, *_ = hands_core(tools_ask=["open_url"])
+    list(core.reply("open youtube"))
+    p = core.confirms.pending
+    free = []
+    real = core.effects.open_url
+
+    def probe(url):
+        def other():
+            got = core._hands_lock.acquire(timeout=1)
+            free.append(got)
+            if got:
+                core._hands_lock.release()
+        t = threading.Thread(target=other)
+        t.start()
+        t.join(5)
+        real(url)
+    core.effects.open_url = probe
+    core.handle(Confirm(id=p.id, yes=True))
+    assert free == [True]
+    assert done(emitted)[-1] == (p.id, "ran") and logged(core) == [("open_url", 1, "ran")]

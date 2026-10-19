@@ -779,7 +779,8 @@ class RiyaCore:
 
     def _confirm_button(self, id: str, yes: bool) -> None:
         """A body Yes/No button. Only the exact pending id counts; a stale one gets "replaced" (or "expired"). A yes
-        runs the snapshot the user was asked about, and its result is queued for tick, never spoken from here."""
+        runs the snapshot the user was asked about, outside _hands_lock (a slow effect stalls neither the socket loop
+        nor the tick), and its result is queued for tick, never spoken from here."""
         with self._hands_lock:
             current = self.confirms.pending
             answer, p = self.confirms.take_button(id, yes)
@@ -788,9 +789,9 @@ class RiyaCore:
                 if p is not None and (answer == "no" or (current is not None and current.id == p.id)):
                     self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, _BUTTON[answer])
                 return  # (an expiry the tick saw was logged there)
-            _, result = self._execute(p.call, p.summary, confirmed=p)
-            if result is not None:  # a command that started reports through its worker
-                self._results.put((p.summary, result))
+        _, result = self._execute(p.call, p.summary, confirmed=p)  # taken: no turn or tick can answer it now
+        if result is not None:  # a command that started reports through its worker
+            self._results.put((p.summary, result))
 
     def _hands_turn(self, text: str, call: Call | str) -> Iterator[str]:
         """A turn that asks her to act. Every call (matched or proposed) is validated against the settings first;
