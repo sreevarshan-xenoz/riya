@@ -134,3 +134,10 @@ def test_acks():
         assert pol in NOTE_ACKS
     assert ack_line(Feedback(None, 0.0, "x y.", "dislike")) == "Okay, I won't do that anymore."
     assert MAX_WORDS == 10
+
+
+def test_her_own_acks_are_never_feedback():
+    """Her ack, heard back through the mic, must not nudge a second time."""
+    from riya.core.engine import REMEMBER_ACKS
+    for line in [*ACKS.values(), *NOTE_ACKS.values(), *REMEMBER_ACKS]:
+        assert detect_feedback(line) is None, line
