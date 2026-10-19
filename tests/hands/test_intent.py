@@ -196,3 +196,114 @@ def test_forbidden_true(text):
                                   "run backup", "the shell was pretty", "remind me to send mom flowers at 5"])
 def test_forbidden_false(text):
     assert not is_forbidden(text)
+
+
+# ---- fix round 1: strict durations ----
+@pytest.mark.parametrize("text,secs", [
+    ("two and a half hours", 9000), ("seventy five minutes", 4500), ("a hundred and twenty seconds", 120),
+    ("1 and a half hours", 5400), ("ninety seconds", 90), ("eighty minutes", 4800), ("two hundred seconds", 200),
+    ("forty-five minutes", 2700), ("an hour and a half", 5400), ("2 days", 172800),
+])
+def test_parse_duration_words(text, secs):
+    assert parse_duration(text) == secs
+
+
+@pytest.mark.parametrize("text", ["ten thousand minutes", "five and a quarter hours", "twenty minutes and thirty",
+                                  "set a timer for seventy-five and a bit minutes", "3 minutes 20"])
+def test_garbled_durations_are_none(text):
+    assert parse_duration(text) is None
+    assert m("set a timer for " + text) is None
+
+
+def test_timer_phrases_with_spoken_numbers():
+    assert m("set a timer for two and a half hours") == Call("timer_set", {"duration": 9000.0})
+    assert m("set a timer for seventy five minutes") == Call("timer_set", {"duration": 4500.0})
+    assert m("set a timer for a hundred and twenty seconds") == Call("timer_set", {"duration": 120.0})
+    assert m("set a timer for 5 minutes and 30 seconds") == Call("timer_set", {"duration": 330.0})
+
+
+# ---- bounds ----
+def test_non_finite_and_huge_values_are_none():
+    big = "9" * 400
+    assert parse_duration(f"{big} hours") is None
+    assert m(f"set a timer for {big} hours") is None
+    assert m(f"remind me in {big} hours to x") is None
+    assert parse_when(f"in {big} hours", NOW, IST) is None
+    assert parse_when("in 99999 hours", NOW, IST) is None
+    assert m("remind me in 99999 hours to x") is None
+
+
+def test_timer_cap_is_24_hours():
+    assert m("set a timer for 24 hours") == Call("timer_set", {"duration": 86400.0})
+    assert m("set a timer for 1 day") == Call("timer_set", {"duration": 86400.0})
+    assert m("set a timer for 24 hours and 1 second") is None
+    assert m("set a timer for 25 hours") is None
+
+
+def test_reminder_cap_is_366_days():
+    assert parse_when("in 366 days", NOW, IST) == NOW + 366 * 86400
+    assert parse_when("in 8784 hours", NOW, IST) == NOW + 366 * 86400
+    assert parse_when("in 366 days and 1 second", NOW, IST) is None
+    assert parse_when("in 367 days", NOW, IST) is None
+    assert m("remind me in 366 days to renew") == Call("reminder_set", {"when": "in 366 days", "text": "renew"})
+    assert m("remind me in 367 days to renew") is None
+
+
+# ---- input length ----
+def test_long_junk_is_fast():
+    import time
+    for junk in ("open youtube" + "," * 10000 + "x", " ," * 5000 + "x", "!" * 10000 + "x", "remind me " + "to a " * 3000,
+                 "," * 10000):
+        t0 = time.perf_counter()
+        m(junk)
+        is_forbidden(junk)
+        is_command_form(junk)
+        parse_when(junk, NOW, IST)
+        assert time.perf_counter() - t0 < 0.2
+
+
+def test_only_first_500_chars_are_read():
+    assert m("open youtube" + " " * 600 + "x") == Call("open_url", {"url": SITES["youtube"]})
+    assert m(" " * 600 + "open youtube") is None
+
+
+# ---- file extensions ----
+@pytest.mark.parametrize("name", ["notes.rtf", "index.php", "resume.docx", "main.rs", "photo.bmp", "a.py", "x.7z",
+                                  "movie.mkv", "data.csv", "readme.md"])
+def test_file_names_are_not_domains(name):
+    assert m(f"open {name}") is None
+
+
+# ---- is_forbidden narrowing ----
+@pytest.mark.parametrize("text", ["send a message to mom", "email john", "text sarah hi", "dm alex", "send an email to bob",
+                                  "send mom a message", "send the report to bob", "whatsapp priya", "tweet hello world",
+                                  "message dad", "can you please text sarah"])
+def test_messaging_someone_else_is_forbidden(text):
+    assert is_forbidden(text)
+
+
+@pytest.mark.parametrize("text", ["send me the weather", "text me when it's done", "send me a reminder to call mom at 5",
+                                  "message me when the timer ends", "text is hard to read", "message received",
+                                  "write a text file called x saying hi", "send me a message", "email is down",
+                                  "send it to me", "send a reminder to me"])
+def test_messaging_yourself_or_chat_is_not_forbidden(text):
+    assert not is_forbidden(text)
+
+
+# ---- review minors ----
+@pytest.mark.parametrize("text", ["note taking is hard", "note how nice", "notes are useful", "note thatcher"])
+def test_loose_note_does_not_match(text):
+    assert m(text) is None
+
+
+@pytest.mark.parametrize("text,saved", [("note that I parked on level 3", "I parked on level 3"),
+                                        ("note: buy milk", "buy milk"), ("note to self: call mom", "call mom"),
+                                        ("take a note buy milk", "buy milk"), ("make a note that it rains", "it rains")])
+def test_note_forms(text, saved):
+    assert m(text) == Call("note_add", {"text": saved})
+
+
+@pytest.mark.parametrize("text", ["what's the date today", "what's going on with the build", "what's 9**9**9",
+                                  "what's 2020-01-05", "what's on screen", "skip this", "skip a"])
+def test_noise_is_not_a_tool(text):
+    assert m(text) is None
