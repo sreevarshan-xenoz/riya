@@ -545,5 +545,7 @@ def test_reset_clears_the_open_opportunities_and_the_barge_window():
     core, emitted, src, _, clock = breaking()
     core._greet_open = ("night/focused/short", clock.now())
     core._barges.extend([True, False])
+    core.learn.set_drift_at(clock.now())
     core._reset_learning()
     assert core._twin_open is None and core._greet_open is None and len(core._barges) == 0
+    assert core.learn.drift_at() is None  # the drift clock is learned state too
