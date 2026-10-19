@@ -1126,10 +1126,10 @@ class RiyaCore:
 
     def _reminder_step(self, now: float) -> "Utterance | bool | None":
         """Due reminders with manners, all merged into one line: spoken (focused, talking, break; at most one line
-        every REMIND_GAP_S), a bubble at once while gaming, restricted (quiet hours, may not start conversations) or a
-        confirmation waits,
-        and while away they wait for the came-back greeting. Never dropped: one is marked fired only once its line
-        went out. Ids claimed by an Utterance still to be said are skipped."""
+        every REMIND_GAP_S), a bubble at once while gaming, restricted (quiet hours, may not start conversations),
+        muted or while a confirmation waits, and while away they wait for the came-back greeting. Never dropped: one
+        is marked fired only once its line went out, and a bubble waits until a body is there to show it. Ids claimed
+        by an Utterance still to be said are skipped."""
         with self._hands_lock:
             claimed = set(self._reminding)
         due = [r for r in self.hands.due(now) if r.id not in claimed]
@@ -1138,7 +1138,9 @@ class RiyaCore:
         how = delivery(self.presence.state, self._restricted(now))
         if how == "wait":
             return None
-        if how == "bubble" or self._asking():
+        if how == "bubble" or self._asking() or self.settings.mute_voice:
+            if not self.body_present():  # no one to show it to: it stays pending until a body connects
+                return None
             line, uid = reminder_line(due, now, self.tz), uuid4().hex
             self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
             self.emit(SayEnd(utterance_id=uid))
@@ -1180,15 +1182,19 @@ class RiyaCore:
     def _results_step(self, now: float) -> "Utterance | bool | None":
         """A queued command or button result, one per tick, with the report manners (sharing REPORT_GAP_S with the
         agent reports): it waits while they're away; while gaming, restricted or a confirmation waits it's the
-        ToolResult.text bubble (no model); otherwise she says it through the local model (the result text is the fallback)."""
+        ToolResult.text bubble (no model); otherwise she says it through the local model (the result text is the
+        fallback). A bubble (or a muted line) waits until a body is there to show it."""
         if self._results.empty():
             return None
         how = delivery(self.presence.state, self._restricted(now))
         if how == "wait" or (self._last_report_at is not None and 0 <= now - self._last_report_at < REPORT_GAP_S):
             return None
+        bubble = how == "bubble" or self._asking()
+        if (bubble or self.settings.mute_voice) and not self.body_present():
+            return None
         summary, result = self._results.get_nowait()
         self._last_report_at = now
-        if how == "bubble" or self._asking():
+        if bubble:
             uid = uuid4().hex
             self.emit(Say(utterance_id=uid, text=result.text, spoken=False, kind="report"))
             self.emit(SayEnd(utterance_id=uid))
@@ -1267,7 +1273,7 @@ class RiyaCore:
         the model is never called. In quiet hours, or when she may not start conversations, it's always the bubble
         (no voice, no mic): urgent ones now, finished ones only on a talking turn. While a confirmation waits it's the
         bubble too. Returns the spoken Utterance, True
-        when a bubble was shown, else None."""
+        when a bubble was shown, else None. A bubble (or a muted line) waits until a body is there to show it."""
         state = self.presence.state
         if not self._reports or state == "away":
             return None
@@ -1278,10 +1284,13 @@ class RiyaCore:
         restricted = self._restricted(now)
         if not (kinds & URGENT or state in (("talking",) if restricted else ("break", "talking"))):
             return None
+        bubble = state == "gaming" or restricted or self._asking()
+        if (bubble or self.settings.mute_voice) and not self.body_present():
+            return None  # no one to show it to: it stays pending until a body connects
         self._reports, self._last_report_at = {}, now
         self.feelings.show(REPORT_FACES[next(k for k in REPORT_FACES if k in kinds)], REPORT_FACE_S)
         self._sync_expression()
-        if state == "gaming" or restricted or self._asking():
+        if bubble:
             self._report_bubble(events)
             return True
         return Utterance(self._report(events), True)

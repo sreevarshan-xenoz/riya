@@ -630,3 +630,55 @@ def test_no_bid_while_a_confirmation_waits():
     core.confirms.pending = None                                 # positive control: the same tick bids without it
     ticks(core, clock, 1)
     assert [m for m in of(emitted, Say) if m.kind == "bid"] and hooked == ["bid"]
+
+
+# ---- final review: I5, a bubble-only delivery waits for a body ----------------------------------------------------
+def bodyless_core(**settings):
+    clock, body = FakeClock(NOON), {"on": False}
+    core, emitted, src, local = make_core(clock, tz=timezone.utc, body_present=lambda: body["on"])
+    core._set_settings(settings)
+    ticks(core, clock, 1)
+    emitted.clear()
+    return core, emitted, src, local, clock, body
+
+
+@pytest.mark.parametrize("patch", [{"quiet_hours": "11:00-13:00"}, {"may_start_conversations": False},
+                                   {"mute_voice": True}])
+def test_a_bubble_reminder_with_no_body_waits_for_one(patch):
+    core, emitted, src, local, clock, body = bodyless_core(**patch)
+    add(core, 5)
+    assert ticks(core, clock, 30) == []
+    assert not reminder_says(emitted, "call mom") and len(core.hands.active()) == 1   # not fired
+    body["on"] = True
+    assert ticks(core, clock, 30) == []                          # still a bubble, never the mic
+    [say] = reminder_says(emitted, "call mom")
+    assert say.spoken is False and core.hands.active() == []
+    assert ticks(core, clock, 60) == [] and len(reminder_says(emitted, "call mom")) == 1
+
+
+def test_a_gaming_reminder_with_no_body_waits_for_one():
+    core, emitted, src, local, clock, body = bodyless_core()
+    src.is_fullscreen = True
+    ticks(core, clock, 1)
+    assert core.presence.state == "gaming"
+    add(core, 5)
+    ticks(core, clock, 30)
+    assert len(core.hands.active()) == 1 and not reminder_says(emitted, "call mom")
+    body["on"] = True
+    ticks(core, clock, 2)
+    assert core.hands.active() == [] and len(reminder_says(emitted, "call mom")) == 1
+
+
+def test_a_bubble_result_and_report_with_no_body_wait_for_one():
+    core, emitted, src, local, clock, body = bodyless_core(quiet_hours="11:00-13:00", **T2)
+    queue_result(core)
+    core.agent_inbox.put(stop_hook("all done"))
+    list(core.reply("hi"))                                       # talking: a finished report may go out restricted
+    emitted.clear()
+    ticks(core, clock, 30)
+    assert not of(emitted, Say) and not core._results.empty() and core._reports
+    body["on"] = True
+    ticks(core, clock, 60)
+    texts = [m.text for m in of(emitted, Say)]
+    assert "\"backup\" finished: 12 files copied" in texts and len([m for m in of(emitted, Say)]) == 2
+    assert core._results.empty() and core._reports == {}
