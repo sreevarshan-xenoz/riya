@@ -236,7 +236,21 @@ def do_print(token_path: Path, settings_path: Path, out=print) -> int:
     return 0
 
 
-def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None) -> int:
+FAIL_STEPS = ("settings", "write", "setx")  # what a failed --apply or --remove reports through `why`
+
+
+def _failed(why: list | None, step: str, reason: str) -> None:
+    """Record (step, reason) for an in-process caller: the step that really failed, with no full path in reason."""
+    if why is not None:
+        why.append((step, reason))
+
+
+def _settings_reason(e: SettingsError, settings_path: Path) -> str:
+    text = str(e).replace(str(settings_path), settings_path.name)
+    return text.removesuffix("; nothing was changed")
+
+
+def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None, why: list | None = None) -> int:
     try:
         data = read_settings(settings_path)
         existed = data is not None
@@ -245,6 +259,7 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
         payload = encode(data)
     except SettingsError as e:
         out(f"Error: {e}")
+        _failed(why, "settings", _settings_reason(e, settings_path))
         return 1
     try:
         token = load_or_create_token(token_path)
@@ -253,6 +268,7 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
         write_atomic(settings_path, payload)
     except OSError as e:
         out(f"Error: could not write the settings ({e}); the original file was not changed")
+        _failed(why, "write", f"couldn't write the settings ({e.strerror or type(e).__name__})")
         return 1
     out(f"Settings updated: {settings_path} ({added} event(s) added, {len(EVENTS) - added} already present)")
     for line in warnings(data):
@@ -264,6 +280,7 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
         ok = False
     if not ok:
         out(f"Warning: setx failed. Set the {ENV_VAR} user environment variable to the contents of {token_path} yourself.")
+        _failed(why, "setx", "setx failed")
         return 1
     out(f"Set the {ENV_VAR} user environment variable.")
     out("Restart your Claude Code sessions (and open a new terminal) for the variable to take effect.")
@@ -271,13 +288,14 @@ def do_apply(token_path: Path, settings_path: Path, runner, out=print, now=None)
     return 0
 
 
-def do_remove(settings_path: Path, out=print, now=None) -> int:
+def do_remove(settings_path: Path, out=print, now=None, why: list | None = None) -> int:
     try:
         data = read_settings(settings_path)
         removed = strip(data) if data is not None else 0
         payload = encode(data) if removed else b""
     except SettingsError as e:
         out(f"Error: {e}")
+        _failed(why, "settings", _settings_reason(e, settings_path))
         return 1
     if data is None:
         out(f"{settings_path} does not exist; nothing to remove.")
@@ -290,6 +308,7 @@ def do_remove(settings_path: Path, out=print, now=None) -> int:
         write_atomic(settings_path, payload)
     except OSError as e:
         out(f"Error: could not write the settings ({e}); the original file was not changed")
+        _failed(why, "write", f"couldn't write the settings ({e.strerror or type(e).__name__})")
         return 1
     out(f"Removed {removed} Riya handler(s) from {settings_path}.")
     out(f"The {ENV_VAR} environment variable was left alone. To remove it:\n"
@@ -297,7 +316,10 @@ def do_remove(settings_path: Path, out=print, now=None) -> int:
     return 0
 
 
-def main(argv=None, runner=subprocess.run, token_path=None, settings_path=None, out=print, now=None) -> int:
+def main(argv=None, runner=subprocess.run, token_path=None, settings_path=None, out=print, now=None,
+         why: list | None = None) -> int:
+    """The CLI. An in-process caller may pass `why`, a list that gets one (step, reason) entry when --apply or
+    --remove fails, step in FAIL_STEPS, so it can tell which step failed without parsing the printed lines."""
     p = argparse.ArgumentParser(prog="python -m riya.agents.install_hooks", description=__doc__.splitlines()[0])
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--print", dest="mode", action="store_const", const="print", help="show the snippet (default)")
@@ -309,9 +331,9 @@ def main(argv=None, runner=subprocess.run, token_path=None, settings_path=None, 
     settings = settings.resolve()  # a symlinked settings.json stays a symlink: backup and replace hit the target
     token = Path(token_path) if token_path else default_token_path()
     if args.mode == "apply":
-        return do_apply(token, settings, runner, out, now)
+        return do_apply(token, settings, runner, out, now, why)
     if args.mode == "remove":
-        return do_remove(settings, out, now)
+        return do_remove(settings, out, now, why)
     return do_print(token, settings, out)
 
 
