@@ -73,8 +73,9 @@ def _event(r: sqlite3.Row) -> Event:
 
 
 def _cell(r: sqlite3.Row) -> Cell:
+    """A row whose alpha, beta or updated_at is not a finite number (alpha and beta positive) reads as the prior."""
     a, b, t = r["alpha"], r["beta"], r["updated_at"]
-    if not (_num(a) and _num(b) and a > 0 and b > 0):
+    if not (_num(a) and _num(b) and _num(t) and a > 0 and b > 0):
         return Cell(PRIOR, PRIOR, t if _num(t) else 0.0)
     return Cell(a, b, t)
 
@@ -174,7 +175,7 @@ class LearnDB:
 
     # ---- decision twin ----
     def get_cell(self, kind: str, bucket: str) -> Cell | None:
-        """The stored cell; one whose alpha or beta is not a finite positive number reads as the prior."""
+        """The stored cell; one whose alpha, beta or updated_at is corrupt (see _cell) reads as the prior."""
         with self.lock:
             r = self.conn.execute("select alpha, beta, updated_at from twin where kind=? and bucket=?",
                                   (kind, bucket)).fetchone()

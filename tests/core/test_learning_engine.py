@@ -419,3 +419,24 @@ def test_reset_runs_under_the_core_lock():
     t.join(5)
     assert not t.is_alive() and core.learn.dials() == load_traits() and core.learn.notes() == []
     assert of(emitted, LearningMsg)
+
+
+@pytest.mark.parametrize("t", ["oops", float("inf")])
+def test_a_corrupt_twin_row_never_breaks_hello(t):
+    core, _, _, _ = make_core()
+    b = core._bucket()
+    core.learn.conn.execute("insert into twin(kind, bucket, alpha, beta, updated_at) values('greeting', ?, 9, 1, ?)",
+                            (b, t))
+    core.learn.conn.commit()
+    msg = next(m for m in core.hello_messages() if isinstance(m, LearningMsg))
+    assert [(x.kind, x.bucket, x.p, x.n) for x in msg.twin] == [("greeting", b, 0.5, 0.0)]
+    assert core.twin.p_engage("greeting", b) == 0.5 and core.twin.greet_style(b) == "normal"
+
+
+def test_hello_survives_a_learning_message_that_cannot_be_built(monkeypatch):
+    core, _, _, _ = make_core()
+    monkeypatch.setattr(core.learn, "cells", lambda: 1 / 0)
+    msgs = core.hello_messages()
+    msg = next(m for m in msgs if isinstance(m, LearningMsg))
+    assert [m.type for m in msgs] == ["hello", "settings", "state", "agents", "eyes", "learning", "reminders", "actions"]
+    assert {d: i.value for d, i in msg.dials.items()} == core.learn.dials() and msg.twin == []

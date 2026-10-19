@@ -690,6 +690,19 @@ class RiyaCore:
                   for k, b, c in learn.cells()],
             enabled=self.settings.learning_enabled)
 
+    def _hello_learning(self) -> LearningMsg:
+        """The learning message for hello, which must never fail: her live dials at least, else her defaults."""
+        try:
+            return self._learning_msg()
+        except Exception:
+            log.exception("couldn't build what she learned for hello")
+        try:
+            dials = self.learn.dials()
+        except Exception:
+            dials = self.learn.defaults
+        return LearningMsg(dials={d: DialInfo(value=v, lo=BANDS[d][0], hi=BANDS[d][1]) for d, v in dials.items()},
+                           history=[], notes=[], twin=[], enabled=self.settings.learning_enabled)
+
     def _emit_learning(self) -> None:
         """learning, for the settings page; never raises."""
         try:
@@ -1892,7 +1905,7 @@ class RiyaCore:
         pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else []), self._learning_msg(), self._reminders_msg(), self._actions_msg(),
+                *([self._look] if self._look else []), self._hello_learning(), self._reminders_msg(), self._actions_msg(),
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------

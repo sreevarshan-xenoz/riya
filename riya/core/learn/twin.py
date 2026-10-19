@@ -27,10 +27,15 @@ def bucket(now: float, tz, presence: str, work_stretch_s: float) -> str:
     return f"{band}/{presence}/{'long' if work_stretch_s > LONG_STRETCH_S else 'short'}"
 
 
+def _finite(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def decayed(cell: Cell | None, now: float) -> Cell:
     """The cell as of now: evidence above the prior fades with the time since updated_at."""
-    if cell is None or not (math.isfinite(cell.alpha) and math.isfinite(cell.beta)) or cell.alpha + cell.beta <= 0:
-        return Cell(PRIOR, PRIOR, now)  # nothing yet, or a corrupt cell: read as the prior
+    if (cell is None or not (_finite(cell.alpha) and _finite(cell.beta) and _finite(cell.updated_at))
+            or cell.alpha + cell.beta <= 0):
+        return Cell(PRIOR, PRIOR, now)  # nothing yet, or a corrupt cell (alpha, beta or time): read as the prior
     f = 0.5 ** (max(0.0, now - cell.updated_at) / HALF_LIFE_S)
     return Cell(PRIOR + (cell.alpha - PRIOR) * f, PRIOR + (cell.beta - PRIOR) * f, now)
 
