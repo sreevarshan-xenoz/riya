@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from riya.core.clock import FakeClock
-from riya.core.learn.twin import HALF_LIFE_S, Cell, MemoryCells, Twin, bucket
+from riya.core.learn.twin import HALF_LIFE_S, Cell, MemoryCells, Twin, bucket, chance, evidence, mean
 from tests.fakes import FixedRng
 
 B = "evening/break/long"
@@ -40,6 +40,8 @@ def test_decay_on_read_and_update():
     cells.put_cell("bid", B, Cell(6, 2, t0))
     clock.advance(HALF_LIFE_S)
     assert t.p_engage("bid", B) == pytest.approx(4 / 6)
+    assert evidence(cells.get_cell("bid", B), t0) == 4.0
+    assert evidence(cells.get_cell("bid", B), clock.now()) == pytest.approx(2.0)
     assert cells.get_cell("bid", B) == Cell(6, 2, t0)  # reads never write
     t.record("bid", B, True)
     assert cells.get_cell("bid", B) == Cell(5, 2, clock.now())
@@ -61,6 +63,19 @@ def test_floor_and_chance():
     assert t.chance("bid", B) == 1.0
     cells.put_cell("bid", B, Cell(9, 2, clock.now()))
     assert t.chance("bid", B) == 1.0
+
+
+def test_corrupt_cells_read_as_the_prior():
+    t0 = FakeClock().now()
+    for bad in (Cell(-2, 2, t0), Cell(0, 0, t0), Cell(float("nan"), 2, t0), Cell(2, float("inf"), t0)):
+        assert mean(bad, t0) == 0.5
+        assert chance(bad, t0) == 1.0
+        assert evidence(bad, t0) == 0.0
+    cells = MemoryCells()
+    cells.put_cell("bid", B, Cell(-2, 2, t0))
+    t = Twin(cells, FakeClock())
+    assert t.p_engage("bid", B) == 0.5
+    assert t.greet_style(B) == "normal"
 
 
 def test_greeting_style():
