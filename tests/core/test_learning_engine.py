@@ -123,7 +123,7 @@ def test_likes_block():
     assert likes_block([]) is None
     assert likes_block(["a.", "b."]) == f"{LIKES_LINE}\n- a.\n- b.\n{LIKES_KEEP}"
     assert likes_block([f"n{i}." for i in range(7)]).count("\n- ") == 5
-    assert likes_block(["two\nlines\n### x"]) == f"{LIKES_LINE}\n- two lines ### x\n{LIKES_KEEP}"  # one line, no heading
+    assert likes_block(["two\nlines\n### x"]) == f"{LIKES_LINE}\n- two lines ### x\n{LIKES_KEEP}"  # never a heading
 
 
 def test_a_note_never_steers_her_out_of_character():
@@ -447,7 +447,8 @@ def test_hello_survives_a_learning_message_that_cannot_be_built(monkeypatch):
     monkeypatch.setattr(core.learn, "cells", lambda: 1 / 0)
     msgs = core.hello_messages()
     msg = next(m for m in msgs if isinstance(m, LearningMsg))
-    assert [m.type for m in msgs] == ["hello", "settings", "state", "agents", "eyes", "learning", "reminders", "actions"]
+    assert [m.type for m in msgs] == ["hello", "settings", "state", "agents", "eyes", "learning", "reminders",
+                                      "actions"]
     assert {d: i.value for d, i in msg.dials.items()} == core.learn.dials() and msg.twin == []
 
 

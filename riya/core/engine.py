@@ -739,8 +739,8 @@ class RiyaCore:
             log.exception("couldn't send what she learned")
 
     def _reset_learning(self) -> None:
-        """Reset to her defaults: the dials (logged as "reset"), the notes, the whole twin and the drift clock, under the
-        core lock so no reply's feedback lands halfway through it."""
+        """Reset to her defaults: the dials (logged as "reset"), the notes, the whole twin and the drift clock, under
+        the core lock so no reply's feedback lands halfway through it."""
         with self._lock:
             now = self.clock.now()
             self.learn.reset_dials(now)
@@ -1934,7 +1934,8 @@ class RiyaCore:
         pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else []), self._hello_learning(), self._reminders_msg(), self._actions_msg(),
+                *([self._look] if self._look else []), self._hello_learning(), self._reminders_msg(),
+                self._actions_msg(),
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
