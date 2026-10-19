@@ -74,7 +74,7 @@ function fixRequest(row, settings) {
   let label = FIX_LABELS[fix];
   let args = {};
   if (fix === "voice_sample") {
-    args = { voice: isObject(settings) && typeof settings.voice === "string" ? settings.voice : null };
+    args = isObject(settings) && typeof settings.voice === "string" && settings.voice ? { voice: settings.voice } : {}; // {} samples the current voice
   } else if (fix === "autostart") {
     const turnOn = row.status !== "ok";
     label = turnOn ? "Turn on" : "Turn off";
@@ -132,9 +132,10 @@ class ConfirmGate {
     return true;
   }
 
-  /** The action finished (or was refused) without a confirm: forget the request. */
-  release(action) {
-    this.pending.delete(action);
+  /** A `setup_result` for `action` arrived. Only a failure can be the answer to a request that never got a confirm (the
+   *  core refused to ask); a success is another window's (results go to every window), so it leaves our request alone. */
+  release(action, ok) {
+    if (ok === false) this.pending.delete(action);
   }
 
   answer(nonce, yes) {
@@ -143,6 +144,66 @@ class ConfirmGate {
 
   clear() {
     this.pending.clear();
+  }
+}
+
+/** The confirm modal's state: which confirm is on screen, whether it may still be answered, and when it is closed
+ *  without an answer. Every open gets its own token; a close or answer for any other token does nothing, so a replaced
+ *  dialog's late close event can never answer the newer nonce. The caller shows the dialog and times out `expire`. */
+class ConfirmFlow {
+  constructor() {
+    this.gate = new ConfirmGate();
+    this.current = null; // { token, action, nonce } while a modal may be answered
+    this.tokens = 0;
+  }
+
+  request(action) {
+    this.gate.request(action);
+  }
+
+  /** A `setup_confirm`: a token for the modal to open (replacing any open one, which can no longer answer), or null when
+   *  this window didn't ask for it. */
+  open(msg) {
+    if (!this.gate.accepts(msg)) return null;
+    this.current = { token: ++this.tokens, action: msg.action, nonce: msg.nonce };
+    return this.current.token;
+  }
+
+  isOpen(token) {
+    return this.current !== null && this.current.token === token;
+  }
+
+  /** The user's Yes or No for the modal opened as `token`: the `setup_action` to send, once; null if that modal was
+   *  replaced, expired, closed by the core or already answered. */
+  answer(token, yes) {
+    if (!this.isOpen(token)) return null;
+    const { nonce } = this.current;
+    this.current = null;
+    return this.gate.answer(nonce, yes);
+  }
+
+  /** The modal for `token` ran out of time: true when it was still open (the caller closes the dialog, sending nothing). */
+  expire(token) {
+    if (!this.isOpen(token)) return false;
+    this.current = null;
+    return true;
+  }
+
+  /** A `setup_result`: true when the open modal was for that action (the core has resolved it, so close without sending). */
+  result(msg) {
+    if (!isObject(msg) || typeof msg.action !== "string") return false;
+    this.gate.release(msg.action, msg.ok);
+    if (this.current === null || this.current.action !== msg.action) return false;
+    this.current = null;
+    return true;
+  }
+
+  /** The core went away: nothing is pending and nothing can be answered. True when a modal was open. */
+  disconnect() {
+    const wasOpen = this.current !== null;
+    this.current = null;
+    this.gate.clear();
+    return wasOpen;
   }
 }
 
@@ -163,7 +224,7 @@ const shouldRefresh = ({ hidden, connected }) => !hidden && Boolean(connected);
 
 const api = {
   REFRESH_MS, MAX_KEY, CONFIRM_EXPIRY_MS, CONFIRM_GATED, ROW_LABELS, FIX_LABELS, CONFIRM_TITLES, STATUS_TEXT, healthRows,
-  fixRequest, keyRequest, submitKey, saveKeyEnabled, clearKeyEnabled, keySourceText, ConfirmGate, voiceItems, resultText,
+  fixRequest, keyRequest, submitKey, saveKeyEnabled, clearKeyEnabled, keySourceText, ConfirmGate, ConfirmFlow, voiceItems, resultText,
   shouldRefresh,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = api;

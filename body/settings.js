@@ -12,7 +12,7 @@
   const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
   const {
     REFRESH_MS, CONFIRM_EXPIRY_MS, CONFIRM_TITLES, STATUS_TEXT, healthRows, fixRequest, submitKey, saveKeyEnabled, clearKeyEnabled,
-    keySourceText, ConfirmGate, voiceItems, resultText, shouldRefresh,
+    keySourceText, ConfirmFlow, voiceItems, resultText, shouldRefresh,
   } = RiyaHealth;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
@@ -346,10 +346,24 @@
 
   // ---- confirm dialog ---------------------------------------------------------------------------------------------
 
-  /** Resolves { ok, checked }; `checkLabel` adds an unchecked checkbox; `cancelLabel` (default "Cancel") names the No. */
+  let settlePrevious = null; // resolves the dialog still open when another one is asked for, as a No
+
+  /** Resolves { ok, checked }; `checkLabel` adds an unchecked checkbox; `cancelLabel` (default "Cancel") names the No.
+   *  Asking while one is open closes that one (its promise resolves as a No). */
   function confirmDialog({ title, body, okLabel, checkLabel, cancelLabel }) {
     const dlg = $("confirm");
+    if (settlePrevious) settlePrevious();
+    if (dlg.open) dlg.close("cancel");
     return new Promise((resolve) => {
+      let settled = false;
+      const settle = (ok) => {
+        if (settled) return;
+        settled = true;
+        if (settlePrevious === settleThis) settlePrevious = null;
+        resolve({ ok, checked: $("confirm-check").checked });
+      };
+      const settleThis = () => settle(false);
+      settlePrevious = settleThis;
       $("confirm-title").textContent = title;
       $("confirm-body").textContent = body;
       $("confirm-ok").textContent = okLabel;
@@ -359,7 +373,8 @@
       $("confirm-check-row").hidden = !checkLabel;
       dlg.returnValue = "";
       $("confirm-cancel").onclick = () => dlg.close("cancel");
-      dlg.onclose = () => resolve({ ok: dlg.returnValue === "ok", checked: $("confirm-check").checked });
+      // a replaced dialog's close event can arrive after this one opened: it is not this dialog closing
+      dlg.onclose = () => { if (!dlg.open) settle(dlg.returnValue === "ok"); };
       dlg.showModal();
       $("confirm-cancel").focus();
     });
@@ -367,32 +382,28 @@
 
   // ---- health: the checklist, the key editor and the confirm round trip -----------------------------------------------
 
-  const gate = new ConfirmGate(); // only a confirm for an action asked for in this window opens the modal
-  let openConfirm = null; // { action, closedByCore, timer } while the modal is up
+  const flow = new ConfirmFlow(); // the confirm state machine (health-logic.js): only a confirm asked for here opens the modal
+  let confirmTimer = null;
 
   /** Close the modal without answering (the core resolved the action, it expired, or the core went away). */
-  function closeConfirm(action) {
-    if (!openConfirm || (action !== undefined && openConfirm.action !== action)) return;
-    const open = openConfirm;
-    openConfirm = null;
-    open.closedByCore = true;
-    clearTimeout(open.timer);
+  function closeModal() {
+    clearTimeout(confirmTimer);
+    confirmTimer = null;
     if ($("confirm").open) $("confirm").close("cancel");
   }
 
-  /** Show the core's exact text and answer it once: Yes or No (closing it any other way is a No). */
-  async function askConfirm(msg) {
-    closeConfirm();
-    const open = { action: msg.action, closedByCore: false, timer: null };
-    openConfirm = open;
-    open.timer = setTimeout(() => closeConfirm(msg.action), CONFIRM_EXPIRY_MS);
+  /** Show the core's exact text and answer it once, if the flow still has this token open: Yes or No (closing it any
+   *  other way is a No). A replaced, expired or core-closed modal answers nothing. */
+  async function askConfirm(msg, token) {
+    clearTimeout(confirmTimer);
+    confirmTimer = setTimeout(() => { if (flow.expire(token)) closeModal(); }, CONFIRM_EXPIRY_MS);
     const r = await confirmDialog({
       title: CONFIRM_TITLES[msg.action], body: msg.text, okLabel: "Yes", cancelLabel: "No",
     });
-    if (open.closedByCore) return;
-    openConfirm = null;
-    clearTimeout(open.timer);
-    send(gate.answer(msg.nonce, r.ok));
+    const answer = flow.answer(token, r.ok);
+    if (!answer) return;
+    clearTimeout(confirmTimer);
+    send(answer);
   }
 
   function healthRow(row) {
@@ -405,7 +416,7 @@
     if (fix) {
       const b = button(fix.label, () => {
         b.disabled = true; // the next checklist (after the result) brings it back
-        if (fix.confirm) gate.request(fix.message.action);
+        if (fix.confirm) flow.request(fix.message.action);
         send(fix.message);
       });
       li.append(b);
@@ -696,8 +707,7 @@
       renderActions(null);
       renderLearning(null);
       renderHealth(null);
-      gate.clear();
-      closeConfirm();
+      if (flow.disconnect()) closeModal();
     }
     updateKeyButtons();
     if (connected) {
@@ -728,14 +738,12 @@
       voiceList = voiceItems(msg).items;
       showVoice(currentVoice !== null ? currentVoice : voiceItems(msg).current);
     } else if (msg.type === "setup_confirm") {
-      if (gate.accepts(msg)) askConfirm(msg);
+      const token = flow.open(msg);
+      if (token !== null) askConfirm(msg, token);
     } else if (msg.type === "setup_result") {
-      if (typeof msg.action === "string") {
-        gate.release(msg.action);
-        closeConfirm(msg.action);
-      }
+      if (flow.result(msg)) closeModal();
       $("setup-result").textContent = resultText(msg);
-      refreshHealth();
+      if (shouldRefresh({ hidden: document.hidden, connected: coreConnected })) refreshHealth();
     } else if (msg.type === "memories") {
       router.settle();
       renderMemories(msg);

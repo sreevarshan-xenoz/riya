@@ -44,7 +44,9 @@ test("fixRequest builds the setup_request, with confirm for the gated actions on
   assert.deepEqual(H.fixRequest(row("voice", "ok", "voice_sample"), { voice: "eve" }), {
     label: "Play sample", confirm: false, message: { type: "setup_request", action: "voice_sample", args: { voice: "eve" } },
   });
-  assert.equal(H.fixRequest(row("voice", "ok", "voice_sample"), {}).message.args.voice, null);
+  for (const none of [{}, undefined, null, { voice: "" }, { voice: 3 }]) {
+    assert.deepEqual(H.fixRequest(row("voice", "ok", "voice_sample"), none).message.args, {}, "no known voice: no voice arg, not null");
+  }
   const on = H.fixRequest(row("autostart", "off", "autostart"), {});
   assert.equal(on.label, "Turn on");
   assert.deepEqual(on.message.args, { on: true });
@@ -168,4 +170,68 @@ test("every message the Health section builds validates against body_to_core", (
     new H.ConfirmGate().answer("n0nce-abc", false),
   ];
   for (const m of msgs) assert.ok(validateBody(m), `${m.type}: ${JSON.stringify(validateBody.errors)}`);
+});
+
+const confirmMsg = (over) => ({ type: "setup_confirm", nonce: "n1", action: "hooks_connect", text: "Sure?", ...over });
+
+test("ConfirmFlow: open, then Yes or No answers once with the nonce", () => {
+  for (const yes of [true, false]) {
+    const flow = new H.ConfirmFlow();
+    assert.equal(flow.open(confirmMsg()), null, "not asked for here");
+    flow.request("hooks_connect");
+    const token = flow.open(confirmMsg());
+    assert.ok(token !== null && flow.isOpen(token));
+    assert.deepEqual(flow.answer(token, yes), { type: "setup_action", nonce: "n1", yes });
+    assert.equal(flow.answer(token, yes), null, "once");
+    assert.equal(flow.isOpen(token), false);
+  }
+});
+
+test("ConfirmFlow: a newer confirm supersedes the open one; the old close sends nothing and the new one stays live", () => {
+  const flow = new H.ConfirmFlow();
+  flow.request("hooks_connect");
+  flow.request("online_test");
+  const first = flow.open(confirmMsg({ nonce: "old", action: "hooks_connect" }));
+  const second = flow.open(confirmMsg({ nonce: "new", action: "online_test" }));
+  assert.notEqual(first, second);
+  assert.equal(flow.answer(first, false), null, "the replaced dialog's late close answers nothing");
+  assert.equal(flow.isOpen(second), true, "and the new modal is still live");
+  assert.deepEqual(flow.answer(second, true), { type: "setup_action", nonce: "new", yes: true });
+});
+
+test("ConfirmFlow: expiry, a matching result and a disconnect close the modal without an answer", () => {
+  const open = (flow, action = "hooks_connect") => {
+    flow.request(action);
+    return flow.open(confirmMsg({ action }));
+  };
+  const flow = new H.ConfirmFlow();
+  let token = open(flow);
+  assert.equal(flow.expire(token), true);
+  assert.equal(flow.answer(token, true), null, "nothing is sent after expiry");
+  assert.equal(flow.expire(token), false);
+
+  token = open(flow);
+  assert.equal(flow.expire(token + 1), false, "another token's timer does nothing");
+  assert.equal(flow.isOpen(token), true);
+  assert.equal(flow.result({ action: "voice_sample", ok: true }), false, "another action's result leaves it open");
+  assert.equal(flow.result({ action: "hooks_connect", ok: false }), true);
+  assert.equal(flow.answer(token, true), null, "nothing is sent after the core's result");
+
+  token = open(flow);
+  assert.equal(flow.disconnect(), true);
+  assert.equal(flow.answer(token, true), null, "nothing is sent after a disconnect");
+  assert.equal(flow.disconnect(), false);
+  assert.equal(flow.open(confirmMsg()), null, "a disconnect also forgets what was asked for");
+});
+
+test("a result releases only a request that can be ours: a failure, not another window's success", () => {
+  const flow = new H.ConfirmFlow();
+  flow.request("hooks_connect");
+  flow.result({ action: "hooks_connect", ok: true }); // the welcome's connect finished
+  assert.ok(flow.open(confirmMsg()) !== null, "our request survives it");
+
+  flow.request("hooks_connect");
+  flow.result({ action: "hooks_connect", ok: false, detail: "nothing to confirm" }); // the core refused to ask
+  assert.equal(flow.open(confirmMsg()), null, "a failure drops it");
+  assert.equal(flow.result(null), false);
 });

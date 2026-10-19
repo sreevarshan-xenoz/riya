@@ -269,8 +269,10 @@ test("health is never replayed and is forgotten on disconnect; setup messages ar
   assert.ok(FORGET_ON_DISCONNECT.includes("health"));
   const cache = new Map();
   for (const msg of [{ type: "settings" }, { type: "health", items: [] }]) rememberForReplay(cache, msg);
+  assert.ok(cache.has("settings") && !cache.has("health"), "health is never cached for replay");
+  cache.set("health", { type: "health", items: [] }); // even if one got in, a disconnect drops it
   forgetOnDisconnect(cache);
-  assert.ok(!cache.has("health"));
+  assert.deepEqual([...cache.keys()], ["settings"]);
   for (const type of ["setup_request", "setup_action", "onboarding_done"]) {
     assert.ok(NOW_ONLY.includes(type), type);
     assert.equal(shouldSendToCore({ type }, false), false, type);

@@ -131,7 +131,8 @@ test("agent text only reaches the DOM through textContent: no HTML sinks in the 
   assert.ok(before(read("settings.html"), "src/health-logic.js", "settings.js"), "settings.js reads RiyaHealth at load");
   assert.match(read("settings.html"), /id="online-key"[^>]*type="password"|type="password"[^>]*id="online-key"/);
   assert.match(read("settings.js"), /submitKey\(/);
-  assert.match(read("settings.js"), /gate\.accepts\(/);
+  assert.match(read("settings.js"), /flow\.open\(/);
+  assert.match(read("settings.js"), /flow\.answer\(/);
 });
 
 test("the token path and setup command are shown exactly, backslashes intact", () => {
