@@ -2,26 +2,31 @@
 the expect rules, the probe hold-out and the CLI. Synthetic only: nothing reads the user's real data."""
 import json
 import random
+import re
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
-from riya.core import games
+from riya.core import games, prompt
 from riya.core.clock import FakeClock
+from riya.core.embed import HashEmbedder
 from riya.core.engine import REPORT_FACE_S, REPORT_FACES
 from riya.core.feelings import FeelingState
 from riya.core.initiative import Action
 from riya.core.learn.dials import clamp
 from riya.core.learn.feedback import detect_feedback
+from riya.core.memory import Memory, about_me
 from riya.core.prompt import hands_situation
-from riya.core.shaping import emoji_limit
+from riya.core.router import needs_thinking
+from riya.core.shaping import CAPS, cap_for, emoji_limit, turn_kind
 from riya.core.store import open_db
 from riya.train import build_sft
-from riya.train.build_sft import DEFAULT_OUT, build, holdout_violations, main, messages_for, request_for
+from riya.train.build_sft import (DEFAULT_OUT, build, holdout_violations, main, messages_for, prompt_fingerprint,
+                                  request_for)
 from riya.train.fmt import EXPECT_KEYS, REQUEST_KEYS, read_jsonl, validate_request, write_jsonl
-from riya.train.scenarios import (KINDS, events_of, normalize, probe_facts, probe_texts, scenario, thread_of,
+from riya.train.scenarios import (KINDS, events_of, fact_attr, normalize, probe_facts, probe_texts, scenario, thread_of,
                                   tool_result)
 from tests.fakes import make_core
 
@@ -70,7 +75,10 @@ def engine_messages(s) -> list[dict]:
 
 @pytest.mark.parametrize("kind", GOLDEN_KINDS)
 def test_request_equals_the_engines_prompt(kind):
-    """Review Focus 2: byte for byte, every role and every character, what RiyaCore sends for the same inputs."""
+    """Review Focus 2: byte for byte, every role and every character, what RiyaCore sends for the same inputs.
+    Both sides render through the same build_messages, so this pins the composition (which inputs, situations, caps
+    and blocks go in), not the prompt's wording: a text edit in prompt.py passes here and flows into the data. A
+    stale requests.jsonl is caught by its "fp" (prompt_fingerprint), and the wording by the prompt tests."""
     for seed in GOLDEN_SEEDS:
         for i in GOLDEN_INDEXES:
             s = scenario(kind, i, seed)
@@ -112,6 +120,18 @@ def _dials_after(s) -> dict[str, float]:
     return dials
 
 
+def _engine_cap(s) -> int:
+    """The sentence cap RiyaCore enforces on the reply, from the shaping rules and the post-nudge verbosity."""
+    v = _dials_after(s)["verbosity"]
+    fixed = {"remember": 1, "bid": 1, "game": 1, "tool": CAPS["tool"], "report": CAPS["report"]}
+    if s.kind in fixed:
+        return fixed[s.kind]
+    if s.kind == "greeting":
+        return cap_for("greeting", v)
+    t = s.user_text
+    return cap_for(turn_kind(t, about_me=about_me(t), needs_thinking=needs_thinking(t)), v)
+
+
 def test_expect_rules():
     rows = built(0, 600)
     assert {r["kind"] for r in rows} == set(KINDS)
@@ -130,14 +150,20 @@ def test_expect_rules():
             assert sorted(e["must_mention"]) == sorted(s.facts)
         else:
             assert e["must_mention"] == [], r["id"]
+        assert e["max_sentences"] == _engine_cap(s), r["id"]
         if k in ("remember", "bid", "game"):
             assert e["max_sentences"] == 1
         if k == "explain":
             assert e["max_sentences"] == 8
         if k in ("tool", "report"):
             assert e["max_sentences"] == {"tool": 2, "report": 1}[k]
+        if k == "unknown":  # nothing in the block names what they ask about
+            assert s.asks not in {fact_attr(f) for f in r["facts"]}, r["id"]
         if k in ("greeting", "bid") and s.thread:  # CONFLICT 5: the follow-up is part of the memory block
             assert s.thread in r["facts"], r["id"]
+    # the verbosity dial scales the caps: every small, about-me and greeting cap shows up
+    for k, caps in (("small", {2, 3, 4}), ("about_me", {5, 6, 7}), ("greeting", {2, 3, 4})):
+        assert {r["expect"]["max_sentences"] for r in rows if r["kind"] == k} == caps, k
     # the facts are the memory block's: every one is listed in the system message
     for r in rows:
         assert all(f in r["messages"][0]["content"] for f in r["facts"]), r["id"]
@@ -151,6 +177,45 @@ def test_feedback_rows_reply_with_the_nudged_dials():
              and clamp("emoji", x.dials["emoji"] + fb.delta) < 0.15)
     assert emoji_limit(s.dials["emoji"]) == 1
     assert request_for(s)["expect"]["max_emoji"] == 0
+
+
+def test_feedback_rows_cap_with_the_nudged_verbosity():
+    """A verbosity request moves the cap of the very reply it gets, as in the engine."""
+    def moved(x):
+        fb = detect_feedback(x.user_text)
+        old = x.dials["verbosity"]
+        return fb.dial == "verbosity" and cap_for("small", clamp("verbosity", old + fb.delta)) != cap_for("small", old)
+    s = next(x for x in (scenario("feedback", i, 0) for i in range(400)) if moved(x))
+    fb = detect_feedback(s.user_text)
+    assert request_for(s)["expect"]["max_sentences"] == cap_for("small", clamp("verbosity", s.dials["verbosity"]
+                                                                                 + fb.delta))
+
+
+def test_prompt_fingerprint_is_stamped_and_follows_the_prompt(monkeypatch):
+    """Every row carries the fingerprint it was built under; a one-word change to any rendered piece (a rules line,
+    the honesty line, a situation, the persona, the examples, the style line) changes it, so stale rows show."""
+    fp = prompt_fingerprint()
+    assert re.fullmatch(r"[0-9a-f]{64}", fp) and prompt_fingerprint() == fp
+    assert {r["fp"] for r in built(0, 600)} == {fp}
+    assert request_for(scenario("small", 0, 0))["fp"] == fp
+    real_persona, real_examples = build_sft.persona_prompt, build_sft.style_examples
+    changes = [
+        (prompt, "MEMORY_RULE", prompt.MEMORY_RULE.replace("true", "real")),
+        (prompt, "GREETING_RULE", prompt.GREETING_RULE.replace("history", "past")),
+        (prompt, "AI_RULE", prompt.AI_RULE.replace("asked", "questioned")),
+        (prompt, "REPLY_RULES", {**prompt.REPLY_RULES, "explain": prompt.REPLY_RULES["explain"] + " Really."}),
+        (prompt, "HONESTY_LINE", prompt.HONESTY_LINE.replace("Never", "Do not")),
+        (prompt, "STYLE_KEEP", prompt.STYLE_KEEP.replace("sweet", "kind")),
+        (prompt, "LIKES_KEEP", prompt.LIKES_KEEP.replace("cruel", "mean")),
+        (build_sft, "IDENTITY_SITUATION", build_sft.IDENTITY_SITUATION.replace("clearly", "plainly")),
+        (build_sft, "persona_prompt", lambda kind: real_persona(kind) + " Hm."),
+        (build_sft, "style_examples", lambda: real_examples() + " Hm."),
+    ]
+    for target, name, value in changes:
+        monkeypatch.setattr(target, name, value)
+        assert prompt_fingerprint() != fp, name
+        monkeypatch.undo()
+    assert prompt_fingerprint() == fp
 
 
 def test_validate_request_rejects_bad_rows():
@@ -171,6 +236,10 @@ def test_validate_request_rejects_bad_rows():
         {**good, "expect": {**good["expect"], "must_say_ai": 1}},
         {**good, "expect": {**good["expect"], "must_mention": "x"}},
         {**good, "expect": {k: v for k, v in good["expect"].items() if k != "max_emoji"}},
+        {k: v for k, v in good.items() if k != "fp"},
+        {**good, "fp": "x"},
+        {**good, "fp": "A" * 64},
+        {**good, "fp": None},
     ]
     for row in bad:
         with pytest.raises(ValueError):
@@ -232,8 +301,6 @@ def test_no_real_user_data_is_read(tmp_path, monkeypatch):
     Path("riya_memory.json").write_text(json.dumps({"summary": f"The user's code is {CANARY}"}), encoding="utf-8")
     real_db = tmp_path / "localappdata" / "Riya" / "riya.db"
     db = open_db(real_db)
-    from riya.core.embed import HashEmbedder
-    from riya.core.memory import Memory
     Memory(db, HashEmbedder(), FakeClock()).add_fact(f"The user's code is {CANARY}", "user_said")
     db.close()
 
