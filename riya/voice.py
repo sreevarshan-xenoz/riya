@@ -49,10 +49,15 @@ class PocketTTS:
         for style, wav in (style_clips or {}).items():  # e.g. {"bright": "riya_bright.wav", "soft": "riya_soft.wav"}
             self.states[style] = self.model.get_state_for_audio_prompt(wav)
 
-    def set_voice(self, name: str) -> None:
-        """Speak in another voice from now on; a voice that fails to load raises and leaves the current one."""
+    def load_voice(self, name: str) -> None:
+        """Load a voice's state once (slow: it may download it) without switching to it; raises when it can't load."""
         if name not in self._voice_states:
             self._voice_states[name] = self.model.get_state_for_audio_prompt(name)
+
+    def set_voice(self, name: str) -> None:
+        """Speak in another voice from now on (instant once load_voice ran); a voice that fails to load raises and
+        leaves the current one."""
+        self.load_voice(name)
         self.states["warm"] = self._voice_states[name]
         self.voice = name
 
@@ -280,6 +285,19 @@ class VoiceLoop:
             raise RuntimeError("Her voice is muted in Settings.")
         self.say(iter([text]), voice=voice)
 
+    def _preload(self, name: str | None) -> bool:
+        """Load name before taking the say lock, so a slow first load never holds up her speech; False when it failed
+        (logged), so the switch is skipped and the old voice kept. A TTS without load_voice is left to set_voice."""
+        load = getattr(self.tts, "load_voice", None)
+        if name is None or not callable(load) or getattr(self.tts, "voice", None) == name:
+            return True
+        try:
+            load(name)
+        except Exception:
+            log.exception("couldn't load her voice %s; keeping %s", name, getattr(self.tts, "voice", None))
+            return False
+        return True
+
     def _use_voice(self, name: str) -> None:
         """Switch the TTS to name when it can switch and isn't already there; a failure keeps the old voice."""
         if not callable(getattr(self.tts, "set_voice", None)) or getattr(self.tts, "voice", None) == name:
@@ -294,13 +312,19 @@ class VoiceLoop:
         closes the reply, so the core records only what was said. With mute_voice the sentences are only drained.
         The voice speaks tts_text(sentence): no emoji, no *stage directions*; a sentence with nothing left is skipped.
         It speaks in `voice`, or else settings.voice, so a new choice applies from her next line.
-        Never raises: an audio failure is logged, the rest of the reply is drained, and her state is reset."""
+        Never raises: an audio failure is logged, the rest of the reply is drained, and her state is reset.
+        A voice not loaded yet is loaded first, outside the say lock; only the swap happens under it."""
+        before = self.core.settings
+        want = None if before.mute_voice else voice or before.voice
+        loaded = self._preload(want)
         with self._say_lock:
             settings = self.core.settings
             out = pacer = None
             self.interrupt.clear()
             if not settings.mute_voice:
-                self._use_voice(voice or settings.voice)
+                name = voice or settings.voice
+                if loaded or name != want:  # a failed preload (logged) keeps the old voice
+                    self._use_voice(name)
             try:
                 for sentence in sentences:
                     if settings.mute_voice or not (words := tts_text(sentence)):  # nothing left to say aloud

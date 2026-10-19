@@ -367,3 +367,66 @@ def test_probe_mic_reports_a_failure_on_one_line(monkeypatch):
     ok, detail = probe_mic()
     assert not ok and detail.startswith("The mic didn't open: Error opening InputStream: Invalid device")
     assert len(detail) <= 120 and "\n" not in detail
+
+
+class LoadingTTS(FakeTTS):
+    """A TTS that loads a voice slowly (Pocket TTS may download it): load_voice blocks until the test lets it go."""
+
+    def __init__(self, slow=(), **kw):
+        super().__init__(**kw)
+        self.slow, self.loaded, self.release = slow, {"alba"}, __import__("threading").Event()
+
+    def load_voice(self, name):
+        if name in self.fail_voices:
+            raise ValueError(f"no voice {name}")
+        if name in self.slow:
+            assert self.release.wait(5)
+        self.loaded.add(name)
+
+    def set_voice(self, name):
+        assert name in self.loaded, "set_voice must not load (it runs under the say lock)"
+        super().set_voice(name)
+
+
+def test_loading_a_new_voice_never_holds_up_her_speech():
+    import threading
+    loop, core, _, outputs, _, _ = make_loop(tts=LoadingTTS(slow=("eve",)))
+    sampler = threading.Thread(target=loop.sample, args=("eve", "Sample."), daemon=True)
+    sampler.start()
+    time.sleep(0.1)  # the sample is now loading eve
+    done = threading.Event()
+    talker = threading.Thread(target=lambda: (loop.say(iter(["Meanwhile."])), done.set()), daemon=True)
+    talker.start()
+    assert done.wait(2), "her line waited for a voice to load"
+    assert loop.tts.calls[0][0] == "Meanwhile." and loop.tts.spoken_in == ["alba"]
+    loop.tts.release.set()
+    sampler.join(5)
+    assert not sampler.is_alive() and loop.tts.spoken_in == ["alba", "eve"] and loop.tts.switches == ["eve"]
+
+
+def test_a_voice_that_fails_to_preload_keeps_the_old_one(caplog):
+    loop, core, _, outputs, _, _ = make_loop(tts=LoadingTTS(fail_voices=("broken",)))
+    core.handle(SetSettings(patch={"voice": "broken"}))
+    loop.say(core.reply("hi", "typed"))
+    assert loop.tts.switches == [] and loop.tts.spoken_in == ["alba", "alba"] and "couldn't load her voice" in caplog.text
+
+
+def test_pocket_tts_loads_outside_the_switch():
+    from riya.voice import PocketTTS
+
+    class Model:
+        def __init__(self):
+            self.prompts = []
+
+        def get_state_for_audio_prompt(self, name):
+            self.prompts.append(name)
+            return f"state-{name}"
+
+    tts = PocketTTS.__new__(PocketTTS)  # no pocket_tts import: the model is a fake
+    tts.model, tts.voice = Model(), "alba"
+    tts._voice_states = {"alba": "state-alba"}
+    tts.states = {"warm": "state-alba"}
+    tts.load_voice("eve")
+    assert tts.voice == "alba" and tts.states["warm"] == "state-alba" and tts.model.prompts == ["eve"]
+    tts.set_voice("eve")
+    assert tts.voice == "eve" and tts.states["warm"] == "state-eve" and tts.model.prompts == ["eve"]  # no reload
