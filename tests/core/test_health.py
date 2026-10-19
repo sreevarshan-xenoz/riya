@@ -253,11 +253,13 @@ def test_claude_code_four_states(tmp_path):
     assert (item.status, item.fix) == ("ok", "hooks_disconnect") and item.detail == f"Connected · last event {hhmm(seen)}"
     item = check_claude_code(ctx(tmp_path, hooks_seen_at=NOW - 25 * 3600))
     assert (item.status, item.fix) == ("warn", "hooks_disconnect") and "no event in 24 h" in item.detail
-    # events seen but the hooks are not in the file: connected, nothing to disconnect
+    # a recent event but no hooks in the file (just disconnected): not connected, and Connect is offered
     other = tmp_path / "other.json"
     other.write_text("{}")
     item = check_claude_code(ctx(tmp_path, claude_settings=other, hooks_seen_at=seen))
-    assert (item.status, item.fix) == ("ok", None)
+    assert (item.status, item.detail, item.fix) == ("off", "Not connected.", "hooks_connect")
+    item = check_claude_code(ctx(tmp_path, claude_settings=other, hooks_seen_at=NOW))
+    assert (item.status, item.detail, item.fix) == ("off", "Not connected.", "hooks_connect")
     # an old event and no hooks in the file: simply not connected
     item = check_claude_code(ctx(tmp_path, claude_settings=other, hooks_seen_at=NOW - 25 * 3600))
     assert (item.status, item.fix) == ("off", "hooks_connect")
@@ -450,3 +452,23 @@ def test_claude_code_unusable_shapes_are_a_warn_row_not_a_raise(tmp_path, shape)
     item = check_claude_code(ctx(tmp_path))  # called directly: it must not raise
     assert (item.status, item.detail) == ("warn", "Couldn't read Claude Code's settings.json.")
     assert path.read_bytes() == content
+
+
+@pytest.mark.parametrize("data, reason", [
+    ({"disableAllHooks": True}, "disableAllHooks is true"),
+    ({"allowedHttpHookUrls": ["https://example.com/*"]},
+     f"allowedHttpHookUrls doesn't include {install_hooks.HOOK_URL}"),
+    ({"httpHookAllowedEnvVars": ["OTHER"]}, f"httpHookAllowedEnvVars doesn't include {install_hooks.ENV_VAR}"),
+])
+def test_claude_code_names_a_blocking_setting_with_no_fix(tmp_path, data, reason):
+    path = tmp_path / "claude" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({**install_hooks.snippet(), **data}))
+    before = path.read_bytes()
+    for seen in (None, NOW - 60, NOW - 25 * 3600):
+        item = check_claude_code(ctx(tmp_path, hooks_seen_at=seen))
+        assert (item.status, item.detail, item.fix) == (
+            "warn", f"Hooks are blocked by your Claude Code settings: {reason}", None)
+    assert path.read_bytes() == before
+    path.write_text(json.dumps(data))  # not connected yet: Connect is still offered (its preview names the blocker)
+    assert check_claude_code(ctx(tmp_path)).fix == "hooks_connect"

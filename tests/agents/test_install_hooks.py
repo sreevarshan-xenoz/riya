@@ -393,3 +393,39 @@ def test_why_names_the_failed_step(env):
         assert str(env.settings.parent) not in why[0][1] and not why[0][1].endswith("nothing was changed")
     assert set(step for step, _ in why) <= set(ih.FAIL_STEPS)
     assert run(env, "--apply", runner=Runner(rc=1)) == 1  # the CLI without `why` is unchanged
+
+
+BLOCKERS = [
+    ({"disableAllHooks": True}, "disableAllHooks is true"),
+    ({"allowedHttpHookUrls": ["https://example.com/*"]}, "allowedHttpHookUrls doesn't include http://127.0.0.1:8766/hook"),
+    ({"allowedHttpHookUrls": []}, "allowedHttpHookUrls doesn't include http://127.0.0.1:8766/hook"),
+    ({"httpHookAllowedEnvVars": ["OTHER"]}, "httpHookAllowedEnvVars doesn't include RIYA_HOOK_TOKEN"),
+]
+
+
+@pytest.mark.parametrize("data, reason", BLOCKERS)
+def test_blockers_name_each_setting_and_change_nothing(data, reason):
+    before = json.loads(json.dumps(data))
+    assert ih.blockers(data) == [reason]
+    assert data == before  # read-only
+
+
+def test_blockers_allow_riya_and_list_every_blocker_in_order():
+    for ok in ({}, None, {"disableAllHooks": False}, {"allowedHttpHookUrls": ["http://127.0.0.1:*"]},
+               {"allowedHttpHookUrls": [ih.HOOK_URL], "httpHookAllowedEnvVars": [ih.ENV_VAR]},
+               {"allowedHttpHookUrls": "not a list", "disableAllHooks": "yes"}):
+        assert ih.blockers(ok) == []
+    every = {"httpHookAllowedEnvVars": [], "allowedHttpHookUrls": [], "disableAllHooks": True}
+    assert ih.blockers(every) == ["disableAllHooks is true",
+                                  f"allowedHttpHookUrls doesn't include {ih.HOOK_URL}",
+                                  f"httpHookAllowedEnvVars doesn't include {ih.ENV_VAR}"]
+
+
+@pytest.mark.parametrize("data, reason", BLOCKERS)
+def test_the_apply_preview_names_the_blocker(env, data, reason):
+    put(env, data)
+    text = ih.preview("apply", env.settings)
+    assert f"Claude Code will block her hooks: {reason}." in text and text.endswith(ih.RESTART_LINE)
+    assert load(env) == data  # never edited
+    put(env, {})
+    assert "block" not in ih.preview("apply", env.settings)

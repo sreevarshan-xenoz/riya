@@ -110,6 +110,22 @@ def warnings(data: dict | None) -> list[str]:
     return out
 
 
+def blockers(data: dict | None) -> list[str]:
+    """Why Claude Code's own settings would block Riya's hooks, one short reason per setting, most decisive first.
+    Read-only: Riya never edits these keys. [] when nothing blocks them."""
+    if not isinstance(data, dict):
+        return []
+    out = []
+    if data.get("disableAllHooks") is True:
+        out.append("disableAllHooks is true")
+    urls, envs = data.get("allowedHttpHookUrls"), data.get("httpHookAllowedEnvVars")
+    if isinstance(urls, list) and not any(isinstance(u, str) and fnmatch.fnmatchcase(HOOK_URL, u) for u in urls):
+        out.append(f"allowedHttpHookUrls doesn't include {HOOK_URL}")
+    if isinstance(envs, list) and ENV_VAR not in envs:
+        out.append(f"httpHookAllowedEnvVars doesn't include {ENV_VAR}")
+    return out
+
+
 def merge(data: dict) -> int:
     """Add Riya's handler to each event that lacks one. Returns how many events were added."""
     hooks = data.setdefault("hooks", {})
@@ -164,13 +180,15 @@ def preview(mode: Literal["apply", "remove"], settings_path: Path) -> str:
     if mode == "apply":
         if data is not None:
             merge(copy.deepcopy(data))  # a dry run on a copy: the same SettingsError --apply would give
+        blocked = blockers(data)
+        note = f"Claude Code will block her hooks: {'; '.join(blocked)}. " if blocked else ""
         events = [event for event, _ in EVENTS if event not in have]
         if events:
             return (f"Riya will add her hook to {len(events)} Claude Code event(s) in {settings_path}: "
                     f"{', '.join(events)}. The file is backed up first, and the {ENV_VAR} user environment variable is "
-                    f"set to her token. {RESTART_LINE}")
+                    f"set to her token. {note}{RESTART_LINE}")
         return (f"Riya's hook is already in all {len(EVENTS)} events in {settings_path}; only the {ENV_VAR} variable is "
-                f"set again. {RESTART_LINE}")
+                f"set again. {note}{RESTART_LINE}")
     if mode == "remove":
         if have:
             return (f"Riya will remove her hook from {len(have)} Claude Code event(s) in {settings_path}: "
