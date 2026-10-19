@@ -348,8 +348,47 @@ test("main.js wires the welcome through the pure rules, and the renderer can nev
   assert.equal((main.match(/openExternal\(/g) || []).length, 1, "the one fixed link is the only openExternal");
   assert.match(main, /shell\.openExternal\(KEY_URL\)/);
   assert.doesNotMatch(main, /onboarding_done/, "main.js reaches onboarding_done only through welcomeClosedMessage");
-  assert.match(main, /--riya-mode=welcome/);
+  assert.deepEqual(M.welcomeWebPreferences("p").additionalArguments, ["--riya-mode=welcome"]);
   assert.match(preload, /openWelcome: \(\) => ipcRenderer\.send\("welcome:open"\)/);
   assert.match(preload, /openKeyPage: \(\) => ipcRenderer\.send\("welcome:key-page"\)/);
-  assert.match(main, /contextIsolation: true,\s*nodeIntegration: false,\s*sandbox: true,[\s\S]*?welcome\.html/);
+});
+
+/** main.js from `function name(` up to the next top-level function: assertions about one window stay inside it. */
+const fnSlice = (src, name) => {
+  const start = src.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `main.js has ${name}`);
+  const next = src.indexOf("\nfunction ", start + 1);
+  return src.slice(start, next === -1 ? undefined : next);
+};
+
+test("the welcome window's own webPreferences are isolated, sandboxed and without node", () => {
+  const prefs = M.welcomeWebPreferences("C:/x/preload.js");
+  assert.deepEqual(prefs, {
+    preload: "C:/x/preload.js",
+    additionalArguments: ["--riya-mode=welcome"],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  });
+  assert.notEqual(M.welcomeWebPreferences("a"), M.welcomeWebPreferences("a"), "a fresh object each time");
+  const welcome = fnSlice(readBody("main.js"), "openWelcome");
+  assert.match(welcome, /webPreferences: welcomeWebPreferences\(path\.join\(__dirname, "preload\.js"\)\)/);
+  assert.doesNotMatch(welcome, /sandbox: false|contextIsolation: false|nodeIntegration: true/);
+});
+
+test("a Windows shutdown or logoff counts as quitting, so a mid-welcome user is not marked onboarded", () => {
+  assert.deepEqual(M.QUIT_EVENTS, { app: ["before-quit"], window: ["query-session-end", "session-end"] });
+  for (const [source, name] of [["app", "before-quit"], ["window", "query-session-end"], ["window", "session-end"]]) {
+    assert.equal(M.isQuitEvent(source, name), true, `${source} ${name}`);
+  }
+  for (const [source, name] of [["window", "close"], ["window", "closed"], ["app", "session-end"], ["x", "before-quit"]]) {
+    assert.equal(M.isQuitEvent(source, name), false, `${source} ${name}`);
+  }
+  // a welcome closed by the session ending sends nothing, like quitting
+  assert.equal(M.welcomeClosedMessage({ quitting: true, onboarded: false }), null);
+  const main = readBody("main.js");
+  const welcome = fnSlice(main, "openWelcome");
+  assert.match(welcome, /for \(const event of QUIT_EVENTS\.window\) win\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
+  assert.ok(welcome.indexOf("QUIT_EVENTS.window") < welcome.indexOf('win.on("closed"'), "wired before the closed handler");
+  assert.match(main, /for \(const event of QUIT_EVENTS\.app\) app\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
 });
