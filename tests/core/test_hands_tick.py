@@ -178,6 +178,36 @@ def test_no_initiative_on_return_is_a_bubble_and_no_greeting():
     assert say.spoken is False and core.hands.active() == [] and local.calls == []
 
 
+@pytest.mark.parametrize("broken", ["_greeted", "_finish_turn"])
+def test_a_greeting_bookkeeping_failure_never_repeats_its_reminder_tail(broken):
+    core, emitted, src, local, clock = tick_core(local_replies=("Welcome back!",))
+    away(core, src, clock)
+    add(core, 300)
+    ticks(core, clock, 600, step=10)
+
+    def boom(*a, **kw):
+        raise RuntimeError("bookkeeping failed")
+    setattr(core, broken, boom)
+    come_back(src, clock)
+    [greeting] = ticks(core, clock, 1)
+    assert greeting[-1].startswith("Hey~ it's time to call mom.")
+    assert core.hands.active() == []                             # fired before the bookkeeping
+    assert ticks(core, clock, 120) == [] and len(reminder_says(emitted, "call mom")) == 1
+
+
+def test_the_greeting_tail_counts_for_the_reminder_spacing():
+    core, emitted, src, local, clock = tick_core(local_replies=("Welcome back!",))
+    away(core, src, clock)
+    add(core, 300)
+    ticks(core, clock, 600, step=10)
+    come_back(src, clock)
+    now = clock.now()
+    core.hands.add_reminder("reminder", now + 2, "buy milk", now)
+    assert ticks(core, clock, 1)[0][-1].startswith("Hey~ it's time to call mom.")
+    assert ticks(core, clock, 19) == []                          # due a second later, but 20 s apart
+    assert ticks(core, clock, 1) == [["Hey~ it's time to buy milk."]]
+
+
 def test_reminder_due_on_greeting_tick():
     core, emitted, src, local, clock = tick_core(local_replies=("Welcome back!",))
     away(core, src, clock)
@@ -388,17 +418,60 @@ def test_a_parked_call_is_raised_when_the_game_ends():
     assert local.calls == []                                     # a template, and never the model during the game
 
 
-def test_a_parked_call_raised_in_quiet_hours_is_a_bubble():
+@pytest.mark.parametrize("patch", [{"quiet_hours": "11:00-13:00"}, {"may_start_conversations": False}])
+def test_a_parked_call_raised_while_restricted_is_a_bubble_in_the_tick(patch):
     core, emitted, src, local, clock = tick_core(**T2)
     gaming_park(core, src, clock)
-    core.handle(SetSettings(patch={"quiet_hours": "11:00-13:00"}))
+    core.handle(SetSettings(patch=patch))
     src.is_fullscreen = False
-    flags = []
-    out = ticks(core, clock, 1, flags=flags)
+    clock.advance(1)
+    assert core.tick() is None                                   # no Utterance: nothing spoken, the mic stays shut
     p = core.confirms.pending
-    assert flags == [False] and out == [[]]
+    assert p is not None
     assert [m.spoken for m in of(emitted, Say) if m.text == confirm_text(p)] == [False]
-    assert of(emitted, ConfirmRequest)[0].id == p.id
+    assert [m.id for m in of(emitted, ConfirmRequest)] == [p.id]
+    assert local.calls == []
+
+
+def test_a_raised_parked_call_is_shown_before_it_can_be_answered():
+    """A yes racing the raise (waiting on the core lock) is only taken once the question is out."""
+    import threading
+    import time
+    core, emitted, src, local, clock = tick_core(**T2)
+    gaming_park(core, src, clock)
+    src.is_fullscreen = False
+    unpark, answers = core.confirms.unpark, []
+
+    def racing_unpark():
+        got = unpark()
+        t = threading.Thread(target=lambda: answers.append(list(core.reply("yes"))))
+        t.start()
+        time.sleep(0.1)                                           # the turn is now waiting for the core lock
+        racing_unpark.thread = t
+        return got
+    core.confirms.unpark = racing_unpark
+    clock.advance(1)
+    u = core.tick()
+    racing_unpark.thread.join(5)
+    order = [type(m).__name__ for m in emitted if isinstance(m, (ConfirmRequest, ConfirmDone))]
+    assert order[0] == "ConfirmRequest"                          # asked before any answer was taken
+    assert u is not None
+    u.close()
+
+
+def test_a_raised_parked_call_is_out_even_if_its_utterance_is_never_started():
+    core, emitted, src, local, clock = tick_core(**T2)
+    gaming_park(core, src, clock)
+    src.is_fullscreen = False
+    clock.advance(1)
+    u = core.tick()
+    p = core.confirms.pending
+    assert [m.id for m in of(emitted, ConfirmRequest)] == [p.id]
+    assert [m.spoken for m in of(emitted, Say) if m.text == confirm_text(p)] == [True]
+    u.close()                                                    # closed before its first step: it was still shown
+    list(core.reply("yes"))
+    core._command_thread.join(5)
+    assert core.effects.calls == [("run", BACKUP["argv"], None, 60)]
 
 
 def test_a_call_parked_over_10_minutes_is_dropped_and_logged_expired():

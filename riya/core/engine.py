@@ -400,10 +400,11 @@ class RiyaCore:
                 said: list[str] = []
 
                 def after(outcome: str) -> None:
+                    if due:  # fired first: no bookkeeping failure can make the tail go out again
+                        self._last_remind_at = self.clock.now()  # the tail counts for the reminder spacing
+                        self._fire([r.id for r in due], self._last_remind_at)
                     mine = [x for x in said if x != tail]  # the reminder tail isn't the greeting itself
                     self._greeted(action, outcome if mine or not tail else "failed", reports, bool(mine))
-                    if due:
-                        self._fire([r.id for r in due], self.clock.now())
                 yield from self._counted(self._speak(
                     "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
                     threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail), said)
@@ -546,10 +547,13 @@ class RiyaCore:
                 self.emit(SayEnd(utterance_id=uid))
                 self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report",
                                   quoted=tool)
-                if after:
-                    after(outcome)
             except Exception:
                 log.exception("couldn't record the %s", kind)
+            if after:  # even when the recording failed (a greeting's after marks its reminders fired)
+                try:
+                    after(outcome)
+                except Exception:
+                    log.exception("couldn't finish the %s", kind)
 
     @staticmethod
     def _shape(kind: str, text: str) -> tuple[str | None, int, int]:
@@ -1172,9 +1176,11 @@ class RiyaCore:
                 self._results.put((summary, result))
         return Utterance(say(), True, on_close=unsaid)
 
-    def _park_step(self, now: float) -> Utterance | None:
-        """A T2 call parked during a game: once they're neither gaming nor away it's asked (spoken, or a bubble in
-        quiet hours), unless it waited over 10 min (dropped, logged expired)."""
+    def _park_step(self, now: float) -> "Utterance | bool | None":
+        """A T2 call parked during a game: once they're neither gaming nor away it's asked, unless it waited over 10
+        min (dropped, logged expired). The confirm_request and the question go out here, in the tick under the core
+        lock, so no turn can answer it before it's shown; restricted (quiet hours, may not start conversations) it's
+        only the bubble, with no Utterance (never the mic), else the Utterance just speaks the line."""
         if self.presence.state in ("gaming", "away"):
             return None
         with self._hands_lock:
@@ -1185,12 +1191,9 @@ class RiyaCore:
         if what == "expired":
             self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, "expired")
             return None
-        spoken = not self._quiet(now)
-
-        def ask() -> Iterator[str]:
-            with self._lock:
-                yield from self._raise_confirm(p, spoken, kind="report")
-        return Utterance(ask(), spoken)
+        restricted = self._restricted(now) or self.presence.state == "gaming"
+        lines = list(self._raise_confirm(p, not restricted, kind="report"))  # empty unless it's to be spoken
+        return Utterance((line for line in lines), True) if lines else True
 
     # ---- agents -------------------------------------------------------------------------------------
     def _agents_step(self, now: float) -> None:

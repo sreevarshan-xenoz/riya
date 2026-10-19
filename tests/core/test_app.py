@@ -17,15 +17,6 @@ from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
 
 
-@pytest.fixture(autouse=True)
-def no_real_hands(monkeypatch):
-    """build_core gives the core WindowsEffects and UrlHttp: tests only ever get the fakes."""
-    from riya.core.hands.effects import FakeEffects
-    from riya.core.hands.net import FakeHttp
-    monkeypatch.setattr(runner, "WindowsEffects", FakeEffects)
-    monkeypatch.setattr(runner, "UrlHttp", FakeHttp)
-
-
 def client(replies=("Hi there.",), speak=None, delay=0.0):
     def factory(emit):
         core, _, _, local = make_core(local_replies=list(replies))
