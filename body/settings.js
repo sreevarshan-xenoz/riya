@@ -7,6 +7,7 @@
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
     DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
+  const { dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage } = RiyaLearning;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
   const $ = (id) => document.getElementById(id);
@@ -255,7 +256,7 @@
   }
 
   const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-    "eyes_enabled", "hands_online"];
+    "eyes_enabled", "hands_online", "learning_enabled"];
   for (const key of CHECK_KEYS) $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
   for (const key of ["glance_daily_cap", "glance_min_gap_s"]) $(key).addEventListener("change", (e) => changeSetting(key, e.target.value));
   for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
@@ -282,6 +283,7 @@
     commandsDirty = true;
   });
   $("actions-clear").addEventListener("click", clearActions);
+  $("learning-reset").addEventListener("click", resetLearning);
   $("mode").addEventListener("change", (e) => changeSetting("mode", e.target.value));
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
   $("volume").addEventListener("input", (e) => { $("volume-out").textContent = `${Math.round(e.target.value * 100)}%`; });
@@ -477,6 +479,74 @@
     }));
   }
 
+  async function deleteStyleNote(note) {
+    const r = await confirmDialog({ title: "Forget this?", body: note.text, okLabel: "Delete" });
+    if (r.ok) act(`style-note:${note.id}`, noteDeleteMessage(note.id));
+  }
+
+  async function resetTwin(row) {
+    const r = await confirmDialog({
+      title: `Forget when you like "${row.label}"?`,
+      body: "She goes back to guessing until she sees how you react again.",
+      okLabel: "Reset",
+    });
+    if (r.ok) act(`twin:${row.kind}`, twinResetMessage(row.kind));
+  }
+
+  async function resetLearning() {
+    const r = await confirmDialog({
+      title: "Reset her to her defaults?",
+      body: "Her dials go back to her defaults, every style note is deleted and what she learned about when you like her to talk is forgotten. This can't be undone.",
+      okLabel: "Reset",
+    });
+    if (r.ok) act("learning", resetMessage());
+  }
+
+  function dialItem(row) {
+    const li = h("li", "dial");
+    const bar = h("div", "dial-bar");
+    const band = h("span", "dial-band");
+    band.style.left = `${row.loPct}%`;
+    band.style.width = `${Math.max(0, row.hiPct - row.loPct)}%`;
+    const marker = h("span", "dial-marker");
+    marker.style.left = `${Math.min(100, Math.max(0, row.valuePct))}%`;
+    bar.append(band, marker);
+    li.append(h("span", "dial-label", row.label), bar, h("span", "dial-value", row.value.toFixed(2)));
+    li.title = `${row.label}: ${row.value.toFixed(2)}, she stays between ${row.lo.toFixed(2)} and ${row.hi.toFixed(2)}`;
+    return li;
+  }
+
+  function twinItem(row) {
+    const reset = button("Reset", () => resetTwin(row));
+    reset.disabled = row.count === 0 && row.buckets.length === 0;
+    const parts = item(`twin:${row.kind}`, `${row.label}: ${rateText(row)}`, { actions: [reset] });
+    if (row.buckets.length) {
+      const ul = h("ul", "buckets");
+      for (const b of row.buckets) ul.append(h("li", null, `${b.bucket} · ${Math.round(b.p * 100)}% · ${Math.round(b.n * 10) / 10}`));
+      parts.metaLine.before(ul);
+    }
+    return parts.li;
+  }
+
+  /** Her dials, what changed them, her style notes and the decision twin; null (the core is away) empties it all, so
+   *  stale numbers never pass for live. */
+  function renderLearning(msg) {
+    for (const target of [...errorEls.keys()]) if (target.startsWith("style-note:") || target.startsWith("twin:")) errorEls.delete(target);
+    $("dials").replaceChildren(...dialRows(msg).map(dialItem));
+    fill("dial-history", "dial-history-empty", historyRows(msg).map((row) => {
+      const li = h("li", "item");
+      li.append(h("div", "item-text", row.text));
+      li.append(h("div", "item-meta", [formatWhen(row.at), row.source, row.reason].filter(Boolean).join(" · ")));
+      return li;
+    }));
+    fill("style-notes", "style-notes-empty", noteRows(msg).map((note) => item(`style-note:${note.id}`, note.text, {
+      meta: note.polarity,
+      actions: [button("Delete", () => deleteStyleNote(note))],
+    }).li));
+    $("twin").replaceChildren(...(msg ? twinRows(msg).map(twinItem) : []));
+    $("learning-reset").disabled = !msg;
+  }
+
   function renderEyes(eyes) {
     $("eyes-count").textContent = eyesCountText(eyes);
     const status = eyesStatusText(eyes);
@@ -485,7 +555,7 @@
   }
 
   function renderMemories(msg) {
-    for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:")) errorEls.delete(target);
+    for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:") && target !== "learning" && !target.startsWith("style-note:") && !target.startsWith("twin:")) errorEls.delete(target);
     const { facts, episodes, threads, days, notes } = memoryLists(msg);
 
     fill("facts", "facts-empty", facts.map((fact) => {
@@ -529,7 +599,10 @@
     $("conn").classList.toggle("off", !connected);
     coreConnected = Boolean(connected);
     renderHooks();
-    if (!connected) renderActions(null); // a stale log would pass for live; the core sends it again on change
+    if (!connected) { // a stale log or stale dials would pass for live; the core sends them again on change
+      renderActions(null);
+      renderLearning(null);
+    }
     if (connected) send({ type: "get_memories" });
   });
 
@@ -540,6 +613,9 @@
       applySettings(msg.settings);
     } else if (msg.type === "actions") {
       renderActions(msg);
+    } else if (msg.type === "learning") {
+      router.settle();
+      renderLearning(msg);
     } else if (msg.type === "eyes") {
       renderEyes(msg);
     } else if (msg.type === "agents") {
@@ -558,6 +634,8 @@
     }
   });
 
+  errorEls.set("learning", $("learning-reset-err"));
+  renderLearning(null);
   showVoice(null);
   window.riya.dontLookHotkey().then((accelerator) => { $("dontlook-hotkey").textContent = hotkeyText(accelerator); },
     () => { $("dontlook-hotkey").textContent = hotkeyText(null); });
