@@ -67,6 +67,50 @@ _NOT_A_CLAIM_BEFORE = frozenset("what whatever how why when where if whether who
 # function words STOP lacks
 STOPS = STOP | frozenset("the not no yes yeah okay ok oh well now soon yet already always never ago once off out up "
                          "down away back".split())
+# The words that may open a sentence without being a name: pronouns, determiners, conjunctions, prepositions,
+# auxiliaries and contraction stems, interjections, common English words, and her own vocabulary. A capitalised
+# sentence opener that is none of these (and not in the row's own text) is read as an invented name ("Max misses you").
+COMMON_WORDS = frozenset("""
+i me my mine myself you your yours yourself we us our ours ourselves they them their theirs themselves he him his
+himself she her hers herself it its itself one ones someone somebody something anyone anybody anything everyone
+everybody everything nobody nothing none both each either neither few many much more most less least several some any
+all every other another others such same own
+the a an this that these those there here what which who whom whose when where why how whatever whenever wherever
+whoever however
+and or but nor so yet for because since although though unless until while whereas if then than as whether once
+of in on at by with from to into onto over under above below between among about against along around before after
+during through across behind beside beyond near off out up down away toward towards without within upon per via
+is am are was were be been being do does did done doing have has had having will would shall should can could may
+might must ought let lets get gets got getting make made go goes went gone going come came coming take took taken
+don doesn didn won wouldn can couldn shouldn isn aren wasn weren haven hasn hadn ain ll ve re
+yes yeah yep yup no nope nah okay ok oh ah ahh aah ooh oooh aww awww ehh eh hmm hm hmph huh hey hi hello bye goodbye
+yay wow ugh argh tsk psst phew whoa oops ouch mmm mhm uhh uh um umm er ha haha hehe heh lol shh sheesh gosh geez
+please thanks thank sorry welcome pardon fine sure right alright alrighty well now soon later today tonight tomorrow
+yesterday again already always never ever often sometimes usually maybe perhaps probably definitely obviously honestly
+seriously really actually finally suddenly luckily sadly fortunately apparently clearly basically literally totally
+absolutely exactly quite rather just only even still also too very nearly almost hardly barely first second third next
+last finally meanwhile anyway anyways besides instead otherwise therefore thus hence plus
+good great nice lovely sweet cute silly dumb dummy adorable funny smart clever tired bored hungry sleepy sad happy
+glad mad upset angry worried scared nervous excited sorry lonely lazy busy free ready late early new old little big
+small tiny huge long short high low hard easy soft warm cold hot cool fresh cozy quiet loud bright dark real true
+false wrong bad worse worst better best okay sure certain possible impossible important special strange weird odd
+different similar simple complicated serious proper whole entire enough plenty
+love like hate want need wish hope think thought know knew guess believe remember forgot forget miss missed mean
+means meant say said says tell told ask asked see saw look looked listen heard hear feel felt try tried use used
+find found keep kept give gave put call called show showed leave left stay stayed wait waited help helped start
+started stop stopped turn turned play played work worked live lived eat ate drink drank sleep slept wake woke walk
+walked run ran sit sat stand stood read wrote write watch watched wonder wondered promise promised pick picked
+choose chose pretend imagine imagined notice noticed hold held bring brought send sent open opened close closed
+check checked fix fixed finish finished win won lose lost beat guess guessed
+time times day days night nights morning evening week weekend month year years moment minute hour thing things way
+ways part lot bit kind sort fact point idea question answer reason problem plan chance luck life mind head heart
+hand hands eyes face voice word words story game games music movie song food lunch dinner breakfast coffee tea
+water home house room door window screen phone computer message messages message code file files page tab app
+person people man woman boy girl friend friends family mom dad baby kid kids world place places school class
+okay riya noted understood done saved stored deal gotcha cool awesome perfect neat nope welcome cheers
+congrats congratulations
+""".split())
+
 # her own words, never an invented fact
 ALLOWED_NAMES = frozenset("riya ai hmph hehe hm hmm mhm ooh aww awww ahh okay ok yay oh ah ugh wow hey hi hello bye "
                           "thanks please sorry".split())
@@ -139,6 +183,13 @@ def _names(text: str) -> list[str]:
     return [m.group().split("'")[0] for m in names if m.group().split("'")[0].lower() not in ALLOWED_NAMES]
 
 
+def _opening_names(text: str) -> list[str]:
+    """Capitalised sentence openers that are neither a common word nor her own ("Max misses you~"): read as names."""
+    starts = _sentence_starts(text)
+    openers = (m.group().split("'")[0] for m in _NAME.finditer(text) if m.start() in starts)
+    return [w for w in openers if w.lower() not in COMMON_WORDS and w.lower() not in ALLOWED_NAMES]
+
+
 def _claim_words(sentence: str, known: _Known) -> list[str]:
     """The words of a second-person claim ("you live in Pune", "didn't you say ...") that nothing in the row backs."""
     out = []
@@ -157,7 +208,7 @@ def unsupported(response: str, known_texts: list[str], world: bool = False) -> l
     the "your" and "you ..." checks apply. [] when everything is backed."""
     known, found = _Known(known_texts), []
     if not world:
-        found += [f"name {n}" for n in _names(response) if not known.has(n)]
+        found += [f"name {n}" for n in _names(response) + _opening_names(response) if not known.has(n)]
         found += [f"number {n}" for n in _NUMBER.findall(response) if n not in known.numbers]
         starts = _sentence_starts(response)
         found += [f"date {m.group()}" for m in _MONTH_OR_DAY.finditer(response)
