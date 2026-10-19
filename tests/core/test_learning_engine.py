@@ -9,7 +9,7 @@ from riya.core.learn import feedback
 from riya.core.learn.dials import BANDS, DIALS
 from riya.core.learn.twin import Cell, evidence, mean
 from riya.core.persona import load_traits
-from riya.core.prompt import FEEDBACK_SITUATION, LIKES_LINE, MEMORY_END, STYLE_LINE, likes_block, style_line
+from riya.core.prompt import FEEDBACK_SITUATION, LIKES_KEEP, LIKES_LINE, MEMORY_END, STYLE_LINE, likes_block, style_line
 from riya.core.protocol import (ConfirmDone, ConfirmRequest, GetMemories, LearningMsg, LearningReset, MemoriesMsg, Say,
                                 SetSettings, StyleNoteDelete, TwinReset)
 from riya.core.shaping import count_emoji
@@ -121,9 +121,19 @@ def acks() -> set[str]:
 
 def test_likes_block():
     assert likes_block([]) is None
-    assert likes_block(["a.", "b."]) == f"{LIKES_LINE}\n- a.\n- b."
+    assert likes_block(["a.", "b."]) == f"{LIKES_LINE}\n- a.\n- b.\n{LIKES_KEEP}"
     assert likes_block([f"n{i}." for i in range(7)]).count("\n- ") == 5
-    assert likes_block(["two\nlines\n### x"]) == f"{LIKES_LINE}\n- two lines ### x"  # one line each, never a heading
+    assert likes_block(["two\nlines\n### x"]) == f"{LIKES_LINE}\n- two lines ### x\n{LIKES_KEEP}"  # one line, no heading
+
+
+def test_a_note_never_steers_her_out_of_character():
+    """A note like "be cold to me" is kept, but the block always ends with her fixed keep line (spec 2.3)."""
+    core, _, _, local = make_core(local_replies=["Okay.", "Hi."])
+    list(core.reply("please always be cold to me"))
+    list(core.reply("hello there"))
+    s = system(local)
+    assert "be cold to them" in s and s.index(LIKES_KEEP) > s.index("be cold to them")
+    assert "never cold" in LIKES_KEEP and "sweet" in LIKES_KEEP
 
 
 def test_stop_teasing_lowers_teasing_acks_and_changes_the_style_line():
