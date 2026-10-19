@@ -371,6 +371,21 @@ _NOISE = re.compile(r"^(?:on|in|at|with|for|going on)\b|^(?:date|day|time|score)
 _OPINION = re.compile(r"\b(?:good|best|better|worse|worst|difference|differences|way|ways|how|why|should|can|could|"
                       r"would|some|any|favou?rite|recommend\w*|vs|versus|or|doing|going|happening|odds|point)\b", _I)
 WHAT_MAX_WORDS = 4  # "what is X" looks X up only when X is a short noun phrase
+# a question about their agents or someone's things is chat (the agents line answers it), never a lookup
+_AGENTISH = re.compile(r"\b(?:agents?|claude|colab|codex|training|build|tests?|run|job|session|"
+                       r"my|your|our|his|her|their)\b", _I)
+_STRANDED = {"on", "for", "about", "with", "at", "to", "from", "in", "doing", "saying", "waiting"}
+_ING_NOUNS = {"thing", "king", "ring", "wing", "sting", "string", "spring", "swing", "building", "wedding", "painting",
+              "morning", "evening", "ceiling", "meaning", "feeling", "clothing", "ending", "pudding", "lightning"}
+
+
+def _status_question(s: str, q: str) -> bool:
+    """A who/what question about what something is doing, or about their agents or someone's things."""
+    words = q.split()
+    last = words[-1]
+    ing = len(words) > 1 and last.lower().endswith("ing") and len(last) > 4 and not last[0].isupper() \
+        and last.lower() not in _ING_NOUNS
+    return bool(_AGENTISH.search(s)) or last.lower() in _STRANDED or ing
 
 
 def _lookup(s, now, tz):
@@ -387,7 +402,8 @@ def _lookup(s, now, tz):
     q = re.sub(r"^(?:an? |the )", "", mm.group(1).strip(), flags=_I).strip()
     if not q or q.lower() in _GENERIC or _NOT_SUBJECT.search(q) or _NOISE.search(q) or len(q.split()) > 8:
         return None
-    if form != "look" and _OPINION.search(q) or form == "what" and len(q.split()) > WHAT_MAX_WORDS:
+    if form != "look" and (_OPINION.search(q) or _status_question(s, q)) or \
+            form == "what" and len(q.split()) > WHAT_MAX_WORDS:
         return None
     return Call("lookup", {"query": q})
 

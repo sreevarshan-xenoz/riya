@@ -354,3 +354,23 @@ def test_note_and_copy_text_is_the_whole_turn():
     assert m(f"note that {text}") == Call("note_add", {"text": text})
     big = words(1000)[:3000].rstrip()
     assert m(f"copy {big} to the clipboard") == Call("clipboard_copy", {"text": big})
+
+
+# ---- residual 2 (N1): agent-status questions are chat, not lookups ------------------------------------------------
+@pytest.mark.parametrize("text", [
+    "what's claude working on", "what is the agent waiting for", "what's colab saying", "what is my build doing",
+    "what is the training run doing", "who is the session for", "what was codex saying", "what are the tests doing",
+    "what's the job waiting on", "who is their manager", "what is the agent running", "what is claude",
+])
+def test_agent_status_questions_are_not_lookups(text):
+    c = m(text)
+    assert c is None or c.tool != "lookup"
+
+
+@pytest.mark.parametrize("text, query", [
+    ("what is a black hole", "black hole"), ("who is Ada Lovelace", "Ada Lovelace"),
+    ("look up claude shannon", "claude shannon"), ("search for the training of dogs", "training of dogs"),
+    ("what is a wedding", "wedding"), ("what is swimming", "swimming"),
+])
+def test_lookups_that_stay(text, query):
+    assert m(text) == Call("lookup", {"query": query})

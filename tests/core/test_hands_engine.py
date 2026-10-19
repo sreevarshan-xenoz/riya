@@ -807,3 +807,25 @@ def test_whats_on_my_screen_is_still_a_screen_question():
     core, *_ = hands_core()
     list(core.reply("what's on my screen?"))
     assert core.hands.active() == [] and logged(core) == [] and core.effects.calls == []
+
+
+# ---- residual 2 (N1): agent-status questions are chat, answered with the agents line ------------------------------
+@pytest.mark.parametrize("turn", ["what's claude working on", "what is the agent waiting for", "what's colab saying",
+                                  "what is my build doing"])
+def test_agent_status_questions_stay_chat_with_the_agents_line(turn):
+    core, emitted, _, local, clock = hands_core(local_replies=("It's still going~",))
+    core.http.responses.update(LOOKUP)
+    core.agent_inbox.put({"hook_event_name": "UserPromptSubmit", "session_id": "abc123def", "cwd": "E:/riya",
+                          "prompt": "fix the tests"})
+    ticks(core, clock, 1)
+    assert core.agents.snapshot()
+    assert list(core.reply(turn)) == ["It's still going~"]
+    assert core.http.requests == [] and logged(core) == []
+    assert "### Your agents:" in local.calls[-1][0]["content"]
+
+
+def test_look_up_claude_shannon_still_looks_up():
+    core, *_ = hands_core()
+    core.http.responses.update(LOOKUP)
+    list(core.reply("look up claude shannon"))
+    assert core.http.requests[0][1]["search"] == "claude shannon"
