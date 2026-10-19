@@ -81,6 +81,13 @@ class GlanceInfo(BaseModel):
     notable: str | None
 
 
+class NoteInfo(BaseModel):
+    """A note she took for the user ("note that ..."): never a fact."""
+    id: int
+    at: float
+    text: str
+
+
 class MemoriesMsg(BaseModel):
     type: Literal["memories"] = "memories"
     facts: list[dict]
@@ -88,6 +95,7 @@ class MemoriesMsg(BaseModel):
     episodes: list[EpisodeInfo] = Field(default_factory=list)  # newest first
     threads: list[ThreadInfo] = Field(default_factory=list)  # open follow-ups, soonest due first
     glances: list[GlanceInfo] = Field(default_factory=list)  # newest first, kept 7 days
+    notes: list[NoteInfo] = Field(default_factory=list)  # newest first
 
 
 class Look(BaseModel):
@@ -131,6 +139,49 @@ class AgentsMsg(BaseModel):
 class ErrorMsg(BaseModel):
     type: Literal["error"] = "error"
     message: str
+
+
+class ConfirmRequest(BaseModel):
+    """A T2 (or raised T1) action waiting for the user's yes: the templated summary, and when it expires (epoch s)."""
+    type: Literal["confirm_request"] = "confirm_request"
+    id: str
+    summary: str
+    expires_at: float
+
+
+class ConfirmDone(BaseModel):
+    """A confirmation is over: the body drops its bubble and buttons."""
+    type: Literal["confirm_done"] = "confirm_done"
+    id: str
+    outcome: Literal["ran", "declined", "expired", "replaced", "cancelled"]
+
+
+class ReminderInfo(BaseModel):
+    id: int
+    kind: Literal["timer", "reminder"]
+    due_at: float
+    text: str
+
+
+class RemindersMsg(BaseModel):
+    """The active reminders and timers, soonest first (on change and on hello)."""
+    type: Literal["reminders"] = "reminders"
+    items: list[ReminderInfo]
+
+
+class ActionInfo(BaseModel):
+    id: int
+    at: float
+    tool: str
+    tier: int
+    summary: str
+    outcome: str  # ran | failed | refused | declined | expired | cancelled | replaced
+
+
+class ActionsMsg(BaseModel):
+    """Her action log for the settings page, newest first."""
+    type: Literal["actions"] = "actions"
+    items: list[ActionInfo]
 
 
 # body -> core
@@ -200,11 +251,33 @@ class SetSettings(BaseModel):
     patch: dict
 
 
+class Confirm(BaseModel):
+    """The confirmation bubble's Yes/No button for confirmation `id`."""
+    type: Literal["confirm"] = "confirm"
+    id: str
+    yes: bool = Field(strict=True)
+
+
+class ReminderCancel(BaseModel):
+    type: Literal["reminder_cancel"] = "reminder_cancel"
+    id: int
+
+
+class NoteDelete(BaseModel):
+    type: Literal["note_delete"] = "note_delete"
+    id: int
+
+
+class ActionsClear(BaseModel):
+    type: Literal["actions_clear"] = "actions_clear"
+
+
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
-                              Look, EyesMsg, AgentsMsg], Field(discriminator="type")]
+                              Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg],
+                        Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
-                              QuitCore],
+                              QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)

@@ -84,3 +84,31 @@ def test_quit_core_message():
     assert parse_body_message('{"type":"quit_core"}') == QuitCore()
     fixture = Path("body/test/fixtures/body_quit_core.json")
     assert parse_body_message(fixture.read_text(encoding="utf-8")) == QuitCore()
+
+
+def test_hands_messages():
+    from riya.core.protocol import (ActionInfo, ActionsClear, ActionsMsg, Confirm, ConfirmDone, ConfirmRequest,
+                                    MemoriesMsg, NoteDelete, NoteInfo, ReminderCancel, ReminderInfo, RemindersMsg)
+    assert parse_body_message('{"type":"confirm","id":"abc","yes":true}') == Confirm(id="abc", yes=True)
+    assert parse_body_message('{"type":"reminder_cancel","id":3}') == ReminderCancel(id=3)
+    assert parse_body_message('{"type":"note_delete","id":4}') == NoteDelete(id=4)
+    assert parse_body_message('{"type":"actions_clear"}') == ActionsClear()
+    for raw in ('{"type":"confirm","id":"abc","yes":"yes"}', '{"type":"confirm","id":"abc","yes":1}',
+                '{"type":"confirm","id":"abc"}', '{"type":"confirm","yes":true}', '{"type":"reminder_cancel"}',
+                '{"type":"note_delete"}'):
+        with pytest.raises(ProtocolError):
+            parse_body_message(raw)
+    assert json.loads(dump(ConfirmRequest(id="a", summary="run x", expires_at=5.0))) == {
+        "type": "confirm_request", "id": "a", "summary": "run x", "expires_at": 5.0}
+    for outcome in ("ran", "declined", "expired", "replaced", "cancelled"):
+        assert json.loads(dump(ConfirmDone(id="a", outcome=outcome)))["outcome"] == outcome
+    with pytest.raises(ValueError):
+        ConfirmDone(id="a", outcome="refused")
+    r = RemindersMsg(items=[ReminderInfo(id=1, kind="timer", due_at=2.0, text="timer")])
+    assert json.loads(dump(r)) == {"type": "reminders", "items": [{"id": 1, "kind": "timer", "due_at": 2.0,
+                                                                   "text": "timer"}]}
+    a = ActionsMsg(items=[ActionInfo(id=1, at=2.0, tool="open_url", tier=1, summary="open x", outcome="ran")])
+    assert json.loads(dump(a))["items"][0]["outcome"] == "ran"
+    assert MemoriesMsg(facts=[], transcript_days=[]).notes == []
+    m = MemoriesMsg(facts=[], transcript_days=[], notes=[NoteInfo(id=1, at=2.0, text="milk")])
+    assert json.loads(dump(m))["notes"] == [{"id": 1, "at": 2.0, "text": "milk"}]
