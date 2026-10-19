@@ -440,3 +440,30 @@ def test_hello_survives_a_learning_message_that_cannot_be_built(monkeypatch):
     msg = next(m for m in msgs if isinstance(m, LearningMsg))
     assert [m.type for m in msgs] == ["hello", "settings", "state", "agents", "eyes", "learning", "reminders", "actions"]
     assert {d: i.value for d, i in msg.dials.items()} == core.learn.dials() and msg.twin == []
+
+
+def test_a_twin_reset_is_never_undone_by_a_concurrent_record(monkeypatch):
+    """The record reads the old cell, the reset lands, then the record writes: the reset must win (serialised)."""
+    import threading
+
+    from riya.core.learn import twin as twin_mod
+    core, _, _, _ = make_core()
+    b = core._bucket()
+    for _ in range(4):
+        core.twin.record("greeting", b, False)
+    read, reset_done, real = threading.Barrier(2, timeout=5), threading.Event(), twin_mod.updated
+
+    def slow_updated(cell, engaged, now):  # runs after the record read the old cell
+        read.wait()
+        reset_done.wait(0.3)  # without the lock the reset lands here; with it, the reset waits for this record
+        return real(cell, engaged, now)
+
+    monkeypatch.setattr(twin_mod, "updated", slow_updated)
+    rec = threading.Thread(target=core.twin.record, args=("greeting", b, False))
+    rec.start()
+    read.wait()
+    core.handle(TwinReset(kind="greeting"))
+    reset_done.set()
+    rec.join(5)
+    assert not rec.is_alive()
+    assert core.learn.get_cell("greeting", b) is None and core.twin.p_engage("greeting", b) == 0.5

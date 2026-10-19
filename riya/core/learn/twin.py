@@ -2,7 +2,7 @@
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from riya.core.initiative import LONG_STRETCH_S
 
@@ -63,6 +63,8 @@ def chance(cell: Cell | None, now: float) -> float:
 class CellStore(Protocol):
     def get_cell(self, kind: str, bucket: str) -> Cell | None: ...
     def put_cell(self, kind: str, bucket: str, cell: Cell) -> None: ...
+    def update_cell(self, kind: str, bucket: str, fn: Callable[[Cell | None], Cell]) -> None:
+        """Read, fn, write as one step: a reset can't land in between and be undone."""
 
 
 class MemoryCells:
@@ -75,6 +77,9 @@ class MemoryCells:
     def put_cell(self, kind, bucket, cell):
         self.cells[(kind, bucket)] = cell
 
+    def update_cell(self, kind, bucket, fn):
+        self.put_cell(kind, bucket, fn(self.get_cell(kind, bucket)))
+
 
 class Twin:
     def __init__(self, store: CellStore, clock):
@@ -84,7 +89,7 @@ class Twin:
         if kind not in KINDS:
             raise ValueError(f"unknown kind: {kind!r}")
         now = self.clock.now()
-        self.store.put_cell(kind, bucket, updated(self.store.get_cell(kind, bucket), engaged, now))
+        self.store.update_cell(kind, bucket, lambda cell: updated(cell, engaged, now))
 
     def p_engage(self, kind: str, bucket: str) -> float:
         return mean(self.store.get_cell(kind, bucket), self.clock.now())
