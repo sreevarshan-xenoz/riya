@@ -208,13 +208,22 @@ def test_windows_run_reads_only_the_last_64_kb(popen):
     assert code == 0 and len(out) == fx.OUTPUT_READ_MAX and out.endswith("THE END")
 
 
-def test_decode_tries_the_oem_page_then_utf8(monkeypatch):
-    monkeypatch.setattr(fx, "_oem_codec", lambda: "cp850")
-    assert fx._decode("é".encode("cp850")) == "é" and fx._decode("plain") == "plain"
-    monkeypatch.setattr(fx, "_oem_codec", lambda: "ascii")  # can't decode it: UTF-8 with replacement
-    assert fx._decode("é".encode("utf-8")) == "é" and fx._decode(b"\xff\xfe ok") == "\ufffd\ufffd ok"
+def test_a_cut_through_a_utf8_char_still_decodes_as_utf8(popen):
+    FakePopen.output = "\u00e9".encode("utf-8") * 40_000 + b" end!"  # 80,005 bytes: the cut lands on a continuation byte
+    code, out = WindowsEffects().run(ARGV, None, 5)
+    assert code == 0 and out.endswith("\u00e9\u00e9 end!") and "\ufffd" not in out and "\u2562" not in out
+    assert set(out[:-5]) == {"\u00e9"} and len(out) < fx.OUTPUT_READ_MAX
+
+
+def test_decode_tries_utf8_then_the_oem_page(monkeypatch):
+    monkeypatch.setattr(fx, "_oem_codec", lambda: "cp437")
+    assert fx._decode("h\u00e9llo \u2713".encode("utf-8")) == "h\u00e9llo \u2713" and fx._decode("plain") == "plain"
+    assert fx._decode(b"\x82") == "\u00e9"  # cp437 0x82 is e-acute; it isn't valid UTF-8, so the OEM page decodes it
+    assert fx._decode("caf\u00e9".encode("cp437")) == "caf\u00e9"
+    monkeypatch.setattr(fx, "_oem_codec", lambda: "ascii")  # an OEM page that can't decode it: replacement characters
+    assert fx._decode(b"\xff ok") == "\ufffd ok"
     monkeypatch.setattr(fx, "_oem_codec", lambda: "cp-nope")
-    assert fx._decode(b"abc") == "abc"
+    assert fx._decode(b"abc") == "abc" and fx._decode(b"\xffabc") == "\ufffdabc"
 
 
 def test_the_one_real_smoke_run():

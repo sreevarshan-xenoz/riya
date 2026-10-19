@@ -29,6 +29,7 @@ KEYS = {"play_pause": 0xB3, "next": 0xB0, "previous": 0xB1, "volume_up": 0xAF, "
 MAX_PRESSES = 20
 INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 1, 0x0001, 0x0002
 CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP = 0x08000000, 0x00000200
+CONTINUATION = bytes(range(0x80, 0xC0))  # UTF-8 continuation bytes
 OUTPUT_READ_MAX = 64 * 1024  # the most command output ever read back (the end of it)
 KILL_WAIT_S = 5
 CLIPBOARD_TRIES = 5
@@ -103,12 +104,16 @@ def _oem_codec() -> str:
 
 
 def _decode(b) -> str:
-    """Command output as text: the OEM code page first, else UTF-8 with replacement characters."""
+    """Command output as text: strict UTF-8 if it is valid UTF-8, else the console OEM code page (with replacement)."""
     if isinstance(b, str):
         return b
     try:
-        return b.decode(_oem_codec())
-    except (UnicodeDecodeError, LookupError):
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return b.decode(_oem_codec(), "replace")
+    except LookupError:
         return b.decode("utf-8", "replace")
 
 
@@ -198,8 +203,10 @@ class WindowsEffects:
                     _kill_tree(p)
                     return None, f"timed out after {format_number(timeout_s)} s"
                 out.seek(0, os.SEEK_END)
-                out.seek(max(0, out.tell() - OUTPUT_READ_MAX))
-                return code, _decode(out.read())
+                start = max(0, out.tell() - OUTPUT_READ_MAX)
+                out.seek(start)
+                data = out.read()
+                return code, _decode(data.lstrip(CONTINUATION) if start else data)  # a cut may split a UTF-8 char
         except (OSError, ValueError):
             return None, "couldn't start"
 
