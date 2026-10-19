@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import re
 import threading
 import time
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
+from riya import brain
 from riya.agents import install_hooks
 from riya.agents.logwatch import _root
 from riya.core import secrets as keystore
@@ -29,7 +31,11 @@ DETAIL_MAX = 120
 STATUSES = ("ok", "warn", "off")
 CONNECTED_S = 24 * 3600
 ROWS = ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart")
-FIXES = ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart")
+FIXES = ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart",
+         "use_base", "use_riya_v1")
+BROKEN = ("Riya v1 is set, but llama-server runs the base model: the adapter is missing, didn't load or is still "
+          "loading.")
+STILL_V1 = "llama-server still runs an adapter; it switches to the base model on its next check."
 HTTP_MAX_BYTES = 64 * 1024
 
 
@@ -138,6 +144,7 @@ class HealthCtx:
     schema_version: int
     startup_dir: Path
     session_start: float | None = None  # when this core started; None: no test counts as this session's
+    adapter_path: Path | None = None  # her Riya v1 adapter file (it may not exist); None: no switch is offered
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
 
@@ -187,7 +194,34 @@ def check_local(ctx: HealthCtx) -> HealthItem:
         name = PureWindowsPath(model_id).name if isinstance(model_id, str) else ""
     except (ValueError, KeyError, IndexError, TypeError):
         pass
-    return HealthItem("local", "ok", f"llama-server is up · {name}" if name else "llama-server is up")
+    served = brain.served_adapters(ctx.http_get, ctx.local_url.rstrip("/"))
+    want = getattr(ctx.settings, "local_adapter", None)
+    if want and any(brain.same_path(p, want) for p in served):
+        return HealthItem("local", "ok", riya_v1_detail(want, ctx.tz), "use_base")
+    if want:
+        return HealthItem("local", "warn", BROKEN, "use_base")
+    if served:
+        return HealthItem("local", "warn", STILL_V1)
+    adapter = ctx.adapter_path
+    vetted = adapter is not None and Path(adapter).is_file() and brain.read_record(Path(adapter)) is not None
+    return HealthItem("local", "ok", f"LFM2.5 base · {name}" if name else "LFM2.5 base",
+                      "use_riya_v1" if vetted else None)
+
+
+def riya_v1_detail(path: str, tz=None) -> str:
+    """"Riya v1 (adapter <date>, champion +N targets)" from the adapter's mtime and its adopt record."""
+    try:
+        date = datetime.fromtimestamp(os.stat(path).st_mtime, tz).strftime("%Y-%m-%d")
+    except OSError:
+        return "Riya v1 (adapter file missing)"
+    rec = brain.read_record(Path(path))
+    try:
+        gained = int(rec["targets_candidate"]) - int(rec["targets_base"]) if rec else None
+    except (KeyError, TypeError, ValueError):
+        gained = None
+    if gained is None:
+        return f"Riya v1 (adapter {date}, no champion record)"
+    return f"Riya v1 (adapter {date}, champion {gained:+d} targets)"
 
 
 _SOURCES = {"app": " saved in Riya", ".env": " set via .env (edit that file to remove it)",

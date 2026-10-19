@@ -58,6 +58,12 @@ test("fixRequest builds the setup_request, with confirm for the gated actions on
   assert.equal(connect.label, "Connect");
   assert.deepEqual(connect.message, { type: "setup_request", action: "hooks_connect", args: {} });
   assert.equal(H.fixRequest(row("mic", "ok", "mic_check"), {}).confirm, false);
+  assert.deepEqual(H.fixRequest(row("local", "ok", "use_base"), {}), {
+    label: "Use base model", confirm: false, message: { type: "setup_request", action: "use_base", args: {} },
+  });
+  assert.deepEqual(H.fixRequest(row("local", "ok", "use_riya_v1"), {}), {
+    label: "Use Riya v1", confirm: false, message: { type: "setup_request", action: "use_riya_v1", args: {} },
+  });
   assert.equal(H.fixRequest(row("look", "warn", null), {}), null);
   assert.equal(H.fixRequest(row("look", "warn", "online_key_set"), {}), null, "an action with no button is not offered");
 });
@@ -157,6 +163,7 @@ test("every message the Health section builds validates against body_to_core", (
   const rows = [
     ["voice", "ok", "voice_sample"], ["autostart", "off", "autostart"], ["claude_code", "off", "hooks_connect"],
     ["claude_code", "ok", "hooks_disconnect"], ["online", "warn", "online_test"], ["eyes", "ok", "eyes_test"], ["mic", "ok", "mic_check"],
+    ["local", "ok", "use_base"], ["local", "ok", "use_riya_v1"],
   ];
   for (const [key, status, fix] of rows) {
     const req = H.fixRequest({ key, label: "x", status, detail: "", fix }, { voice: "alba" });
