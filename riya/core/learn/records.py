@@ -187,6 +187,11 @@ class LearnDB:
                               (kind, bucket, cell.alpha, cell.beta, cell.updated_at))
             self.conn.commit()
 
+    def update_cell(self, kind: str, bucket: str, fn) -> None:
+        """get_cell, fn, put_cell under one hold of the lock, so a reset_twin is never undone by a record."""
+        with self.lock:
+            self.put_cell(kind, bucket, fn(self.get_cell(kind, bucket)))
+
     def cells(self) -> list[tuple[str, str, Cell]]:
         with self.lock:
             rows = self.conn.execute("select kind, bucket, alpha, beta, updated_at from twin "
