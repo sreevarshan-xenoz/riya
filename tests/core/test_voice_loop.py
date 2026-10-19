@@ -1,14 +1,16 @@
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from riya.core import __main__ as runner
 from riya.core.clock import FakeClock
 from riya.core.listen import ListenGate, rms
 from riya.core.protocol import Say, SetSettings
-from riya.voice import MouthPacer, VoiceLoop, voice_params
+from riya.voice import MouthPacer, VoiceLoop, probe_mic, voice_params
 from tests.fakes import make_core
 
 SR_OUT = 24000
@@ -37,11 +39,19 @@ class FakeSTT:
 class FakeTTS:
     sr = SR_OUT
 
-    def __init__(self, chunks_per_sentence=2, on_chunk=None):
+    def __init__(self, chunks_per_sentence=2, on_chunk=None, voice="alba", fail_voices=()):
         self.calls, self.n, self.on_chunk = [], chunks_per_sentence, on_chunk
+        self.voice, self.fail_voices, self.switches, self.spoken_in = voice, fail_voices, [], []
+
+    def set_voice(self, name):
+        self.switches.append(name)
+        if name in self.fail_voices:
+            raise ValueError(f"no voice {name}")
+        self.voice = name
 
     def stream(self, text, speed, style):
         self.calls.append((text, speed, style))
+        self.spoken_in.append(self.voice)
         for i in range(self.n):
             yield tone(0.3, n=1600, sr=SR_OUT)
             if self.on_chunk:
@@ -276,3 +286,100 @@ def test_say_speaks_tts_text_and_skips_sentences_that_become_empty():
     loop, *_ = make_loop()
     loop.say(iter(["Hmph \U0001F624 *giggles* you're late!", "*sighs*", "\U0001F600", "(laughs) Fine."]))
     assert [c[0] for c in loop.tts.calls] == ["Hmph you're late!", "Fine."]
+
+
+def test_voice_choice_applies_on_her_next_line():
+    loop, core, _, _, _, _ = make_loop(replies=("One.", "Two."))
+    loop.say(core.reply("hi", "typed"))
+    assert loop.tts.switches == [] and loop.tts.spoken_in == ["alba"]
+    core.handle(SetSettings(patch={"voice": "eve"}))  # core.settings reloads from KV
+    loop.say(core.reply("again", "typed"))
+    assert loop.tts.switches == ["eve"] and loop.tts.spoken_in == ["alba", "eve"]
+
+
+def test_sample_speaks_in_the_given_voice_then_her_own_returns():
+    loop, core, _, outputs, _, _ = make_loop(replies=("Back to me.",))
+    loop.sample("cosette", "Hi.")
+    assert loop.tts.calls[0][0] == "Hi." and loop.tts.spoken_in == ["cosette"] and outputs[0].writes
+    loop.say(core.reply("hi", "typed"))
+    assert loop.tts.spoken_in == ["cosette", "alba"] and loop.tts.switches == ["cosette", "alba"]
+
+
+def test_sample_refuses_when_muted():
+    loop, core, _, outputs, _, _ = make_loop()
+    core.handle(SetSettings(patch={"mute_voice": True}))
+    with pytest.raises(RuntimeError) as e:
+        loop.sample("eve", "Hi.")
+    assert str(e.value) == "Her voice is muted in Settings."
+    assert loop.tts.calls == [] and loop.tts.voice == "alba" and loop.tts.switches == [] and outputs == []
+
+
+def test_a_voice_that_fails_to_load_keeps_the_old_one(caplog):
+    loop, core, _, outputs, _, _ = make_loop(tts=FakeTTS(fail_voices=("broken",)))
+    core.handle(SetSettings(patch={"voice": "broken"}))
+    loop.say(core.reply("hi", "typed"))
+    assert loop.tts.switches == ["broken"] and loop.tts.voice == "alba" and loop.tts.spoken_in == ["alba", "alba"]
+    assert outputs[0].writes and "couldn't switch her voice" in caplog.text
+
+
+def test_a_tts_without_set_voice_is_left_alone():
+    class Plain:  # e.g. KokoroTTS: one fixed voice, no switching
+        sr = SR_OUT
+
+        def __init__(self):
+            self.calls = []
+
+        def stream(self, text, speed, style):
+            self.calls.append(text)
+            yield tone(0.3, n=1600, sr=SR_OUT)
+
+    loop, core, _, outputs, _, _ = make_loop(tts=Plain())
+    core.handle(SetSettings(patch={"voice": "eve"}))  # core.settings reloads from KV
+    loop.say(core.reply("hi", "typed"))
+    loop.sample("cosette", "Hi.")
+    assert loop.tts.calls == ["First one.", "Second one.", "Hi."] and len(outputs) == 2
+
+
+def _fake_sounddevice(opened, fail=None):
+    class InputStream:
+        def __init__(self, **kw):
+            if fail is not None:
+                raise fail
+            opened.append(("open", kw))
+
+        def close(self):
+            opened.append(("close", None))
+
+    return SimpleNamespace(query_devices=lambda kind=None: {"name": "Fake Mic", "kind": kind}, InputStream=InputStream)
+
+
+def test_probe_mic_opens_and_closes_the_input(monkeypatch):
+    opened = []
+    monkeypatch.setitem(sys.modules, "sounddevice", _fake_sounddevice(opened))
+    assert probe_mic() == (True, "Fake Mic opens")
+    assert opened == [("open", {"samplerate": 16000, "channels": 1, "blocksize": 512, "dtype": "float32"}),
+                      ("close", None)]
+
+
+def test_probe_mic_reports_a_failure_on_one_line(monkeypatch):
+    why = OSError("Error opening InputStream:\nInvalid device " + "x" * 200)
+    monkeypatch.setitem(sys.modules, "sounddevice", _fake_sounddevice([], fail=why))
+    ok, detail = probe_mic()
+    assert not ok and detail.startswith("The mic didn't open: Error opening InputStream: Invalid device")
+    assert len(detail) <= 120 and "\n" not in detail
+
+
+def test_a_voice_switch_loads_under_the_say_lock():
+    """Residual ruling on M20: pocket_tts's voice-state loading couldn't be shown safe alongside generation on the
+    same model, so a new voice loads under _say_lock (rare and user-started: a short pause beats a race)."""
+    held = []
+
+    class Tts(FakeTTS):
+        def set_voice(self, name):
+            held.append(loop._say_lock.locked())
+            super().set_voice(name)
+
+    loop, core, _, _, _, _ = make_loop(tts=Tts())
+    loop.sample("eve", "Hi.")
+    assert held == [True] and loop.tts.spoken_in == ["eve"]
+    assert not hasattr(Tts, "load_voice")

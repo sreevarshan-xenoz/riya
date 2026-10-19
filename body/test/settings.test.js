@@ -97,6 +97,23 @@ test("voiceOptions lists the presets and keeps a non-preset current voice as a c
   assert.deepEqual(L.voiceOptions("my_clip.wav"), [{ value: "my_clip.wav", label: "my_clip.wav (custom)" }, ...presets]);
 });
 
+test("voiceOptions takes the core's voice list, with the static presets as the fallback", () => {
+  const fallback = L.VOICES.map((v) => ({ value: v, label: v }));
+  assert.deepEqual(L.voiceOptions("alba", ["alba", "eve"]).map((o) => o.value), ["alba", "eve"]);
+  assert.deepEqual(L.voiceOptions("marius", ["alba", "eve"]), [
+    { value: "marius", label: "marius (custom)" }, { value: "alba", label: "alba" }, { value: "eve", label: "eve" }]);
+  assert.deepEqual(L.voiceOptions("alba", []), fallback);
+  assert.deepEqual(L.voiceOptions("alba"), fallback);
+  assert.deepEqual(L.voiceOptions("alba", [3]), fallback);
+  assert.deepEqual(L.voiceOptions("alba", "alba"), fallback);
+});
+
+test("the settings page no longer says the voice needs a restart", () => {
+  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "settings.html"), "utf8");
+  assert.ok(!html.includes("Applies after a restart."));
+  assert.ok(html.includes("Takes effect on her next line."));
+});
+
 test("DeferWhileFocused applies at once when unfocused, and holds only the latest value while focused", () => {
   const d = new L.DeferWhileFocused();
   assert.deepEqual(d.offer("alba", false), { value: "alba" });
@@ -236,4 +253,12 @@ test("an actions fixture is a valid shape for actionText", () => {
 test("learning_enabled is a boolean setting", () => {
   assert.deepEqual(L.settingPatch("learning_enabled", false), { ok: true, patch: { learning_enabled: false } });
   assert.deepEqual(L.settingPatch("learning_enabled", 1), { ok: true, patch: { learning_enabled: true } });
+});
+
+test("every connection change clears the confirm state, so a gated request from before a drop never lingers", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "settings.js"), "utf8");
+  const start = src.indexOf("window.riya.onConnection(");
+  assert.ok(start >= 0);
+  const handler = src.slice(start, src.indexOf("\n  });", start));
+  assert.match(handler, /\n {4}if \(flow\.disconnect\(\)\) closeModal\(\); \/\/ on a reconnect too/, "outside the !connected branch");
 });

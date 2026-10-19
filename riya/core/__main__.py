@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -9,8 +10,10 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from riya.agents import install_hooks
 from riya.agents.hooks import HookReceiver
 from riya.agents.logwatch import LogWatch
+from riya.core import secrets as keystore
 from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
 from riya.core.embed import HashEmbedder
@@ -19,15 +22,17 @@ from riya.core.eyes.capture import make_window_source, set_dpi_awareness
 from riya.core.hands.effects import WindowsEffects
 from riya.core.hands.net import UrlHttp
 from riya.core.listen import ListenGate
-from riya.core.models import load_dotenv, load_online_from_env, local_model
+from riya.core.models import VISION_TIMEOUT_S, load_dotenv, local_model, online_pair  # noqa: F401 (re-exported)
 from riya.core.presence import make_idle_source
 from riya.core.protocol import Mouth
+from riya.core.secrets import KEY_VAR, OnlineKey
+from riya.core.setup import SetupDeps
 from riya.core.store import open_db
+from riya.voice_candidates import FEMININE, voice_choices
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOGWATCH_EVERY_S = 60.0
-VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
@@ -42,6 +47,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--hash-embed", action="store_true", help="use the dependency-free hash embedder")
     ap.add_argument("--legacy-memory", default="riya_memory.json",
                     help="legacy memory file, imported on first run (relative paths start at the repo root)")
+    ap.add_argument("--secrets", default=None,
+                    help="the online key file (default: %%LOCALAPPDATA%%/Riya/secrets.env)")
     return ap.parse_args(argv)
 
 
@@ -61,16 +68,24 @@ def make_embedder(hash_embed: bool):
 def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None],
                body_present: Callable[[], bool] = lambda: True) -> RiyaCore:
     """Per-monitor DPI awareness comes first, before any window source or capture, so window rects and pixels agree.
-    Her eyes get their own online model instance (a longer first-token timeout); on other platforms she has no
-    window to look at. body_present gates her eyes on a connected body."""
+    The online key: one saved in secrets.env beats the repo .env and the process environment (read after .env, so
+    `had` tells the two apart). Her eyes get their own online model instance (a longer first-token timeout); on other
+    platforms she has no window to look at. body_present gates her eyes on a connected body."""
     set_dpi_awareness()
+    had = bool((os.environ.get(KEY_VAR) or "").strip())
     load_dotenv()
+    key = OnlineKey.at_start(os.environ, had, Path(getattr(args, "secrets", None) or keystore.default_path()))
+    online, vision = online_pair(key.env(os.environ))
+    # --no-voice never loads the TTS stack, not even to list its voices
+    voices = (lambda: list(FEMININE)) if getattr(args, "no_voice", False) else voice_choices
+    deps = SetupDeps(key, dict(os.environ), install_hooks.default_settings_path(), install_hooks.default_token_path(),
+                     subprocess.run, voices)
     core = RiyaCore(db=open_db(args.db), embedder=make_embedder(args.hash_embed), clock=SystemClock(),
                     idle_source=make_idle_source(), local=local_model(args.local_url),
-                    online=load_online_from_env(), emit=emit,
-                    vision=load_online_from_env(name="vision", first_token_timeout_s=VISION_TIMEOUT_S),
+                    online=online, emit=emit, vision=vision,
                     window_source=make_window_source(), body_present=body_present,
-                    effects=WindowsEffects(), http=UrlHttp())  # her hands: only the runner gives her real ones
+                    effects=WindowsEffects(), http=UrlHttp(),  # her hands: only the runner gives her real ones
+                    setup_deps=deps, local_url=args.local_url)
     legacy = Path(args.legacy_memory)
     legacy = legacy if legacy.is_absolute() else REPO_ROOT / legacy
     if not core.kv.get("legacy_imported") and legacy.is_file():
@@ -91,9 +106,23 @@ def build_voice(core: RiyaCore, publish: Callable[[BaseModel], None]):
 
 
 def connect_voice(core: RiyaCore, loop):
-    """After a silent bid the mic opens like after any turn, so a spoken answer needs no name."""
+    """After a silent bid the mic opens like after any turn, so a spoken answer needs no name. The Health page's Play
+    sample and Mic check go through the loop and riya.voice.probe_mic; the TTS voice list is read once, on its own
+    riya-voices thread (off the core lock and off the health thread)."""
+    import riya.voice  # here, not at the top: importing the runner loads no audio stack
+
     core.on_spoke_first = loop.gate.open
+    core.voice_sampler = loop.sample
+    core.mic_prober = riya.voice.probe_mic
+    start_voices(core)
     return loop
+
+
+def start_voices(core: RiyaCore) -> threading.Thread:
+    """Her voice list, read once on a riya-voices daemon thread (off the core lock and off the health thread)."""
+    thread = threading.Thread(target=core.cache_voices, name="riya-voices", daemon=True)
+    thread.start()
+    return thread
 
 
 class Speaker:
@@ -165,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    keystore.install_redaction()  # before anything can log: every record, uvicorn's included, is scrubbed of the key
     speaker = Speaker()
     app = create_app(lambda emit: build_core(args, emit, body_present=lambda: app.state.hub.connections > 0),
                      speak=speaker)
@@ -188,6 +218,8 @@ def main(argv: list[str] | None = None) -> None:
                 threading.Thread(target=speaker.loop.run, name="riya-voice", daemon=True).start()
             except Exception:
                 log.exception("voice failed to start; running text-only")
+        if speaker.loop is None:  # text-only: Health and the welcome still list her voices
+            start_voices(core)
         run_ticks(core, speaker, thread.is_alive)
         if core.quit_requested.is_set():
             log.info("Riya was quit from the tray; stopping the core")

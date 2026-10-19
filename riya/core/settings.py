@@ -55,6 +55,7 @@ class Settings:
     weather_place: str | None = None
     hands_online: bool = True
     learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
+    onboarded: bool = False  # the welcome was finished or skipped (true for users from before v0.7)
 
 
 def load_settings(kv: KV) -> Settings:
@@ -195,9 +196,13 @@ def in_quiet_hours(spec: str | None, t: datetime) -> bool:
     return start <= now < end if start < end else now >= start or now < end
 
 
+def default_startup_dir() -> Path:
+    return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+
+
 def set_autostart(enabled: bool, launcher: Path, startup_dir: Path | None = None) -> None:
     if startup_dir is None:
-        startup_dir = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+        startup_dir = default_startup_dir()
     shortcut = startup_dir / "riya.cmd"
     if enabled:
         startup_dir.mkdir(parents=True, exist_ok=True)

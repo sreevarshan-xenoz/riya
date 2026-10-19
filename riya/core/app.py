@@ -1,5 +1,6 @@
 """The localhost WebSocket app: a Hub fans core messages out to every connected body, /ws carries the protocol."""
 import asyncio
+import functools
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager
@@ -39,6 +40,20 @@ class Hub:
     def disconnect(self, q: asyncio.Queue) -> None:
         self._queues.discard(q)
 
+    def send_to(self, q: asyncio.Queue, msg: BaseModel) -> None:
+        """To one socket's queue only, safe from any thread; dropped once that socket is gone."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._deliver_to, q, msg)
+        except RuntimeError:  # the loop is closed (shutting down)
+            pass
+
+    def _deliver_to(self, q: asyncio.Queue, msg: BaseModel) -> None:
+        if q in self._queues:
+            q.put_nowait(msg)
+
     def publish(self, msg: BaseModel) -> None:
         loop = self._loop
         if loop is None:
@@ -74,6 +89,7 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore],
     app.state.hub = hub
 
     async def receive(ws: WebSocket, core: RiyaCore, q: asyncio.Queue, texts: asyncio.Queue) -> None:
+        reply = functools.partial(hub.send_to, q)  # this socket only: setup confirms and results come back here
         while True:
             raw = await ws.receive_text()
             try:
@@ -85,7 +101,7 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore],
                 core.note_typed_turn()  # typed while she streams: timed as a barge-in (it still queues)
                 texts.put_nowait(msg.text)  # answered in order by reply_worker; other messages don't wait behind it
             else:
-                await run_in_threadpool(core.handle, msg)
+                await run_in_threadpool(core.handle, msg, reply)
 
     async def reply_worker(core: RiyaCore, texts: asyncio.Queue) -> None:
         while True:

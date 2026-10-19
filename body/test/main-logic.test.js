@@ -263,3 +263,145 @@ test("learning is replayed to a new window but forgotten on disconnect, and its 
     assert.equal(shouldSendToCore({ type }, true), true, type);
   }
 });
+
+test("health is never replayed and is forgotten on disconnect; setup messages are never queued", () => {
+  for (const t of ["health", "voices", "setup_result", "setup_confirm"]) assert.ok(!REPLAY_TYPES.includes(t), t);
+  assert.ok(FORGET_ON_DISCONNECT.includes("health"));
+  const cache = new Map();
+  for (const msg of [{ type: "settings" }, { type: "health", items: [] }]) rememberForReplay(cache, msg);
+  assert.ok(cache.has("settings") && !cache.has("health"), "health is never cached for replay");
+  cache.set("health", { type: "health", items: [] }); // even if one got in, a disconnect drops it
+  forgetOnDisconnect(cache);
+  assert.deepEqual([...cache.keys()], ["settings"]);
+  for (const type of ["setup_request", "setup_action", "onboarding_done"]) {
+    assert.ok(NOW_ONLY.includes(type), type);
+    assert.equal(shouldSendToCore({ type }, false), false, type);
+    assert.equal(shouldSendToCore({ type }, true), true, type);
+  }
+});
+
+const M = require("../src/main-logic");
+const readBody = (f) => require("node:fs").readFileSync(require("node:path").join(__dirname, "..", f), "utf8");
+
+test("shouldOpenWelcome only for onboarded false, once", () => {
+  assert.equal(M.shouldOpenWelcome({ onboarded: false }, false), true);
+  assert.equal(M.shouldOpenWelcome({ onboarded: false }, true), false);
+  for (const s of [{ onboarded: true }, {}, null, undefined, { onboarded: "false" }, { onboarded: 0 }]) {
+    assert.equal(M.shouldOpenWelcome(s, false), false, JSON.stringify(s));
+  }
+});
+
+test("KEY_URL is the one fixed page the main process opens", () => {
+  assert.equal(M.KEY_URL, "https://aistudio.google.com/apikey");
+});
+
+test("welcomeClosedMessage: closing counts as skipping, quitting sends nothing, onboarded sends nothing", () => {
+  const Ajv = require("ajv");
+  const schema = JSON.parse(readBody("../docs/protocol.schema.json"));
+  const validate = new Ajv({ strict: false }).compile(schema.body_to_core);
+  for (const arg of [{ quitting: false, onboarded: false }, { quitting: false }, { onboarded: false }, {}]) {
+    const m = M.welcomeClosedMessage(arg);
+    assert.deepEqual(m, { type: "onboarding_done" }, JSON.stringify(arg));
+    assert.ok(validate(m));
+  }
+  assert.equal(M.welcomeClosedMessage({ quitting: true, onboarded: false }), null);
+  assert.equal(M.welcomeClosedMessage({ quitting: true }), null);
+  assert.equal(M.welcomeClosedMessage({ quitting: false, onboarded: true }), null);
+});
+
+test("ipcAllowed holds the welcome's IPC rules", () => {
+  assert.equal(M.ipcAllowed("welcome:open", "settings"), true);
+  assert.equal(M.ipcAllowed("welcome:open", "welcome"), false);
+  assert.equal(M.ipcAllowed("welcome:open", "other"), false);
+  assert.equal(M.ipcAllowed("welcome:key-page", "welcome"), true);
+  assert.equal(M.ipcAllowed("welcome:key-page", "settings"), true);
+  assert.equal(M.ipcAllowed("welcome:key-page", "other"), false);
+  assert.equal(M.ipcAllowed("core:send", "settings"), false);
+  assert.equal(M.ipcAllowed("welcome:open", undefined), false);
+  assert.equal(M.ipcAllowed("toString", "settings"), false);
+});
+
+test("the quit-mid-welcome and close-once rules, as the closed handler applies them", () => {
+  // The handler is `const m = welcomeClosedMessage({quitting, onboarded}); if (m) sendToCore(m);` on each close.
+  const sent = [];
+  const closed = (state) => {
+    const m = M.welcomeClosedMessage({ quitting: state.quitting, onboarded: state.settings.onboarded });
+    if (m) sent.push(m);
+  };
+  closed({ quitting: true, settings: { onboarded: false } }); // Riya quitting mid-welcome: before-quit destroyed the window
+  assert.deepEqual(sent, []);
+  const state = { quitting: false, settings: { onboarded: false } };
+  closed(state); // Finish, Skip or the window's own X
+  assert.deepEqual(sent, [{ type: "onboarding_done" }]);
+  state.settings.onboarded = true; // the core's settings message answers
+  closed(state); // reopened from Settings and closed again: nothing
+  assert.equal(sent.length, 1);
+});
+
+test("main.js wires the welcome through the pure rules, and the renderer can never pass a URL", () => {
+  const main = readBody("main.js");
+  const preload = readBody("preload.js");
+  assert.match(main, /welcomeClosedMessage\(\{ quitting: state\.quitting, onboarded: state\.settings\.onboarded \}\)/);
+  assert.match(main, /ipcAllowed\("welcome:open", senderKind\(event\.sender\)\)/);
+  assert.match(main, /ipcAllowed\("welcome:key-page", senderKind\(event\.sender\)\)/);
+  assert.match(main, /shouldOpenWelcome\(msg\.settings, state\.welcomeShown\)/);
+  assert.equal((main.match(/openExternal\(/g) || []).length, 1, "the one fixed link is the only openExternal");
+  assert.match(main, /shell\.openExternal\(KEY_URL\)/);
+  assert.doesNotMatch(main, /onboarding_done/, "main.js reaches onboarding_done only through welcomeClosedMessage");
+  assert.deepEqual(M.welcomeWebPreferences("p").additionalArguments, ["--riya-mode=welcome"]);
+  assert.match(preload, /openWelcome: \(\) => ipcRenderer\.send\("welcome:open"\)/);
+  assert.match(preload, /openKeyPage: \(\) => ipcRenderer\.send\("welcome:key-page"\)/);
+});
+
+/** main.js from `function name(` up to the next top-level function: assertions about one window stay inside it. */
+const fnSlice = (src, name) => {
+  const start = src.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `main.js has ${name}`);
+  const next = src.indexOf("\nfunction ", start + 1);
+  return src.slice(start, next === -1 ? undefined : next);
+};
+
+test("the welcome window's own webPreferences are isolated, sandboxed and without node", () => {
+  const prefs = M.welcomeWebPreferences("C:/x/preload.js");
+  assert.deepEqual(prefs, {
+    preload: "C:/x/preload.js",
+    additionalArguments: ["--riya-mode=welcome"],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  });
+  assert.notEqual(M.welcomeWebPreferences("a"), M.welcomeWebPreferences("a"), "a fresh object each time");
+  const welcome = fnSlice(readBody("main.js"), "openWelcome");
+  assert.match(welcome, /webPreferences: welcomeWebPreferences\(path\.join\(__dirname, "preload\.js"\)\)/);
+  assert.doesNotMatch(welcome, /sandbox: false|contextIsolation: false|nodeIntegration: true/);
+});
+
+test("a Windows shutdown or logoff counts as quitting, so a mid-welcome user is not marked onboarded", () => {
+  assert.deepEqual(M.QUIT_EVENTS, { app: ["before-quit"], window: ["session-end"] });
+  for (const [source, name] of [["app", "before-quit"], ["window", "session-end"]]) {
+    assert.equal(M.isQuitEvent(source, name), true, `${source} ${name}`);
+  }
+  for (const [source, name] of [["window", "query-session-end"], ["window", "close"], ["window", "closed"],
+    ["app", "session-end"], ["x", "before-quit"]]) {
+    assert.equal(M.isQuitEvent(source, name), false, `${source} ${name}`);
+  }
+  // a welcome closed by the session ending sends nothing, like quitting
+  assert.equal(M.welcomeClosedMessage({ quitting: true, onboarded: false }), null);
+  const main = readBody("main.js");
+  assert.doesNotMatch(main, /query-session-end/, "only the real session end counts");
+  const welcome = fnSlice(main, "openWelcome");
+  assert.match(welcome, /for \(const event of QUIT_EVENTS\.window\) win\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
+  assert.ok(welcome.indexOf("QUIT_EVENTS.window") < welcome.indexOf('win.on("closed"'), "wired before the closed handler");
+  assert.match(main, /for \(const event of QUIT_EVENTS\.app\) app\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
+});
+
+test("a logoff query that is then cancelled leaves quitting false: Riya keeps reconnecting and respawning", () => {
+  const state = { quitting: false };
+  const fire = (source, name) => { if (M.isQuitEvent(source, name)) state.quitting = true; };
+  fire("window", "query-session-end"); // Windows asks; another app blocks it, or the user cancels
+  assert.equal(state.quitting, false);
+  assert.notEqual(M.welcomeClosedMessage({ quitting: state.quitting, onboarded: false }), null, "closing the welcome still counts as skipping");
+  fire("window", "session-end"); // the session really ends
+  assert.equal(state.quitting, true);
+  assert.equal(M.welcomeClosedMessage({ quitting: state.quitting, onboarded: false }), null);
+});

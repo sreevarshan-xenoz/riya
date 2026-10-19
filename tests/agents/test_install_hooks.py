@@ -1,3 +1,4 @@
+import codecs
 import json
 from types import SimpleNamespace
 
@@ -296,3 +297,169 @@ def test_group_without_hooks_list_is_left_alone_and_riya_group_added(env):
     assert load(env)["hooks"]["Stop"] == [odd, "weird", {"hooks": "nope"}, {"hooks": [HANDLER]}]
     assert run(env, "--remove") == 0
     assert load(env) == {"hooks": {"Stop": [odd, "weird", {"hooks": "nope"}]}}
+
+
+def test_riya_events():
+    assert ih.riya_events(None) == []
+    assert ih.riya_events({}) == []
+    data = {}
+    ih.merge(data)
+    assert ih.riya_events(data) == [event for event, _ in ih.EVENTS]
+    foreign = {"hooks": {"Stop": [{"hooks": [{"type": "http", "url": "http://example.com/hook"}]}],
+                         "SessionEnd": [{"hooks": [MINE]}]}}
+    assert ih.riya_events(foreign) == []
+    partial = {"hooks": {"SessionEnd": [{"hooks": [MINE, HANDLER]}], "Stop": [{"hooks": [HANDLER]}], "Other": [{"hooks": [HANDLER]}]}}
+    assert ih.riya_events(partial) == ["Stop", "SessionEnd"]  # EVENTS order; unknown events are not counted
+    assert ih.riya_events({"hooks": {"Stop": "junk", "SessionEnd": [None, {"hooks": "x"}]}}) == []  # malformed: no raise
+
+
+def test_riya_events_over_read_settings_shapes(tmp_path):
+    p = tmp_path / "settings.json"
+    ih.merge(d := {})
+    p.write_bytes(codecs.BOM_UTF8 + json.dumps(d).encode())  # a BOM-prefixed file
+    assert ih.riya_events(ih.read_settings(p)) == [e for e, _ in ih.EVENTS]
+    p.write_text("[1, 2]")  # a top-level array
+    with pytest.raises(ih.SettingsError):
+        ih.read_settings(p)
+    p.write_text("[" * 200_000)  # deep nesting: json.loads raises RecursionError, which must not escape
+    with pytest.raises(ih.SettingsError):
+        ih.read_settings(p)
+    assert p.read_text() == "[" * 200_000
+
+
+def test_preview_and_print(env):
+    names = [e for e, _ in ih.EVENTS]
+    text = ih.preview("apply", env.settings)  # a missing file: every event will be added
+    assert text == (f"Riya will add her hook to 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file "
+                    f"is backed up first, and the RIYA_HOOK_TOKEN user environment variable is set to her token. "
+                    f"{ih.RESTART_LINE}")
+    assert ih.RESTART_LINE == "Restart Claude Code (and open a new terminal) afterwards."
+    assert ih.preview("remove", env.settings) == (
+        f"Riya's hook isn't in {env.settings}; nothing will change. {ih.RESTART_LINE}")
+    assert not env.settings.exists()
+
+    assert run(env, "--apply") == 0
+    assert ih.preview("apply", env.settings) == (
+        f"Riya's hook is already in all 10 events in {env.settings}; only the RIYA_HOOK_TOKEN variable is set again. "
+        f"{ih.RESTART_LINE}")
+    assert ih.preview("remove", env.settings) == (
+        f"Riya will remove her hook from 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file is "
+        f"backed up first; the RIYA_HOOK_TOKEN variable is left alone. {ih.RESTART_LINE}")
+
+    data = load(env)
+    del data["hooks"]["Stop"], data["hooks"]["SessionEnd"]
+    env.settings.write_text(json.dumps(data), encoding="utf-8")
+    assert "add her hook to 2 Claude Code event(s)" in ih.preview("apply", env.settings)
+    assert ": Stop, SessionEnd. The file" in ih.preview("apply", env.settings)
+    assert "remove her hook from 8 Claude Code event(s)" in ih.preview("remove", env.settings)
+
+    env.out.clear()
+    before = env.settings.read_bytes()
+    assert run(env, "--print") == 0
+    text = "\n".join(env.out)
+    assert ih.preview("apply", env.settings) in text
+    assert text.index("Settings file:") < text.index(ih.preview("apply", env.settings))
+    assert env.settings.read_bytes() == before and backups(env) == []  # --print still writes nothing
+
+
+def test_preview_raises_settings_error_and_print_skips_it(env):
+    env.settings.parent.mkdir(parents=True)
+    env.settings.write_text("{not json", encoding="utf-8")
+    for mode in ("apply", "remove"):
+        with pytest.raises(ih.SettingsError):
+            ih.preview(mode, env.settings)
+    env.settings.write_text(json.dumps({"hooks": {"Stop": "junk"}}), encoding="utf-8")
+    with pytest.raises(ih.SettingsError):  # --apply would refuse this file, so the preview does too
+        ih.preview("apply", env.settings)
+    env.settings.write_text("{not json", encoding="utf-8")
+    assert run(env, "--print") == 0
+    assert "Riya will" not in "\n".join(env.out) and env.settings.read_text(encoding="utf-8") == "{not json"
+
+
+def test_why_names_the_failed_step(env):
+    why = []
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=Runner(rc=1), token_path=env.token,
+                   out=env.out.append, why=why) == 1
+    assert why == [("setx", "setx failed")]
+    why.clear()
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=env.runner, token_path=env.token,
+                   out=env.out.append, why=why) == 0 and why == []
+    env.settings.write_text("{not json", encoding="utf-8")
+    for flag in ("--apply", "--remove"):
+        why.clear()
+        assert ih.main([flag, "--settings", str(env.settings)], runner=env.runner, token_path=env.token,
+                       out=env.out.append, why=why) == 1
+        assert len(why) == 1 and why[0][0] == "settings" and why[0][1].startswith("settings.json is not valid JSON (")
+        assert str(env.settings.parent) not in why[0][1] and not why[0][1].endswith("nothing was changed")
+    assert set(step for step, _ in why) <= set(ih.FAIL_STEPS)
+    assert run(env, "--apply", runner=Runner(rc=1)) == 1  # the CLI without `why` is unchanged
+
+
+BLOCKERS = [
+    ({"disableAllHooks": True}, "disableAllHooks is true"),
+    ({"allowedHttpHookUrls": ["https://example.com/*"]}, "allowedHttpHookUrls doesn't include http://127.0.0.1:8766/hook"),
+    ({"allowedHttpHookUrls": []}, "allowedHttpHookUrls doesn't include http://127.0.0.1:8766/hook"),
+    ({"httpHookAllowedEnvVars": ["OTHER"]}, "httpHookAllowedEnvVars doesn't include RIYA_HOOK_TOKEN"),
+]
+
+
+@pytest.mark.parametrize("data, reason", BLOCKERS)
+def test_blockers_name_each_setting_and_change_nothing(data, reason):
+    before = json.loads(json.dumps(data))
+    assert ih.blockers(data) == [reason]
+    assert data == before  # read-only
+
+
+def test_blockers_allow_riya_and_list_every_blocker_in_order():
+    for ok in ({}, None, {"disableAllHooks": False}, {"allowedHttpHookUrls": ["http://127.0.0.1:*"]},
+               {"allowedHttpHookUrls": [ih.HOOK_URL], "httpHookAllowedEnvVars": [ih.ENV_VAR]},
+               {"allowedHttpHookUrls": "not a list", "disableAllHooks": "yes"}):
+        assert ih.blockers(ok) == []
+    every = {"httpHookAllowedEnvVars": [], "allowedHttpHookUrls": [], "disableAllHooks": True}
+    assert ih.blockers(every) == ["disableAllHooks is true",
+                                  f"allowedHttpHookUrls doesn't include {ih.HOOK_URL}",
+                                  f"httpHookAllowedEnvVars doesn't include {ih.ENV_VAR}"]
+
+
+@pytest.mark.parametrize("data, reason", BLOCKERS)
+def test_the_apply_preview_names_the_blocker(env, data, reason):
+    put(env, data)
+    text = ih.preview("apply", env.settings)
+    assert f"Claude Code will block her hooks: {reason}." in text and text.endswith(ih.RESTART_LINE)
+    assert load(env) == data  # never edited
+    put(env, {})
+    assert "block" not in ih.preview("apply", env.settings)
+
+
+def test_the_remove_preview_lists_exactly_what_remove_deletes(env):
+    """strip takes Riya's handler out of any event, not only EVENTS: the preview must name every one of them."""
+    data = {"hooks": {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [MINE, HANDLER]}],  # not one of EVENTS
+        "Stop": [{"hooks": [HANDLER]}, {"hooks": [HANDLER, MINE]}],  # two handlers in one event
+        "SessionEnd": [{"hooks": [MINE]}],
+    }}
+    put(env, data)
+    text = ih.preview("remove", env.settings)
+    assert ("Riya will remove her hook from 2 Claude Code event(s) (3 handlers) in "
+            f"{env.settings}: Stop, PreToolUse. ") in text and text.endswith(ih.RESTART_LINE)
+    assert load(env) == data  # the preview wrote nothing
+    assert run(env, "--remove") == 0
+    assert any(line.startswith("Removed 3 Riya handler(s)") for line in env.out)
+    assert load(env) == {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [MINE]}], "Stop": [{"hooks": [MINE]}],
+                                   "SessionEnd": [{"hooks": [MINE]}]}}
+
+
+def test_setx_gets_a_10_s_timeout_and_a_timeout_is_the_failing_step(env):
+    import subprocess
+    assert ih.SETX_TIMEOUT_S == 10
+    assert run(env, "--apply") == 0
+    assert env.runner.calls[-1][1]["timeout"] == 10
+
+    def hangs(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    why = []
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=hangs, token_path=env.token,
+                   out=env.out.append, why=why) == 1
+    assert why == [("setx", "setx timed out after 10 s")]
+    assert any("setx failed" in line for line in env.out)

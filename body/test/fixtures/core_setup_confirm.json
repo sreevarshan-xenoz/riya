@@ -1,0 +1,1 @@
+{"type": "setup_confirm", "nonce": "n0nce-abc", "action": "hooks_connect", "text": "Riya will add her hook to C:\\Users\\you\\.claude\\settings.json and set RIYA_HOOK_TOKEN for your user. Restart Claude Code (and open a new terminal) afterwards."}

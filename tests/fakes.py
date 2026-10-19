@@ -66,6 +66,19 @@ def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, 
     return core, emitted, src, local
 
 
+def wait_for(emitted, cls, timeout_s=5.0, after=0):
+    """The first instance of cls in emitted at index >= after, polled every 10 ms (other threads append to it);
+    AssertionError after timeout_s."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for m in list(emitted[after:]):
+            if isinstance(m, cls):
+                return m
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"no {cls.__name__} within {timeout_s:g} s")
+        time.sleep(0.01)
+
+
 class FixedRng:
     """An rng whose random() always returns the same value."""
 

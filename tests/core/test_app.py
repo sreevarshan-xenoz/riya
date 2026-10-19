@@ -17,6 +17,14 @@ from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
 
 
+@pytest.fixture(autouse=True)
+def no_leftover_redaction():
+    """runner.main installs the key redaction for the whole process: take it off again after each test."""
+    from riya.core import secrets as keystore
+    yield
+    keystore.uninstall_redaction()
+
+
 def client(replies=("Hi there.",), speak=None, delay=0.0):
     def factory(emit):
         core, _, _, local = make_core(local_replies=list(replies))
@@ -146,7 +154,7 @@ def test_main_help_lists_options(capsys):
     except SystemExit as e:
         assert e.code == 0
     out = capsys.readouterr().out
-    for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory"):
+    for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory", "--secrets"):
         assert flag in out
 
 
@@ -440,3 +448,210 @@ def test_a_typed_turn_while_she_streams_is_measured_but_still_queued():
     core = cores[0]
     assert len(calls) == 2 and [(e.kind, e.outcome) for e in core.learn.events()] == [("barge", "barged")]
     assert [t["content"] for t in core.turns if t["role"] == "user"] == ["tell me something", "wait"]
+
+
+# --- v0.7: the online key at start, the voice wiring, a bad setup_request over the socket ---------------------------
+
+CANARY = "CANARY-k3y-0123456789abcdef"
+
+
+def test_a_bad_setup_request_over_the_socket_never_echoes_the_key():
+    raw = '{"type":"setup_request","action":"online_key_set","args":{"key":["' + CANARY + '"]}}'
+    with client() as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "actions")  # the end of hello
+        ws.send_text(raw)
+        m = ws.receive_json()
+        assert m == {"type": "error", "message": "invalid setup_request"} and CANARY not in str(m)
+
+
+def test_connect_voice_wires_the_sampler_and_the_mic_probe(monkeypatch):
+    import riya.voice
+    from riya.core.protocol import VoicesMsg
+    from tests.fakes import wait_for
+    called = []
+
+    def probe():
+        called.append("probe_mic")
+        raise AssertionError("connect_voice must not open the mic")
+
+    class Loop:
+        def __init__(self):
+            self.gate = ListenGate(FakeClock())
+
+        def sample(self, voice, text):
+            called.append("sample")
+            raise AssertionError("connect_voice must not speak")
+
+    monkeypatch.setattr(riya.voice, "probe_mic", probe)
+    loop = Loop()
+    core, emitted, *_ = make_core()
+    assert runner.connect_voice(core, loop) is loop
+    assert core.voice_sampler == loop.sample and core.mic_prober is probe
+    assert core.on_spoke_first == loop.gate.open
+    assert wait_for(emitted, VoicesMsg).items == ["alba"]   # the sandboxed voices, read on the riya-voices thread
+    assert called == []
+
+
+def test_build_core_reads_secrets_after_dotenv(tmp_path, monkeypatch):
+    from riya.core.secrets import KEY_VAR
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    (tmp_path / ".env").write_text(f"{KEY_VAR}=DOTENV-1234567890\n", encoding="utf-8")
+    secrets = tmp_path / "app" / "secrets.env"
+    secrets.parent.mkdir()
+    secrets.write_text(f"{KEY_VAR}=APP-1234567890\n", encoding="utf-8")
+    monkeypatch.setenv(KEY_VAR, "x")  # recorded, so teardown removes what load_dotenv exports
+    monkeypatch.delenv(KEY_VAR)
+    core = runner.build_core(core_args(tmp_path, hash_embed=True, secrets=str(secrets)), lambda m: None)
+    assert core.online.api_key == "APP-1234567890" and core.vision.api_key == "APP-1234567890"
+    assert core.online.first_token_timeout_s == 8 and core.vision.first_token_timeout_s == 20
+    key = core.setup.deps.key
+    assert key.info().source == "app" and (key.base, key.base_source) == ("DOTENV-1234567890", ".env")
+    assert key.path == secrets and core.local_url == "http://127.0.0.1:1"
+
+
+def test_no_parse_error_over_the_socket_echoes_the_key(caplog):
+    caplog.set_level("DEBUG")
+    sent = ['{"type":"setup_requesx","args":{"key":"' + CANARY + '"}}',
+            '{"type":"set_settings","patch":"' + CANARY + '"}',
+            '{"type":"user_text","text":["' + CANARY + '"]}']
+    with client() as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "actions")  # the end of hello
+        frames = []
+        for raw in sent:
+            ws.send_text(raw)
+            frames.append(ws.receive_json())
+    assert [f["message"] for f in frames] == ["invalid message", "invalid set_settings", "invalid user_text"]
+    for text in [str(f) for f in frames] + [caplog.text]:
+        assert not any(part in text for part in (CANARY, CANARY[:10], CANARY[-10:]))
+
+
+# --- fix round 1: her voices without the voice loop -----------------------------------------------------------------
+
+def test_voice_choices_fall_back_to_the_feminine_list(monkeypatch):
+    from riya import voice_candidates as vc
+    monkeypatch.setattr(vc, "builtin_voices", lambda: [])  # no pocket_tts
+    assert vc.voice_choices() == list(vc.FEMININE)
+
+    def broken():
+        raise RuntimeError("a broken install")
+    monkeypatch.setattr(vc, "builtin_voices", broken)
+    assert vc.voice_choices() == list(vc.FEMININE)
+    monkeypatch.setattr(vc, "builtin_voices", lambda: ["marius", "eve", "alba"])
+    assert vc.voice_choices() == ["alba", "eve"]
+
+
+def test_build_core_lists_her_voices_without_the_voice_stack(tmp_path, monkeypatch):
+    from riya import voice_candidates as vc
+    asked = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    monkeypatch.setattr(vc, "builtin_voices", lambda: asked.append(1) or [])
+    core = runner.build_core(core_args(tmp_path, hash_embed=True), lambda m: None)
+    core.setup.load_voices()
+    assert core.setup.voices() == list(vc.FEMININE) and asked == [1]
+    core.kv.conn.close()
+    quiet = runner.build_core(core_args(tmp_path, hash_embed=True, no_voice=True), lambda m: None)
+    quiet.setup.load_voices()                             # --no-voice never touches the TTS stack
+    assert quiet.setup.voices() == list(vc.FEMININE) and asked == [1]
+
+
+def test_main_lists_her_voices_when_text_only(monkeypatch):
+    import uvicorn
+
+    from riya.core.protocol import QuitCore, VoicesMsg
+    from tests.fakes import wait_for
+    made = {}
+
+    def build_core(args, emit, body_present):
+        core, emitted, *_ = make_core()
+        made["emitted"] = emitted
+        core.handle(QuitCore())
+        return core
+
+    class Server:
+        def __init__(self, config):
+            self.config, self.should_exit = config, False
+
+        def run(self):
+            with TestClient(self.config.app):
+                while not self.should_exit:
+                    threading.Event().wait(0.01)
+
+    class Receiver:
+        ok = True
+
+        def __init__(self, enqueue):
+            pass
+
+        def start(self):
+            return self
+
+        def stop(self):
+            pass
+
+    def start_logwatch(core):
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return threading.Event(), thread
+
+    monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(runner, "HookReceiver", Receiver)
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    assert runner.main(["--no-voice", "--hash-embed"]) is None
+    assert wait_for(made["emitted"], VoicesMsg).items == ["alba"]  # the sandboxed list, read on riya-voices
+
+
+def test_setup_confirms_and_results_go_only_to_the_asking_connection(tmp_path):
+    """Each nonce is bound to the socket that sent the setup_request: another socket never sees it, can't use it, and
+    never gets the result."""
+    import json
+    from types import SimpleNamespace
+
+    from riya.core.secrets import OnlineKey
+    from riya.core.setup import NONCE_REFUSED, SetupDeps
+
+    runs = []
+
+    def run(cmd, **kw):
+        runs.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    settings = tmp_path / "claude" / "settings.json"
+    setup_deps = SetupDeps(OnlineKey(tmp_path / "secrets.env", None, None), {}, settings, tmp_path / "hook_token",
+                           run, lambda: ["alba"])
+
+    def factory(emit):
+        core, *_ = make_core(setup_deps=setup_deps)
+        core.emit = emit
+        return core
+
+    with TestClient(create_app(factory)) as c, c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
+        for ws in (a, b):
+            receive_until(ws, "actions")
+        a.send_json({"type": "setup_request", "action": "hooks_connect", "args": {}})
+        receive_until(a, "setup_confirm")
+        b.send_json({"type": "get_memories"})
+        assert "setup_confirm" not in receive_until(b, "memories")
+
+        # a's nonce from the other socket: refused there, nothing runs, and a can still use it
+        sent = []
+
+        def grab(ws, type_):
+            while True:
+                m = ws.receive_json()
+                sent.append(m)
+                if m["type"] == type_:
+                    return m
+        a.send_json({"type": "setup_request", "action": "hooks_connect", "args": {}})
+        nonce = grab(a, "setup_confirm")["nonce"]
+        b.send_json({"type": "setup_action", "nonce": nonce, "yes": True})
+        assert grab(b, "error")["message"] == NONCE_REFUSED
+        assert runs == [] and not settings.exists()
+        a.send_json({"type": "setup_action", "nonce": nonce, "yes": True})
+        result = grab(a, "setup_result")
+        assert (result["action"], result["ok"]) == ("hooks_connect", True) and len(runs) == 1
+        b.send_json({"type": "get_memories"})
+        assert "setup_result" not in receive_until(b, "memories")
+        assert json.loads(settings.read_text(encoding="utf-8"))["hooks"]
