@@ -134,11 +134,16 @@ def _threads(action: Action) -> list:
     return [action.thread] if action.thread else []
 
 
-def _chat_mid_game(text: str) -> bool:
-    """Never a game move, in any game: a screen question, a remember-that, an identity, about-me or feelings question,
-    or a mention of their agents ("how's my agent doing?")."""
+def _priority(text: str) -> bool:
+    """The spec's priority intents, which always pre-empt her hands: a screen question, a remember-that, an identity,
+    about-me or feelings question."""
     return (is_screen_question(text) or remember_intent(text) is not None or is_identity_question(text)
-            or about_me(text) or is_feelings_question(text) or games.about_agents(text))
+            or about_me(text) or is_feelings_question(text))
+
+
+def _chat_mid_game(text: str) -> bool:
+    """Never a game move, in any game: a priority intent or a mention of their agents ("how's my agent doing?")."""
+    return _priority(text) or games.about_agents(text)
 
 
 def _thumb(jpeg: bytes) -> bytes:
@@ -271,9 +276,9 @@ class RiyaCore:
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
         """The user's turn, in priority order: a pending confirmation takes it first (even mid-game); then the
-        existing intents (screen, remember-that, identity, about-me, feelings, agents) never act; then the game; then
-        a T3 refusal, a matched call, or the online model's proposal; else a normal reply. Only this turn's own text
-        ever reaches match, propose or a confirmation."""
+        priority intents (screen, remember-that, identity, about-me, feelings; mid-game also a mention of their agents)
+        never act; then the game; then a T3 refusal, a matched call, or the online model's proposal; else a normal
+        reply. Only this turn's own text ever reaches match, propose or a confirmation."""
         with self._lock:
             taken = None
             try:
@@ -282,7 +287,7 @@ class RiyaCore:
                 log.exception("couldn't take the confirmation turn")
             if taken is not None and not (yield from self._confirm_answer(text, *taken)):
                 return
-            chat, call = _chat_mid_game(text), None
+            chat, call = (_chat_mid_game if self.game is not None else _priority)(text), None
             try:
                 if not chat:
                     call = FORBIDDEN if is_forbidden(text) else self._match(text)

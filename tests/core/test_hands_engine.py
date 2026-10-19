@@ -623,3 +623,40 @@ def test_initiative_quiet_hours_use_the_core_tz():
     assert core.initiative.on_break("break", 3 * 3600, []) is None
     core2, *_ = make_core(FakeClock(NOON), tz=timezone.utc)
     assert core2.initiative.on_break("break", 3 * 3600, []) is not None
+
+
+# ---- final review: I1, only the spec's priority intents pre-empt the hands outside a game ----------------------
+CLAUDE_APP = {"name": "claude", "target": "C:/Apps/Claude.lnk"}
+BUILD = {"name": "build", "argv": ["C:/tools/build.cmd"], "cwd": None, "timeout_s": 60}
+
+
+@pytest.mark.parametrize("turn, check", [
+    ("remind me to check on my agent at 5", lambda c: [r.text for r in c.hands.active()] == ["check on my agent"]),
+    ("open claude", lambda c: c.effects.calls == [("open_app", "C:/Apps/Claude.lnk")]),
+    ("run my build", lambda c: c.confirms.pending is not None and c.confirms.pending.call.args["name"] == "build"),
+    ("note that the claude run failed", lambda c: [n.text for n in c.hands.notes()] == ["the claude run failed"]),
+    ("set a timer for 20 minutes for my training run",
+     lambda c: [(r.kind, r.due_at - r.created_at) for r in c.hands.active()] == [("timer", 1200.0)]),
+])
+def test_agent_words_reach_the_hands_outside_a_game(turn, check):
+    core, emitted, *_ = hands_core(apps=[CLAUDE_APP], commands=[BUILD], tools_enabled=T2_ON)
+    list(core.reply(turn))
+    assert check(core), (turn, core.effects.calls, logged(core))
+    assert core.effects.calls in ([], [("open_app", "C:/Apps/Claude.lnk")]) and core._command_thread is None
+
+
+def test_a_timer_for_my_training_run_with_no_length_reaches_the_online_model():
+    online = FakeModel("online", tool_replies=(ToolReply([("timer_set", '{"duration": "20 minutes"}')]),))
+    core, *_ = hands_core(online=online)
+    list(core.reply("set a timer for my training run"))
+    assert len(online.tool_calls) == 1
+    assert [r.kind for r in core.hands.active()] == ["timer"]
+
+
+def test_agent_words_mid_game_stay_chat():
+    core, *_ = hands_core()
+    core.game_rng = random.Random(3)
+    list(core.reply("can we play riddles"))
+    list(core.reply("remind me to check on my agent at 5"))
+    assert core.hands.active() == [] and logged(core) == []
+    assert core.game is not None and core.game.kind == "riddles"
