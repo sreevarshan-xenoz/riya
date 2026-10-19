@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _V1 = """
 create table facts(id integer primary key, text text not null, key text, source text not null
@@ -40,7 +40,20 @@ create table actions(id integer primary key, at real not null, tool text not nul
 create index actions_at on actions(at);
 """
 
-_MIGRATIONS = [_V1, _V2, _V3]
+# v0.6: she learns you (the live dials stay in kv; their history, her style notes, the decision twin, a signal log)
+_V4 = """
+create table trait_history(id integer primary key, at real not null, dial text not null, old real not null,
+  new real not null, reason text not null, source text not null check(source in ('explicit','drift','reset')));
+create table style_notes(id integer primary key, at real not null, text text not null,
+  polarity text not null check(polarity in ('like','dislike','rule')), active integer not null default 1);
+create table twin(kind text not null, bucket text not null, alpha real not null, beta real not null,
+  updated_at real not null, primary key(kind, bucket));
+create table events(id integer primary key, at real not null, kind text not null, outcome text not null,
+  context_json text not null);
+create index events_at on events(at);
+"""
+
+_MIGRATIONS = [_V1, _V2, _V3, _V4]
 
 
 def _backup(conn: sqlite3.Connection, path: Path) -> None:

@@ -14,8 +14,10 @@ THREAD = Thread(1, "Ask how the exam went", NOW, "open", None)
 
 def test_traits_file_is_versioned():
     t = load_traits_file()
-    assert t["version"] >= 1 and t["history"][0]["reason"]
-    assert set(t["traits"]) == {"sweetness", "teasing", "clinginess", "verbosity"}
+    assert t["version"] == 2 and len(t["history"]) == 2 and t["history"][0]["reason"] and t["history"][1]["version"] == 2
+    assert set(t["traits"]) == {"sweetness", "teasing", "clinginess", "verbosity", "emoji"} and t["traits"]["emoji"] == 0.3
+    from riya.core.learn.dials import BANDS
+    assert all(BANDS[k][0] <= v <= BANDS[k][1] for k, v in t["traits"].items())
 
 
 def test_persona_has_base_and_companion_layers():
