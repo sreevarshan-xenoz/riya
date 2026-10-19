@@ -147,3 +147,10 @@ def test_describe_allows_400_tokens():
     m = FakeModel("online", [note_json()])
     describe(m, JPEG)
     assert m.max_tokens == [400]
+
+
+def test_vision_messages_mime():
+    assert vision_messages(JPEG, "q")[-1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    png = b"\x89PNG\r\n\x1a\nfake"
+    url = vision_messages(png, "q", mime="image/png")[-1]["content"][1]["image_url"]["url"]
+    assert url == "data:image/png;base64," + base64.b64encode(png).decode()

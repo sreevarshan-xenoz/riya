@@ -52,7 +52,7 @@ def test_a_v1_database_migrates_to_current_keeping_its_data(tmp_path):
     p = tmp_path / "riya.db"
     _v1_db(p)
     db = open_db(p)
-    assert SCHEMA_VERSION == 4 and db.execute("pragma user_version").fetchone()[0] == 4
+    assert SCHEMA_VERSION == 5 and db.execute("pragma user_version").fetchone()[0] == 5
     mem = Memory(db, HashEmbedder(), FakeClock())
     assert [f.text for f in mem.list_facts()] == ["The user likes tea"]
     assert [r["text"] for r in mem.unconsolidated()] == ["hi"]
@@ -114,14 +114,14 @@ def test_a_v2_database_migrates_to_current_keeping_its_rows(tmp_path):
     p = tmp_path / "riya.db"
     _v2_db(p)
     db = open_db(p)
-    assert db.execute("pragma user_version").fetchone()[0] == 4
+    assert db.execute("pragma user_version").fetchone()[0] == 5
     assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
     assert db.execute("select count(*) from glances").fetchone()[0] == 1
-    assert KV(db).get("settings") == {"mode": "panel"}
+    assert KV(db).get("settings") == {"mode": "panel", "onboarded": True}
     names = {r[0] for r in db.execute("select name from sqlite_master")}
     assert {"reminders", "notes", "actions", "reminders_due", "actions_at"} <= names
     db.close()
-    assert open_db(p).execute("pragma user_version").fetchone()[0] == 4        # a second open doesn't migrate again
+    assert open_db(p).execute("pragma user_version").fetchone()[0] == 5        # a second open doesn't migrate again
 
 
 def test_a_failed_v3_migration_leaves_the_v2_database_untouched(tmp_path, monkeypatch):
@@ -220,7 +220,7 @@ def _counts(conn):
     return {t: conn.execute(f"select count(*) from {t}").fetchone()[0] for t in _V3_ROWS}
 
 
-def test_a_populated_v3_db_migrates_to_v4(tmp_path):
+def test_a_populated_v3_db_migrates_to_current(tmp_path):
     import sqlite3
 
     from riya.core.learn.records import LearnDB
@@ -228,10 +228,10 @@ def test_a_populated_v3_db_migrates_to_v4(tmp_path):
     p = tmp_path / "riya.db"
     _v3_db(p)
     db = open_db(p)
-    assert db.execute("pragma user_version").fetchone()[0] == 4
+    assert db.execute("pragma user_version").fetchone()[0] == 5
     assert _counts(db) == _V3_ROWS
     assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
-    assert KV(db).get("settings") == {"mode": "panel"}
+    assert KV(db).get("settings") == {"mode": "panel", "onboarded": True}
     assert db.execute("select text from notes").fetchone()[0] == "buy milk"
     assert tuple(db.execute("select tool, outcome from actions").fetchone()) == ("open_app", "ran")
     assert tuple(db.execute("select text, due_at from reminders").fetchone()) == ("tea", 9.0)
@@ -239,7 +239,7 @@ def test_a_populated_v3_db_migrates_to_v4(tmp_path):
     assert {"trait_history", "style_notes", "twin", "events", "events_at"} <= names
     assert LearnDB(db).dials() == load_traits()
     db.close()
-    bak = tmp_path / "riya.db.pre-v4.bak"
+    bak = tmp_path / "riya.db.pre-v5.bak"
     old = sqlite3.connect(str(bak))
     assert old.execute("pragma user_version").fetchone()[0] == 3
     assert _counts(old) == _V3_ROWS
@@ -247,7 +247,7 @@ def test_a_populated_v3_db_migrates_to_v4(tmp_path):
     old.close()
     mtime = bak.stat().st_mtime_ns
     again = open_db(p)                                    # already current: no second migration, no new backup
-    assert again.execute("pragma user_version").fetchone()[0] == 4 and _counts(again) == _V3_ROWS
+    assert again.execute("pragma user_version").fetchone()[0] == 5 and _counts(again) == _V3_ROWS
     assert bak.stat().st_mtime_ns == mtime
     again.close()
 
@@ -272,3 +272,61 @@ def test_a_failed_v4_migration_leaves_the_v3_database_untouched(tmp_path, monkey
     assert _counts(conn) == _V3_ROWS
     conn.close()
     assert open_db(p).execute("select count(*) from facts").fetchone()[0] == 1
+
+
+# ---- v0.7: schema v5 marks existing users onboarded, once ------------------------------------------------------------
+def _v4_db(path, settings=True):
+    """A database exactly as v0.6 left it: schema 4, with or without a settings row."""
+    import sqlite3
+
+    from riya.core import store
+    conn = sqlite3.connect(str(path))
+    conn.executescript(store._V1 + store._V2 + store._V3 + store._V4 + "pragma user_version=4;")
+    if settings:
+        conn.execute("""insert into kv(key, value) values('settings', '{"mode": "panel"}')""")
+    conn.commit()
+    conn.close()
+
+
+def test_existing_users_are_onboarded_new_ones_are_not(tmp_path):
+    from dataclasses import replace
+
+    from riya.core.protocol import OnboardingDone, SettingsMsg, SetupResult
+    from riya.core.settings import load_settings, save_settings
+    from tests.fakes import make_core, wait_for
+    builders = {"v1": _v1_db, "v2": _v2_db, "v3": _v3_db, "v4": _v4_db, "v4-bare": lambda p: _v4_db(p, settings=False)}
+    for name, build in builders.items():
+        p = tmp_path / name / "riya.db"
+        p.parent.mkdir()
+        build(p)
+        db = open_db(p)
+        s = load_settings(KV(db))
+        assert s.onboarded is True, name
+        assert s.mode == ("buddy" if name == "v4-bare" else "panel"), name   # the other settings are kept
+        db.close()
+
+    fresh = tmp_path / "new" / "riya.db"
+    db = open_db(fresh)
+    assert load_settings(KV(db)).onboarded is False
+    db.close()
+    db = open_db(fresh)                                   # quit mid-welcome: still not onboarded on the next open
+    kv = KV(db)
+    assert load_settings(kv).onboarded is False
+    save_settings(kv, replace(load_settings(kv), onboarded=True))
+    db.close()
+    assert load_settings(KV(open_db(fresh))).onboarded is True
+
+    core, emitted, *_ = make_core()
+    hello = next(m for m in core.hello_messages() if isinstance(m, SettingsMsg))
+    assert hello.settings["onboarded"] is False
+    core.handle(OnboardingDone())
+    assert wait_for(emitted, SettingsMsg).settings["onboarded"] is True    # on a riya-setup thread
+    wait_for(emitted, SetupResult)
+    welcome = [a for a in core.hands.actions() if a.summary == "Finished the welcome"]
+    assert [a.outcome for a in welcome] == ["ran"]
+    mark = len(emitted)
+    core.handle(OnboardingDone())                         # idempotent
+    import time
+    time.sleep(0.2)
+    assert not [m for m in emitted[mark:] if isinstance(m, SetupResult)]
+    assert len([a for a in core.hands.actions() if a.summary == "Finished the welcome"]) == 1

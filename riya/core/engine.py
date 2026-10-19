@@ -17,7 +17,8 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from riya.agents.hub import AgentEvent, AgentHub, summarize
-from riya.core import games
+from riya.core import games, health
+from riya.core import secrets as keystore
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
@@ -43,22 +44,28 @@ from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_S
                               agents_block, bid_situation, build_messages, cant_see_situation, eyes_block,
                               greeting_reports, greeting_situation, hands_situation, likes_block, remember_situation,
                               reminders_block, report_bubble, report_line, report_situation, style_line, tool_turn)
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
-                                Confirm, ConfirmDone, ConfirmRequest, DialInfo, DontLook, EpisodeDelete, ErrorMsg,
-                                ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, LearningMsg,
-                                LearningReset, Look, MemoriesMsg, MemoryCorrect, MemoryDelete, NoteDelete, NoteInfo,
-                                QuitCore, ReminderCancel, ReminderInfo, RemindersMsg, Say, SayEnd, SetSettings,
-                                SettingsMsg, StateMsg, StyleNoteDelete, StyleNoteInfo, TalkHotkey, ThreadResolve,
-                                TraitChangeInfo, TranscriptDelete, TwinInfo, TwinReset)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo,
+                                AgentsMsg, Confirm, ConfirmDone, ConfirmRequest, DialInfo, DontLook, EpisodeDelete,
+                                ErrorMsg, ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, HealthGet,
+                                HealthItemInfo, HealthMsg, Hello, LearningMsg, LearningReset, Look, MemoriesMsg,
+                                MemoryCorrect, MemoryDelete, NoteDelete, NoteInfo, OnboardingDone, QuitCore,
+                                ReminderCancel, ReminderInfo, RemindersMsg, Say, SayEnd, SetSettings, SettingsMsg,
+                                SetupAction, SetupConfirm, SetupRequest, SetupResult, StateMsg, StyleNoteDelete,
+                                StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo, TranscriptDelete, TwinInfo,
+                                TwinReset, VoicesMsg)
 from riya.core.router import Router, needs_thinking
-from riya.core.settings import Settings, apply_patch, in_quiet_hours, load_settings, save_settings, set_autostart
+from riya.core.secrets import KeyInfo
+from riya.core.settings import (Settings, apply_patch, default_startup_dir, in_quiet_hours, load_settings,
+                                save_settings, set_autostart)
+from riya.core.setup import NONCE_REFUSED, TESTS_KEY, Outcome, Setup, SetupDeps
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_for, cap_sentences, count_emoji,
                                drop_generic, emoji_limit, is_feelings_question, is_identity_question, limit_emoji,
                                strip_label, turn_kind)
 from riya.core.store import KV
 
 log = logging.getLogger("riya.engine")
-LAUNCHER = Path(__file__).resolve().parents[2] / "scripts" / "start_riya.ps1"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LAUNCHER = REPO_ROOT / "scripts" / "start_riya.ps1"
 MODEL_DOWN = "Riya's local model isn't responding"
 KEEP_TURNS = 24
 BID_IGNORED_S = 300
@@ -67,6 +74,8 @@ SAVE_EVERY_S = 30
 STATE_EVERY_S = 30
 PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
+KEY_NOT_REMEMBERED = ("That looks like a key, so I won't remember it~ Paste it in Settings, under Health, and I'll keep "
+                      "it safe.")  # a remember-that turn holding a pasted key (the welcome's name step comes first)
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
@@ -200,17 +209,35 @@ class Utterance:
                 done()
 
 
+class _Unreadable:
+    """A Health context field that couldn't be read: any use of it raises that error again, so the check that reads it
+    becomes one warn row ("This check failed (KeyError).") and the rest of the checklist still reports."""
+
+    def __init__(self, error: Exception):
+        object.__setattr__(self, "_error", error)
+
+    def _fail(self, *_args, **_kw):
+        raise object.__getattribute__(self, "_error").with_traceback(None)
+
+    __getattr__ = __fspath__ = __bool__ = __str__ = __format__ = __eq__ = __lt__ = __le__ = __gt__ = __ge__ = _fail
+    __iter__ = __getitem__ = __contains__ = __len__ = __add__ = __sub__ = __rsub__ = __float__ = __int__ = _fail
+    __hash__ = None
+
+
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None, vision: ChatModel | None = None,
                  window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
                  body_present: Callable[[], bool] = lambda: True, effects=None, http=None,
-                 riya_dir: str | Path | None = None, tz=None):
+                 riya_dir: str | Path | None = None, tz=None, setup_deps: SetupDeps | None = None,
+                 local_url: str | None = None):
         """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
         window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
         body is connected (her eyes stay shut without one). effects and http: her hands on the OS and the network
         (None: she has none, and every such tool fails kindly; the runner passes the real ones). riya_dir: the only
-        folder write_file writes into. tz: the zone for times she parses and for quiet hours (None: the machine's)."""
+        folder write_file writes into. tz: the zone for times she parses and for quiet hours (None: the machine's).
+        setup_deps: what the Health page's actions touch (the key file, Claude Code's settings, the installer's runner,
+        the voice list); None sandboxes them all under riya_dir. local_url: llama-server's base URL, for Health."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
         self.effects, self.http, self.tz = effects, http, tz
         self.riya_dir = Path(riya_dir) if riya_dir is not None else default_riya_dir()
@@ -302,13 +329,28 @@ class RiyaCore:
         self._offer: tuple[str, float] | None = None  # (game, when) a bid offered while an agent was busy
         self.game_rng = random.Random()
         self._expression = self._face()
+        # v0.7: Health and setup. Checks and actions run on their own threads, never under the core lock
+        self.local_url = local_url or ""
+        self.voice_sampler: Callable[[str, str], None] | None = None  # the voice loop's sample, set by the runner
+        self.mic_prober: Callable[[], tuple[bool, str]] | None = None  # riya.voice.probe_mic, set by the runner
+        self.health_http = health.default_http_get
+        self.health_timeout_s = health.CHECK_TIMEOUT_S
+        self.startup_dir: Path | None = None  # None: the real Startup folder
+        self._session_start = self.clock.now()  # a voice sample before this is no evidence she speaks now
+        self._settings_lock = threading.Lock()  # a settings patch: saved, applied and sent as one
+        self._health_lock = threading.Lock()  # guards _health_running and _health_again
+        self._health_running = self._health_again = False
+        self._health_fields: dict[str, health.Later] = {}  # each context field's last reader (guarded by _health_lock)
+        self.setup = Setup(self, setup_deps or SetupDeps.sandboxed(self.riya_dir / ".setup"),
+                           on_result=self._setup_result)
 
     @property
     def settings(self) -> Settings:
         return load_settings(self.kv)
 
     def _consolidation_model(self) -> ChatModel:
-        return self.online if self.settings.online_consolidation and self.online else self.local
+        online = self.online  # read once: a key cleared in between must not hand the consolidator None
+        return online if self.settings.online_consolidation and online else self.local
 
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
@@ -316,7 +358,12 @@ class RiyaCore:
         priority intents (screen, remember-that, identity, about-me, feelings; mid-game also a mention of their agents)
         never act; then the game; then a T3 refusal, a matched call, or the online model's proposal; else a normal
         reply. Only this turn's own text ever reaches match, propose, a confirmation or detect_feedback: feedback is
-        read last, only when nothing above took the turn, and its turn (and her answer) never reaches consolidation."""
+        read last, only when nothing above took the turn, and its turn (and her answer) never reaches consolidation.
+        A remember-that turn holding a key-shaped string is refused: the string is hidden before anything records or
+        sends the turn, nothing is remembered, and she says why (KEY_NOT_REMEMBERED)."""
+        refused = None
+        if (said := remember_intent(text)) is not None and keystore.key_shaped(said):
+            text, refused = keystore.hide_key_shaped(text), KEY_NOT_REMEMBERED
         with self._lock:
             taken = None
             try:
@@ -361,7 +408,7 @@ class RiyaCore:
                 log.exception("couldn't read the turn for feedback")
             saved = None
             try:
-                saved = self._take_user_turn(text, consolidate=ack is None)
+                saved = self._take_user_turn(text, remember=refused is None, consolidate=ack is None)
             except Exception:
                 log.exception("couldn't record the user's turn")
             base = [note, remember_situation(saved) if saved else None,
@@ -376,11 +423,12 @@ class RiyaCore:
                 except Exception:
                     log.exception("couldn't look for a screen question")
             situation = " ".join(filter(None, [*base, seeing.situation if seeing else None])) or None
-            lead = None
+            lead = refused
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
-                                   ack=ack, small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None,
+                                   ack=ack, small=bool(saved or refused),
+                                   seeing=seeing if seeing and seeing.jpeg else None,
                                    consolidate=ack is None)
 
     def _game_move(self, text: str, acting: bool = False) -> tuple[games.GameState, games.Verdict] | None:
@@ -1939,7 +1987,10 @@ class RiyaCore:
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
-    def handle(self, msg: BaseModel) -> None:
+    def handle(self, msg: BaseModel, reply: Callable[[BaseModel], None] | None = None) -> None:
+        """A body message. `reply` sends to the connection it came from (None: every connection, for in-process
+        callers): a setup_confirm with its nonce, every setup result and an error go only there."""
+        send = reply or self.emit
         try:
             if isinstance(msg, GetMemories):  # the settings page opened: what she learned, then the memories
                 self._emit_learning()
@@ -1991,10 +2042,24 @@ class RiyaCore:
             elif isinstance(msg, QuitCore):
                 self.quit_requested.set()
                 return
+            elif isinstance(msg, HealthGet):
+                self._start_health()
+                return
+            elif isinstance(msg, SetupRequest):  # a SetupError (a ValueError) names the action, never the args
+                if ask := self.setup.request(msg.action, msg.args, to=reply):
+                    send(SetupConfirm(nonce=ask.nonce, action=ask.action, text=ask.text))
+                return
+            elif isinstance(msg, SetupAction):
+                if not self.setup.answer(msg.nonce, msg.yes, to=reply):
+                    send(ErrorMsg(message=NONCE_REFUSED))
+                return
+            elif isinstance(msg, OnboardingDone):  # idempotent: nothing happens once onboarded
+                self.setup.request("onboarding_done", {}, to=reply)
+                return
             else:  # BodyReady (the socket sends hello on connect) and UserText (goes through reply)
                 return
         except (KeyError, ValueError) as e:
-            self.emit(ErrorMsg(message=str(e)))
+            send(ErrorMsg(message=str(e)))
             return
         self.emit(self._memories_msg())
 
@@ -2008,27 +2073,186 @@ class RiyaCore:
                            notes=[NoteInfo(id=n.id, at=n.at, text=n.text) for n in self.hands.notes()])
 
     def _set_settings(self, patch: dict) -> None:
-        old = self.settings
         try:
-            new = apply_patch(old, patch)
+            self.patch_settings(patch)
         except ValueError as e:
             self.emit(ErrorMsg(message=str(e)))
-            return
-        save_settings(self.kv, new)
-        self.router.online_enabled = new.online_enabled
+        except OSError as e:
+            self.emit(ErrorMsg(message=f"couldn't change autostart: {e}"))
+
+    # ---- SetupHost: what the Health page's actions may touch ---------------------------------------------------------
+    def patch_settings(self, patch: dict) -> Settings:
+        """Validate, save and apply a settings patch, then emit it. ValueError for a bad patch (nothing is saved). A
+        patch holding "autostart" always rewrites or removes the Startup shortcut (so Health can repair a missing one);
+        when that fails, everything else still applies and is emitted, and an OSError is raised at the end."""
+        failed: OSError | None = None
+        # saved, applied and sent as one: two racing patches (a setup thread and the socket) can't leave the runtime
+        # state or the last SettingsMsg on the older one. Inside it only _eyes_lock, _expr_lock and memory are taken
+        with self._settings_lock:
+            old = self.settings
+            new = apply_patch(old, patch)
+            save_settings(self.kv, new)
+            self.router.online_enabled = new.online_enabled
+            with self._eyes_lock:
+                self.policy.cap, self.policy.min_gap_s = new.glance_daily_cap, new.glance_min_gap_s
+                if any(getattr(old, k) != getattr(new, k) for k in _EYES_KEYS):
+                    self._eyes_gen += 1  # a look in flight was allowed under the old settings: drop it
+                self._dont_look, self._eyes_on = new.dont_look, new.eyes_enabled
+            if "autostart" in patch:
+                try:
+                    set_autostart(new.autostart, LAUNCHER, startup_dir=self.startup_dir)
+                except OSError as e:
+                    log.warning("autostart change failed: %s", e)
+                    failed = e
+                except KeyError as e:  # APPDATA isn't set
+                    log.warning("autostart change failed: %s", e)
+                    failed = OSError(f"APPDATA isn't set ({e})")
+            self.emit(SettingsMsg(settings=asdict(new)))
+            if new.learning_enabled != old.learning_enabled:
+                self._emit_learning()
+            self._emit_eyes(new)
+            self._sync_expression()
+        if failed is not None:
+            raise failed
+        return new
+
+    def swap_online(self, online: ChatModel | None, vision: ChatModel | None) -> None:
+        """The key changed: both online instances are replaced; a look in flight on the old one is discarded."""
+        self.online = self.router.online = online
         with self._eyes_lock:
-            self.policy.cap, self.policy.min_gap_s = new.glance_daily_cap, new.glance_min_gap_s
-            if any(getattr(old, k) != getattr(new, k) for k in _EYES_KEYS):
-                self._eyes_gen += 1  # a look in flight was allowed under the old settings: drop it
-            self._dont_look, self._eyes_on = new.dont_look, new.eyes_enabled
-        if new.autostart != old.autostart:
-            try:
-                set_autostart(new.autostart, LAUNCHER)
-            except (OSError, KeyError) as e:
-                log.warning("autostart change failed: %s", e)
-                self.emit(ErrorMsg(message=f"couldn't change autostart: {e}"))
-        self.emit(SettingsMsg(settings=asdict(new)))
-        if new.learning_enabled != old.learning_enabled:
-            self._emit_learning()
-        self._emit_eyes(new)
-        self._sync_expression()
+            self.vision = vision
+            self._eyes_gen += 1
+
+    def sample_voice(self, voice: str, text: str) -> None:
+        if self.voice_sampler is None:
+            raise RuntimeError("Her voice isn't running (text only).")
+        self.voice_sampler(voice, text)
+
+    def probe_mic(self) -> tuple[bool, str]:
+        if self.mic_prober is None:
+            return False, "Her ears aren't running (text only)."
+        return self.mic_prober()
+
+    def log_action(self, tool: str, tier: int, summary: str, outcome: str) -> None:
+        self._log_action(tool, tier, summary, outcome)
+
+    # ---- Health and setup ------------------------------------------------------------------------------------------
+    def _setup_result(self, o: Outcome, to: Callable[[BaseModel], None] | None = None) -> None:
+        """A setup action's outcome to the connection that asked (`to`; None: every one), and after a new voice
+        choice the voices to everyone; never raises."""
+        try:
+            (to or self.emit)(SetupResult(action=o.action, ok=o.ok, detail=o.detail))
+            if o.ok and o.action == "voice_choose":
+                self.emit(self._voices_msg())
+        except Exception:
+            log.exception("couldn't send a setup result")
+
+    def _voices_msg(self) -> VoicesMsg:
+        """The cached voice list only ([] until cache_voices ran): never lists them here, so it can't stall."""
+        return VoicesMsg(items=self.setup.voices(), current=self.settings.voice)
+
+    def cache_voices(self) -> None:
+        """Reads the TTS voice list once (slow: it may import the TTS stack) and sends it; never raises. The runner
+        calls it on its own thread."""
+        try:
+            self.setup.load_voices()
+            self.emit(self._voices_msg())
+        except Exception:
+            log.exception("couldn't list her voices")
+
+    def _health_ctx(self) -> health.HealthCtx:
+        """Everything the checks read, never under the core lock. A field that may wait (the DB under memory.lock, the
+        key file, KV, the Startup folder) is a health.Later read on its own thread, so it runs under the checks' 5 s
+        budget: a slow one is its rows' "No answer" warn, and a stuck one is reused by the next pass instead of getting
+        another thread. A field that can't be read (APPDATA unset, a DB error) becomes an _Unreadable: only the rows
+        that use it warn."""
+        def safe(name: str, fn: Callable[[], object]) -> Callable[[], object]:
+            def run():
+                try:
+                    return fn()
+                except Exception as e:
+                    log.warning("Health couldn't read %s (%s)", name, type(e).__name__)
+                    return _Unreadable(e)
+            return run
+
+        def read(name: str, fn: Callable[[], object]) -> health.Later:
+            with self._health_lock:
+                stuck = self._health_fields.get(name)
+                if stuck is not None and not stuck.done():
+                    return stuck
+                later = self._health_fields[name] = health.Later(safe(name, fn), name)
+                return later
+
+        def db() -> tuple[str, int]:
+            with self.memory.lock:
+                dbs = self.kv.conn.execute("pragma database_list").fetchall()
+                version = self.kv.conn.execute("pragma user_version").fetchone()[0]
+            return next((row[2] for row in dbs if row[1] == "main"), "") or "", version
+
+        def tests() -> dict:
+            got = self.kv.get(TESTS_KEY, {})
+            return got if isinstance(got, dict) else {}
+
+        where = read("db", db)
+
+        def part(i: int) -> Callable[[], object]:
+            def get():
+                got = where.get()
+                return got if isinstance(got, _Unreadable) else got[i]
+            return get
+
+        receiver = self.receiver
+        try:
+            now = self.clock.now()
+        except Exception as e:
+            log.warning("Health couldn't read the clock (%s)", type(e).__name__)
+            now = _Unreadable(e)
+        return health.HealthCtx(
+            now=now, settings=read("settings", lambda: self.settings),
+            local_url=self.local_url, key=read("key", lambda: self.setup.deps.key.info()),
+            last_tests=read("tests", tests),
+            voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
+            receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,
+            claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT, db_path=read("db_path", part(0)),
+            schema_version=read("schema_version", part(1)),
+            startup_dir=read("startup_dir", lambda: self.startup_dir or default_startup_dir()),
+            session_start=self._session_start, http_get=self.health_http, tz=self.tz)
+
+    def _start_health(self) -> None:
+        """One riya-health thread at a time; a request while it runs makes it run once more when done (any number of
+        requests in one pass coalesce into a single rerun), so a refresh after an action sees its result."""
+        with self._health_lock:
+            if self._health_running:
+                self._health_again = True
+                return
+            self._health_running = True
+        try:
+            threading.Thread(target=self._health_worker, name="riya-health", daemon=True).start()
+        except Exception:
+            with self._health_lock:
+                self._health_running = self._health_again = False
+            raise
+
+    def _health_worker(self) -> None:
+        while True:
+            self._health_pass()
+            with self._health_lock:
+                if not self._health_again:
+                    self._health_running = False
+                    return
+                self._health_again = False
+
+    def _health_pass(self) -> None:
+        """The voices, then the checklist; a failure is logged and this pass sends no HealthMsg. Nothing here waits past
+        the checks' deadline: the voices and the key source come from fields already read, or are left out."""
+        try:
+            ctx = self._health_ctx()
+            items = [HealthItemInfo(**asdict(i)) for i in health.run_checks(ctx, self.health_timeout_s)]
+            settings = health.peek(ctx, "settings")
+            if isinstance(settings, Settings):
+                self.emit(VoicesMsg(items=self.setup.voices(), current=settings.voice))
+            key = health.peek(ctx, "key")  # a key still being read gives no source
+            source = key.source if isinstance(key, KeyInfo) else None
+            self.emit(HealthMsg(items=items, key_source=source))
+        except Exception:
+            log.exception("the health checks failed")

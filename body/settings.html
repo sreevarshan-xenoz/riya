@@ -13,6 +13,29 @@
   <span id="conn" class="conn off" aria-live="polite">connecting…</span>
 </header>
 <main>
+  <section aria-labelledby="h-health">
+    <h2 id="h-health">Health</h2>
+    <p class="note">What is working and what needs a look. Each button runs only when you click it.</p>
+    <ul id="health" class="health"></ul>
+    <p id="health-empty" class="empty">Waiting for her core…</p>
+    <p id="setup-result" class="note" role="status" aria-live="polite"></p>
+
+    <div class="row">
+      <label for="online-key">Online API key</label>
+      <div class="inline">
+        <input id="online-key" type="password" autocomplete="off" maxlength="200" spellcheck="false" placeholder="paste a key">
+        <button id="online-key-save" type="button" disabled>Save key</button>
+        <button id="online-key-clear" type="button" disabled>Remove saved key</button>
+      </div>
+      <p id="online-key-source" class="note">No key yet</p>
+      <p id="online-key-err" class="err" role="alert" hidden></p>
+      <p class="note">The key goes to her core once and is never shown again, only its last four characters.</p>
+    </div>
+    <div class="row">
+      <button id="welcome-open" type="button">Open the welcome again</button>
+    </div>
+  </section>
+
   <section aria-labelledby="h-general">
     <h2 id="h-general">General</h2>
 
@@ -29,7 +52,7 @@
     <div class="row" data-key="voice">
       <label for="voice">Voice</label>
       <select id="voice"></select>
-      <p class="note">Applies after a restart.</p>
+      <p class="note">Takes effect on her next line.</p>
       <p class="err" role="alert" hidden></p>
     </div>
 
@@ -154,7 +177,7 @@
       <p class="note">Google may use free-tier data.</p>
       <p class="err" role="alert" hidden></p>
     </div>
-    <p class="note">The API key is not set here. Put <code>RIYA_ONLINE_API_KEY</code> in <code>.env</code>; it is never sent over the socket or shown in this window.</p>
+    <p class="note">The API key is saved in the Health section above, or set as <code>RIYA_ONLINE_API_KEY</code> in <code>.env</code>. It is never shown in this window.</p>
   </section>
 
   <section aria-labelledby="h-hands">
@@ -291,6 +314,7 @@
 <script src="src/agents-logic.js"></script>
 <script src="src/hands-logic.js"></script>
 <script src="src/learning-logic.js"></script>
+<script src="src/health-logic.js"></script>
 <script src="src/settings-logic.js"></script>
 <script src="settings.js"></script>
 </body>

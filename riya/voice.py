@@ -43,9 +43,18 @@ class PocketTTS:
 
         self.model = TTSModel.load_model()
         self.sr = self.model.sample_rate
-        self.states = {"warm": self.model.get_state_for_audio_prompt(voice)}
+        self.voice = voice
+        self._voice_states = {voice: self.model.get_state_for_audio_prompt(voice)}  # each voice is loaded once
+        self.states = {"warm": self._voice_states[voice]}
         for style, wav in (style_clips or {}).items():  # e.g. {"bright": "riya_bright.wav", "soft": "riya_soft.wav"}
             self.states[style] = self.model.get_state_for_audio_prompt(wav)
+
+    def set_voice(self, name: str) -> None:
+        """Speak in another voice from now on; a voice that fails to load raises and leaves the current one."""
+        if name not in self._voice_states:
+            self._voice_states[name] = self.model.get_state_for_audio_prompt(name)
+        self.states["warm"] = self._voice_states[name]
+        self.voice = name
 
     def stream(self, text, speed, style):
         state = self.states.get(style, self.states["warm"])
@@ -265,15 +274,33 @@ class VoiceLoop:
         if listen:
             self.gate.note_turn()
 
-    def say(self, sentences: Iterator[str]) -> None:
+    def sample(self, voice: str, text: str) -> None:
+        """Speak text once in voice (the Health page's Play sample); her own voice returns on her next line."""
+        if self.core.settings.mute_voice:
+            raise RuntimeError("Her voice is muted in Settings.")
+        self.say(iter([text]), voice=voice)
+
+    def _use_voice(self, name: str) -> None:
+        """Switch the TTS to name when it can switch and isn't already there; a failure keeps the old voice."""
+        if not callable(getattr(self.tts, "set_voice", None)) or getattr(self.tts, "voice", None) == name:
+            return
+        try:
+            self.tts.set_voice(name)
+        except Exception:
+            log.exception("couldn't switch her voice to %s; keeping %s", name, getattr(self.tts, "voice", None))
+
+    def say(self, sentences: Iterator[str], voice: str | None = None) -> None:
         """Speak sentences as they arrive; playback starts at the first audio chunk. A barge-in stops playback and
         closes the reply, so the core records only what was said. With mute_voice the sentences are only drained.
         The voice speaks tts_text(sentence): no emoji, no *stage directions*; a sentence with nothing left is skipped.
+        It speaks in `voice`, or else settings.voice, so a new choice applies from her next line.
         Never raises: an audio failure is logged, the rest of the reply is drained, and her state is reset."""
         with self._say_lock:
             settings = self.core.settings
             out = pacer = None
             self.interrupt.clear()
+            if not settings.mute_voice:
+                self._use_voice(voice or settings.voice)
             try:
                 for sentence in sentences:
                     if settings.mute_voice or not (words := tts_text(sentence)):  # nothing left to say aloud
@@ -315,6 +342,21 @@ class VoiceLoop:
         if hasattr(self.tts, "stream"):
             return self.tts.stream(sentence, speed, style)
         return [self.tts.speak(sentence, speed, style)[0]]
+
+
+def probe_mic() -> tuple[bool, str]:
+    """The Health page's Mic check: the default input device opens (and is closed again at once, never started).
+    Imports sounddevice only when called, so importing this module loads no audio stack."""
+    from riya.core.health import clip
+
+    try:
+        import sounddevice as sd
+
+        name = sd.query_devices(kind="input")["name"]
+        sd.InputStream(samplerate=SR, channels=1, blocksize=512, dtype="float32").close()
+        return True, clip(f"{name} opens")
+    except Exception as e:
+        return False, clip(f"The mic didn't open: {e}")
 
 
 def _drain(sentences: Iterator[str]) -> None:

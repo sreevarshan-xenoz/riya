@@ -138,3 +138,71 @@ def test_learning_messages():
         TraitChangeInfo(at=1.0, dial="teasing", old=0.5, new=0.35, reason="r", source="nope")
     with pytest.raises(ValueError):
         StyleNoteInfo(id=1, at=1.0, text="t", polarity="nope")
+
+
+def test_setup_messages():
+    from typing import get_args
+
+    from riya.core import setup
+    from riya.core.protocol import (HealthGet, HealthItemInfo, HealthMsg, OnboardingDone, SetupAction,
+                                    SetupActionName, SetupConfirm, SetupRequest, SetupResult, VoicesMsg)
+    assert parse_body_message('{"type":"health_get"}') == HealthGet()
+    assert parse_body_message('{"type":"onboarding_done"}') == OnboardingDone()
+    assert parse_body_message('{"type":"setup_request","action":"autostart","args":{"on":true}}') == SetupRequest(
+        action="autostart", args={"on": True})
+    assert parse_body_message('{"type":"setup_request","action":"online_test"}') == SetupRequest(action="online_test")
+    assert parse_body_message('{"type":"setup_action","nonce":"n1","yes":true}') == SetupAction(nonce="n1", yes=True)
+    for raw in ('{"type":"setup_request","action":"rm_rf"}', '{"type":"setup_action","nonce":"n1","yes":"yes"}',
+                '{"type":"setup_action","nonce":"","yes":true}', '{"type":"setup_action","nonce":"' + "n" * 65 +
+                '","yes":true}', '{"type":"setup_request"}'):
+        with pytest.raises(ProtocolError):
+            parse_body_message(raw)
+    with pytest.raises(ProtocolError, match="^invalid setup_request$"):
+        parse_body_message('{"type":"setup_request","action":"rm_rf"}')
+    assert get_args(SetupActionName) == setup.ACTIONS
+    assert get_args(SetupConfirm.model_fields["action"].annotation) == setup.CONFIRM_GATED
+    SetupResult(action="autostart", ok=True, detail="x" * 120)
+    with pytest.raises(ValueError):
+        SetupResult(action="autostart", ok=True, detail="x" * 121)
+    with pytest.raises(ValueError):
+        HealthItemInfo(key="local", status="ok", detail="x" * 121)
+    with pytest.raises(ValueError):
+        HealthItemInfo(key="local", status="bad", detail="x")
+    h = HealthMsg(items=[HealthItemInfo(key="online", status="warn", detail="d", fix="online_test")], key_source="app")
+    assert json.loads(dump(h)) == {"type": "health", "items": [{"key": "online", "status": "warn", "detail": "d",
+                                                                "fix": "online_test"}], "key_source": "app"}
+    assert HealthMsg(items=[]).key_source is None
+    assert json.loads(dump(VoicesMsg(items=["alba"], current="alba"))) == {"type": "voices", "items": ["alba"],
+                                                                         "current": "alba"}
+    c = SetupConfirm(nonce="n", action="hooks_connect", text="t")
+    assert json.loads(dump(c))["type"] == "setup_confirm"
+    with pytest.raises(ValueError):
+        SetupConfirm(nonce="n", action="autostart", text="t")
+    test_committed_schema_matches()
+
+
+CANARY = "CANARY-k3y-0123456789abcdef"
+KEYED = [  # (raw, the fixed error): the canary under an unknown type, wrong-shaped known types, and not JSON
+    ('{"type":"setup_requesx","args":{"key":"' + CANARY + '"}}', "invalid message"),
+    ('{"type":"nope","k":"' + CANARY + '"}', "invalid message"),
+    ('{"type":["' + CANARY + '"]}', "invalid message"),
+    ('["' + CANARY + '"]', "invalid message"),
+    ('{"type":"set_settings","patch":"' + CANARY + '"}', "invalid set_settings"),
+    ('{"type":"user_text","text":["' + CANARY + '"]}', "invalid user_text"),
+    ('{"type":"memory_correct","id":"' + CANARY + '","text":"x"}', "invalid memory_correct"),
+    ('{"type":"setup_request","action":"online_key_set","args":{"key":["' + CANARY + '"]}}', "invalid setup_request"),
+    ('{"type":"user_text","text":"' + CANARY + '"', "invalid message: not JSON"),
+]
+
+
+def leaks(text: str) -> bool:
+    """Any of the canary, or its head or tail (pydantic cuts a long input out of the middle)."""
+    return any(part in text for part in (CANARY, CANARY[:10], CANARY[-10:]))
+
+
+@pytest.mark.parametrize("raw,expected", KEYED)
+def test_parse_errors_never_echo_input(raw, expected):
+    with pytest.raises(ProtocolError) as e:
+        parse_body_message(raw)
+    assert str(e.value) == expected and not leaks(str(e.value))
+    assert e.value.__cause__ is None and e.value.__suppress_context__  # no chained pydantic text for a traceback

@@ -6,7 +6,7 @@ const MODES = ["buddy", "panel", "window"];
 const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents", "reminders", "actions", "learning"];
 const DONT_LOOK_HOTKEYS = ["Control+Alt+H", "Control+Alt+F10"]; // first one that registers wins
 const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm", "actions_clear", "reminder_cancel", "note_delete",
-  "note_delete_style", "twin_reset", "learning_reset"]; // never queued for replay after a reconnect
+  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done"]; // never queued for replay after a reconnect
 const QUIT_FLUSH_MS = 300; // the tray's Quit: time for quit_core to reach the core before the body exits
 
 /** First accelerator for which `register` returns true (a throw counts as a failure), or null. */
@@ -110,12 +110,57 @@ function rememberForReplay(cache, msg) {
 }
 
 /** On a core disconnect: drop what would replay as live but isn't (the core sends a fresh look and agents on hello). */
-const FORGET_ON_DISCONNECT = ["look", "agents", "reminders", "actions", "learning", "confirm_request"];
+const FORGET_ON_DISCONNECT = ["look", "agents", "reminders", "actions", "learning", "confirm_request", "health"];
 function forgetOnDisconnect(cache) {
   for (const type of FORGET_ON_DISCONNECT) cache.delete(type);
 }
 
+/** The one page "Get a free key" opens, from the main process. The renderer asks by channel only, never with a URL. */
+const KEY_URL = "https://aistudio.google.com/apikey";
+
+/** Open the welcome once per session, and only for a core that says the user is not onboarded (an older core without
+ *  the field never opens it). */
+function shouldOpenWelcome(settings, alreadyShown) {
+  return !alreadyShown && !!settings && settings.onboarded === false;
+}
+
+/** What to send when the welcome window closes: `onboarding_done`, unless Riya is quitting (before-quit destroyed the
+ *  window, so a new user who quits mid-welcome stays not onboarded) or the user is onboarded already. Closing the
+ *  welcome yourself counts as skipping. */
+function welcomeClosedMessage({ quitting, onboarded } = {}) {
+  return quitting === true || onboarded === true ? null : { type: "onboarding_done" };
+}
+
+/** The welcome window's own webPreferences, a fresh object each call: isolated, sandboxed, no node in the page. */
+function welcomeWebPreferences(preload) {
+  return {
+    preload,
+    additionalArguments: ["--riya-mode=welcome"],
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+  };
+}
+
+/** The events after which Riya is going away, each setting state.quitting: the app's "before-quit", and a window's
+ *  "session-end" (a Windows shutdown or logoff really happening, where Electron emits no before-quit). So a welcome
+ *  closed by the session ending sends no onboarding_done, as when quitting. Never "query-session-end": that logoff can
+ *  still be cancelled, and quitting would then stay true and stop the reconnects and respawns for the session. */
+const QUIT_EVENTS = { app: ["before-quit"], window: ["session-end"] };
+function isQuitEvent(source, name) {
+  return Object.prototype.hasOwnProperty.call(QUIT_EVENTS, source) && QUIT_EVENTS[source].includes(name);
+}
+
+const WELCOME_IPC = { "welcome:open": ["settings"], "welcome:key-page": ["welcome", "settings"] };
+
+/** Which window kind may use a main-process channel of the welcome: open it only from Settings, the key page from
+ *  either window. Any other channel or sender is refused. */
+function ipcAllowed(channel, senderKind) {
+  return Object.prototype.hasOwnProperty.call(WELCOME_IPC, channel) && WELCOME_IPC[channel].includes(senderKind);
+}
+
 module.exports = {
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
-  quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter,
+  quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
+  welcomeClosedMessage, ipcAllowed, welcomeWebPreferences, QUIT_EVENTS, isQuitEvent,
 };

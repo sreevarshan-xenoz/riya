@@ -103,13 +103,36 @@ test("fixtures match the committed protocol schema", () => {
   const validators = { core: ajv.compile(schema.core_to_body), body: ajv.compile(schema.body_to_core) };
   const dir = path.join(__dirname, "fixtures");
   const names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
-  assert.equal(names.filter((n) => n.startsWith("core_")).length, 18);
-  assert.equal(names.filter((n) => n.startsWith("body_")).length, 21);
+  assert.equal(names.filter((n) => n.startsWith("core_")).length, 22);
+  assert.equal(names.filter((n) => n.startsWith("body_")).length, 25);
   for (const n of names) {
     const validate = n.startsWith("core_") ? validators.core : validators.body;
     const obj = JSON.parse(fs.readFileSync(path.join(dir, n), "utf8"));
     assert.ok(validate(obj), `${n}: ${JSON.stringify(validate.errors)}`);
   }
+});
+
+/** Every string in a parsed fixture, keys and values, at any depth. */
+function* allStrings(x) {
+  if (typeof x === "string") yield x;
+  else if (Array.isArray(x)) for (const v of x) yield* allStrings(v);
+  else if (x && typeof x === "object") for (const [k, v] of Object.entries(x)) { yield k; yield* allStrings(v); }
+}
+
+test("no fixture carries a key", () => {
+  const dir = path.join(__dirname, "fixtures");
+  const keyShaped = (t) => /AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}/.test(t)
+    || t.split(/\s+/).some((word) => word.length >= 24 && /^[A-Za-z0-9_-]+$/.test(word) && /\d/.test(word) && /[A-Za-z]/.test(word));
+  for (const n of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    const text = fs.readFileSync(path.join(dir, n), "utf8");
+    const obj = JSON.parse(text);
+    assert.ok(!(obj.type === "setup_request" && obj.action === "online_key_set"), n);
+    assert.ok(!text.includes("online_key_set"), n);
+    for (const t of allStrings(obj)) assert.ok(!keyShaped(t), `${n} holds a key-shaped string`);
+  }
+  assert.ok(keyShaped("x AIzaSyDUMMYDUMMYDUMMY1234 y") && keyShaped("w sk-abcdefghijklmnop"), "the scan catches what it should");
+  assert.ok(keyShaped("ab12cd34ef56gh78ij90kl12mn34"), "and a long mixed token");
+  assert.ok(!keyShaped("Key ••••1a2b saved in Riya"), "but not the mask");
 });
 
 test("confirm_done validates for all seven outcomes, and an unknown one is refused", () => {
@@ -119,4 +142,26 @@ test("confirm_done validates for all seven outcomes, and an unknown one is refus
     assert.ok(validate({ type: "confirm_done", id: "c1", outcome }), outcome);
   }
   assert.equal(validate({ type: "confirm_done", id: "c1", outcome: "exploded" }), false);
+});
+
+test("a now-only message is never queued across a drop: a stale setup_request can't reach the next connection", () => {
+  const { NOW_ONLY: CLIENT_NOW_ONLY } = require("../src/core-client");
+  const { NOW_ONLY } = require("../src/main-logic");
+  assert.deepEqual(CLIENT_NOW_ONLY, NOW_ONLY, "the core client drops what main drops while the core is away");
+  const { client, fire } = make();
+  const logs = [];
+  client.log = (...a) => logs.push(a);
+  client.connect();
+  client.send({ type: "setup_request", action: "hooks_connect", args: {} }); // still connecting: dropped
+  FakeWS.last.open();
+  client.send({ type: "setup_request", action: "mic_check", args: {} }); // open: sent at once
+  assert.deepEqual(FakeWS.last.sent.map((s) => JSON.parse(s).action), ["mic_check"]);
+  FakeWS.last.drop();
+  client.send({ type: "setup_action", nonce: "n1", yes: true });
+  client.send({ type: "onboarding_done" });
+  client.send({ type: "get_memories" }); // not now-only: still queued for the next connection
+  fire();
+  FakeWS.last.open();
+  assert.deepEqual(FakeWS.last.sent.map((s) => JSON.parse(s).type), ["get_memories"]);
+  assert.equal(logs.length, 3);
 });

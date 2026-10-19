@@ -5,13 +5,14 @@
  *  (bridge.html) built on the reusable CoreClient and is relayed here over IPC; this process fans it out to the stage
  *  windows over `core:message` / `core:status` and forwards their `core:send` back. */
 const path = require("node:path");
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, session } = require("electron");
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, session, shell } = require("electron");
 const { boundsFor, clampToArea } = require("./src/geometry");
 const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
-  forgetOnDisconnect, DONT_LOOK_HOTKEYS,
+  forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed, welcomeWebPreferences,
+  QUIT_EVENTS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -40,6 +41,8 @@ const state = {
   quitting: false,
   tray: null,
   settingsWin: null,
+  welcomeWin: null,
+  welcomeShown: false, // the welcome opens on its own at most once per session
   cache: new Map(),
 };
 const stageWindows = new Set();
@@ -77,9 +80,9 @@ function sendToCore(msg) {
   else state.bridgeQueue.push(msg);
 }
 
-/** Every window that shows the core: the stage windows and the settings window. */
+/** Every window that shows the core: the stage windows, the settings window and the welcome. */
 function uiWindows() {
-  return [...stageWindows, state.settingsWin].filter((win) => win && !win.isDestroyed());
+  return [...stageWindows, state.settingsWin, state.welcomeWin].filter((win) => win && !win.isDestroyed());
 }
 
 function broadcast(channel, payload) {
@@ -142,6 +145,10 @@ function onCoreMessage(msg) {
     state.settings = { ...msg.settings };
     ensureMode(state.settings.mode);
     applyLateSavedPosition();
+    if (shouldOpenWelcome(msg.settings, state.welcomeShown)) {
+      state.welcomeShown = true;
+      openWelcome();
+    }
   }
   broadcast("core:message", msg);
 }
@@ -423,6 +430,62 @@ function openSettings() {
   win.loadFile(path.join(__dirname, "settings.html"));
 }
 
+/** The first-run welcome: the openSettings() pattern, a small window of its own. Closing it by any route (Finish, Skip, the
+ *  X) counts as skipping, so the `closed` handler is the one place that tells the core she is done; welcomeClosedMessage
+ *  holds it back while Riya quits. The renderer never sends it itself. */
+function openWelcome() {
+  const existing = state.welcomeWin;
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 460,
+    height: 600,
+    show: false,
+    title: "Welcome to Riya",
+    autoHideMenuBar: true,
+    fullscreenable: false,
+    webPreferences: welcomeWebPreferences(path.join(__dirname, "preload.js")),
+  });
+  state.welcomeWin = win;
+  // a Windows shutdown or logoff emits no before-quit: it counts as quitting, so closing marks nothing done
+  for (const event of QUIT_EVENTS.window) win.on(event, () => { state.quitting = true; });
+  win.removeMenu();
+  win.once("ready-to-show", () => {
+    if (win.isDestroyed()) return;
+    win.show();
+  });
+  win.webContents.on("did-finish-load", () => {
+    if (win.isDestroyed()) return;
+    win.webContents.send("core:status", state.connected);
+    for (const msg of state.cache.values()) win.webContents.send("core:message", msg);
+  });
+  win.on("closed", () => {
+    const m = welcomeClosedMessage({ quitting: state.quitting, onboarded: state.settings.onboarded });
+    if (m) sendToCore(m);
+    if (state.welcomeWin === win) state.welcomeWin = null;
+  });
+  win.loadFile(path.join(__dirname, "welcome.html"));
+}
+
+/** "settings" / "welcome" for those two windows' webContents, else "other": what ipcAllowed decides on. */
+function senderKind(sender) {
+  if (state.settingsWin && !state.settingsWin.isDestroyed() && state.settingsWin.webContents === sender) return "settings";
+  if (state.welcomeWin && !state.welcomeWin.isDestroyed() && state.welcomeWin.webContents === sender) return "welcome";
+  return "other";
+}
+
+ipcMain.on("welcome:open", (event) => {
+  if (ipcAllowed("welcome:open", senderKind(event.sender))) openWelcome();
+});
+// No argument is read: the page opened is always KEY_URL, never anything the renderer says.
+ipcMain.on("welcome:key-page", (event) => {
+  if (ipcAllowed("welcome:key-page", senderKind(event.sender))) shell.openExternal(KEY_URL).catch(() => {});
+});
+
 function requestMode(mode) {
   state.settings.mode = mode;
   ensureMode(mode);
@@ -477,7 +540,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", showWindow);
   app.on("window-all-closed", () => {}); // a tray app: stay alive with no windows
-  app.on("before-quit", () => { state.quitting = true; });
+  for (const event of QUIT_EVENTS.app) app.on(event, () => { state.quitting = true; });
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
     stopDrag(false);

@@ -117,7 +117,7 @@ test("an agents fixture is a valid shape for the helpers", () => {
 
 test("agent text only reaches the DOM through textContent: no HTML sinks in the body scripts, and the scripts load in order", () => {
   const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
-  for (const f of ["renderer.js", "settings.js", "src/agents-logic.js", "src/settings-logic.js", "src/hands-logic.js", "src/learning-logic.js", "src/bubble.js"]) {
+  for (const f of ["renderer.js", "settings.js", "welcome.js", "src/agents-logic.js", "src/settings-logic.js", "src/hands-logic.js", "src/learning-logic.js", "src/health-logic.js", "src/welcome-logic.js", "src/bubble.js"]) {
     assert.doesNotMatch(read(f), /innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment/, f);
   }
   const before = (html, a, b) => html.indexOf(a) !== -1 && html.indexOf(a) < html.indexOf(b);
@@ -128,6 +128,13 @@ test("agent text only reaches the DOM through textContent: no HTML sinks in the 
   assert.ok(before(read("settings.html"), "src/hands-logic.js", "settings.js"));
   assert.ok(before(read("settings.html"), "src/hands-logic.js", "src/settings-logic.js"), "settings-logic reads RiyaHands at load");
   assert.ok(before(read("settings.html"), "src/learning-logic.js", "settings.js"), "settings.js reads RiyaLearning at load");
+  assert.ok(before(read("settings.html"), "src/health-logic.js", "settings.js"), "settings.js reads RiyaHealth at load");
+  assert.ok(before(read("welcome.html"), "src/health-logic.js", "src/welcome-logic.js"), "welcome-logic reads RiyaHealth at load");
+  assert.ok(before(read("welcome.html"), "src/welcome-logic.js", "welcome.js"), "welcome.js reads RiyaWelcome at load");
+  assert.match(read("settings.html"), /id="online-key"[^>]*type="password"|type="password"[^>]*id="online-key"/);
+  assert.match(read("settings.js"), /submitKey\(/);
+  assert.match(read("settings.js"), /flow\.open\(/);
+  assert.match(read("settings.js"), /flow\.answer\(/);
 });
 
 test("the token path and setup command are shown exactly, backslashes intact", () => {

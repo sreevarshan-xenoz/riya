@@ -28,6 +28,16 @@ def pick_voices(known: list[str]) -> list[str]:
     return [v for v in FEMININE if v in known] or ["alba"]
 
 
+def voice_choices() -> list[str]:
+    """Her voices for the Health page and the welcome: the installed feminine built-ins, or the whole FEMININE list
+    when the TTS stack isn't there (text-only); a choice applies once her voice runs."""
+    try:
+        known = builtin_voices()
+    except Exception:  # an installed but broken pocket_tts
+        known = []
+    return pick_voices(known) if known else list(FEMININE)
+
+
 def write_wav(path: Path, audio: np.ndarray, sr: int) -> None:
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as w:
