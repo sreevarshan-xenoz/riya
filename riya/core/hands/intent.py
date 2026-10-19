@@ -41,7 +41,7 @@ _DUR = re.compile(
 _NUMLEFT = re.compile(rf"\b(?:\d+|{_alt(_TENS)}|{_alt(_ONES9 + _TEENS)}|hundred|thousand|half|quarter)\b", _I)
 MAX_TIMER_S = 24 * 3600
 MAX_REMINDER_S = 366 * 24 * 3600
-MAX_TEXT = 500  # `match` and the other detectors only read this many characters of a turn
+MAX_TEXT = 500  # `match` and the other detectors only read this many characters of a turn (to recognise it)
 
 
 def _word_num(w: str) -> int:
@@ -164,9 +164,10 @@ _EXTRA = re.compile(r"^(?:i(?:'d| would)? (?:want|need|like) you to|go ahead and
 _NEG = re.compile(r"^(?:don'?t|do not|never|not|no|stop)\b", _I)
 
 
-def _prep(text: str, extra: bool = False) -> str:
-    """The turn without its trailing punctuation/please and without 'hey riya, can you please' lead-ins."""
-    s = re.sub(r"\s+", " ", text[:MAX_TEXT].replace("’", "'").strip())
+def _prep(text: str, extra: bool = False, limit: int | None = MAX_TEXT) -> str:
+    """The turn (its first `limit` chars; None: all of it) without its trailing punctuation/please and without
+    'hey riya, can you please' lead-ins."""
+    s = re.sub(r"\s+", " ", (text[:limit] if limit else text).replace("’", "'").strip())
     s = re.sub(r"[\s.!?,;]+$", "", s)
     s = re.sub(r"[\s,]+please$", "", s, flags=_I)
     s = _LEAD.sub("", s, count=1)
@@ -391,9 +392,20 @@ def _lookup(s, now, tz):
     return Call("lookup", {"query": q})
 
 
+_FREE_TEXT = {"note_add": _note, "clipboard_copy": _copy, "write_file": _write}
+
+
 def match(text: str, now: float, *, apps=(), commands=(), tz=None) -> Call | None:
-    """The deterministic reading of one turn, or None. `apps`/`commands` are the user's allowed names."""
-    s = _prep(text)
+    """The deterministic reading of one turn, or None. `apps`/`commands` are the user's allowed names. Only the first
+    MAX_TEXT chars are read to recognise it; the free text of a note, a copy or a file is the whole turn's (its tool
+    then holds it to its own limit), never cut at MAX_TEXT."""
+    c = _match(_prep(text), now, apps, commands, tz)
+    if c is not None and c.tool in _FREE_TEXT and len(text) > MAX_TEXT:
+        c = _FREE_TEXT[c.tool](_prep(text, limit=None), now, tz)
+    return c
+
+
+def _match(s: str, now: float, apps, commands, tz) -> Call | None:
     if not s or _NEG.match(s):
         return None
     for rule in (_remind, _timer, _cancel, _lists, _note):

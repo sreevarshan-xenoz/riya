@@ -726,3 +726,15 @@ def test_the_network_tools_never_request_with_online_off():
     ctx = ToolCtx(settings=Settings(online_enabled=False, weather_place="Pune"), http=http)
     assert not REGISTRY["weather"].run({}, ctx).ok and not REGISTRY["lookup"].run({"query": "Ada Lovelace"}, ctx).ok
     assert http.requests == []
+
+
+# ---- final review: I4, dictated text isn't cut at the match window ----------------------------------------------
+def test_a_3000_char_write_file_saves_all_of_it(tmp_path):
+    core, emitted, *_ = t2_core(tmp_path=tmp_path)
+    text = " ".join(f"line{i} of my essay" for i in range(400))[:3000].rstrip()
+    assert len(text) >= 2990
+    list(core.reply(f"write a file called essay.txt saying {text}"))
+    p = core.confirms.pending
+    assert p is not None and p.call.args["text"] == text and f"({len(text)} bytes)" in p.summary
+    list(core.reply("yes"))
+    assert (Path(core.riya_dir) / "essay.txt").read_text(encoding="utf-8") == text
