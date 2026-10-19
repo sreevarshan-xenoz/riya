@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from riya.agents.hub import AgentEvent, AgentHub, summarize
 from riya.core import games, health
+from riya.core import secrets as keystore
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, clamp_rect, grab_jpeg, thumb
@@ -73,6 +74,8 @@ SAVE_EVERY_S = 30
 STATE_EVERY_S = 30
 PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
+KEY_NOT_REMEMBERED = ("That looks like a key, so I won't remember it~ Paste it in Settings, under Health, and I'll keep "
+                      "it safe.")  # a remember-that turn holding a pasted key (the welcome's name step comes first)
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
@@ -355,7 +358,12 @@ class RiyaCore:
         priority intents (screen, remember-that, identity, about-me, feelings; mid-game also a mention of their agents)
         never act; then the game; then a T3 refusal, a matched call, or the online model's proposal; else a normal
         reply. Only this turn's own text ever reaches match, propose, a confirmation or detect_feedback: feedback is
-        read last, only when nothing above took the turn, and its turn (and her answer) never reaches consolidation."""
+        read last, only when nothing above took the turn, and its turn (and her answer) never reaches consolidation.
+        A remember-that turn holding a key-shaped string is refused: the string is hidden before anything records or
+        sends the turn, nothing is remembered, and she says why (KEY_NOT_REMEMBERED)."""
+        refused = None
+        if (said := remember_intent(text)) is not None and keystore.key_shaped(said):
+            text, refused = keystore.hide_key_shaped(text), KEY_NOT_REMEMBERED
         with self._lock:
             taken = None
             try:
@@ -400,7 +408,7 @@ class RiyaCore:
                 log.exception("couldn't read the turn for feedback")
             saved = None
             try:
-                saved = self._take_user_turn(text, consolidate=ack is None)
+                saved = self._take_user_turn(text, remember=refused is None, consolidate=ack is None)
             except Exception:
                 log.exception("couldn't record the user's turn")
             base = [note, remember_situation(saved) if saved else None,
@@ -415,11 +423,12 @@ class RiyaCore:
                 except Exception:
                     log.exception("couldn't look for a screen question")
             situation = " ".join(filter(None, [*base, seeing.situation if seeing else None])) or None
-            lead = None
+            lead = refused
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
-                                   ack=ack, small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None,
+                                   ack=ack, small=bool(saved or refused),
+                                   seeing=seeing if seeing and seeing.jpeg else None,
                                    consolidate=ack is None)
 
     def _game_move(self, text: str, acting: bool = False) -> tuple[games.GameState, games.Verdict] | None:

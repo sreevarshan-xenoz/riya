@@ -5,7 +5,7 @@
  *  and the main process's `closed` handler decides what the core hears. The key is typed into a password field, sent once
  *  through submitKey and never kept here. */
 (() => {
-  const { STEPS, LINES, nextStep, prevStep, nameMessage, cleanName, modeMessage, eyesMessage, eyesLine, agentRows } = RiyaWelcome;
+  const { STEPS, LINES, nextStep, prevStep, nameMessage, cleanName, nameError, modeMessage, eyesMessage, eyesLine, agentRows } = RiyaWelcome;
   const { submitKey, saveKeyEnabled, keySourceText, voiceItems, resultText, STATUS_TEXT } = RiyaHealth;
   const $ = (id) => document.getElementById(id);
   const send = (msg) => window.riya.send(msg);
@@ -178,8 +178,9 @@
     if (step === "name" && nameUi) {
       const raw = nameUi.field.value;
       if (raw.trim() !== "" && raw !== sentName) {
-        if (cleanName(raw) === null) {
-          nameUi.err.textContent = "I can only remember a short name, up to 40 letters and no question marks.";
+        const why = nameError(raw);
+        if (why !== null) {
+          nameUi.err.textContent = why; // a pasted key is refused here, before it could reach memory or the model
           nameUi.err.hidden = false;
           return;
         }
