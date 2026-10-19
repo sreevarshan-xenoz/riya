@@ -144,7 +144,7 @@ def test_stop_teasing_lowers_teasing_acks_and_changes_the_style_line():
     assert first.text == TEASE_ACK and first.spoken is True
     assert core.learn.dials()["teasing"] == 0.35
     h = core.learn.history()[0]
-    assert h.source == "explicit" and "stop teasing me" in h.reason
+    assert h.source == "explicit" and h.reason == "they asked for less teasing"
     [msg] = of(emitted, LearningMsg)
     assert msg.dials["teasing"].value == 0.35 and msg.enabled is True
     assert TEASE_LOW in system(local) and FEEDBACK_SITUATION in system(local)
@@ -477,3 +477,11 @@ def test_a_twin_reset_is_never_undone_by_a_concurrent_record(monkeypatch):
     rec.join(5)
     assert not rec.is_alive()
     assert core.learn.get_cell("greeting", b) is None and core.twin.p_engage("greeting", b) == 0.5
+
+
+def test_history_never_keeps_their_words():
+    """The history outlives a deleted transcript day: its reason is templated, never a quote of the turn."""
+    core, _, _, _ = make_core(local_replies=["Okay.", "Okay."])
+    list(core.reply("stop teasing me, I just broke up with Sam"))
+    list(core.reply("more emojis please"))
+    assert [h.reason for h in core.learn.history()] == ["they asked for more emoji", "they asked for less teasing"]
