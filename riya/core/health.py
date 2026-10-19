@@ -228,22 +228,26 @@ def check_eyes(ctx: HealthCtx) -> HealthItem:
 
 
 def check_claude_code(ctx: HealthCtx) -> HealthItem:
-    """Read-only: the receiver's state, the hooks in Claude Code's settings.json (never written) and the last event."""
+    """Read-only: the receiver's state, the hooks in Claude Code's settings.json (never written), what in that file
+    blocks them, and the last event. The file decides the state; the last event only refines the wording."""
     if ctx.receiver_ok is not True:
         return HealthItem("claude_code", "warn", "Receiver down: port 8766 is busy or the receiver didn't start.")
     try:
-        found = bool(install_hooks.riya_events(install_hooks.read_settings(Path(ctx.claude_settings))))
+        data = install_hooks.read_settings(Path(ctx.claude_settings))
     except install_hooks.SettingsError:
         return HealthItem("claude_code", "warn", "Couldn't read Claude Code's settings.json.")
+    if not install_hooks.riya_events(data):  # absent (say, just disconnected), whatever the last event time
+        return HealthItem("claude_code", "off", "Not connected.", "hooks_connect")
+    if blocked := install_hooks.blockers(data):  # only the user changes those keys: no fix button
+        return HealthItem("claude_code", "warn", f"Hooks are blocked by your Claude Code settings: {'; '.join(blocked)}")
     seen = ctx.hooks_seen_at
-    disconnect = "hooks_disconnect" if found else None
     if seen is not None and ctx.now - seen <= CONNECTED_S:
-        return HealthItem("claude_code", "ok", f"Connected · last event {_t(ctx, seen)}", disconnect)
-    if found and seen is None:
-        return HealthItem("claude_code", "warn", "Applied · restart Claude Code (and open a new terminal).", disconnect)
-    if found:
-        return HealthItem("claude_code", "warn", "Applied · no event in 24 h; restart Claude Code if it's open.", disconnect)
-    return HealthItem("claude_code", "off", "Not connected.", "hooks_connect")
+        return HealthItem("claude_code", "ok", f"Connected · last event {_t(ctx, seen)}", "hooks_disconnect")
+    if seen is None:
+        return HealthItem("claude_code", "warn", "Applied · restart Claude Code (and open a new terminal).",
+                          "hooks_disconnect")
+    return HealthItem("claude_code", "warn", "Applied · no event in 24 h; restart Claude Code if it's open.",
+                      "hooks_disconnect")
 
 
 def check_colab(ctx: HealthCtx) -> HealthItem:

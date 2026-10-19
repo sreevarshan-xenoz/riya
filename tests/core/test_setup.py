@@ -726,3 +726,21 @@ def test_overlapping_key_set_and_clear_never_leave_a_removed_key_live(tmp_path, 
     saved = deps.key.current()[0]
     final = host.swaps[-1]
     assert [None if m is None else m.api_key for m in final] == [saved, saved]
+
+
+@pytest.mark.parametrize("data, reason", [
+    ({"disableAllHooks": True}, "disableAllHooks is true"),
+    ({"allowedHttpHookUrls": ["https://example.com/*"]}, f"allowedHttpHookUrls doesn't include {ih.HOOK_URL}"),
+    ({"httpHookAllowedEnvVars": ["OTHER"]}, f"httpHookAllowedEnvVars doesn't include {ih.ENV_VAR}"),
+])
+def test_connect_says_when_claude_code_will_block_the_hooks(tmp_path, data, reason):
+    s, host, deps, results = make_setup(tmp_path)
+    deps.claude_settings.parent.mkdir(parents=True)
+    deps.claude_settings.write_text(json.dumps(data), encoding="utf-8")
+    ask = s.request("hooks_connect", {})
+    assert reason in ask.text and ask.text.endswith(ih.RESTART_LINE)
+    assert s.answer(ask.nonce, True) is True
+    assert results[-1] == Outcome("hooks_connect", True, f"Connected, but Claude Code will block it: {reason}")
+    saved = json.loads(deps.claude_settings.read_text(encoding="utf-8"))
+    assert ih.riya_events(saved) and all(saved[k] == v for k, v in data.items())  # Riya never edits those keys
+    assert host.rows[-1] == ("setup", 2, "Connected Claude Code", "ran")

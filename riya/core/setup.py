@@ -447,6 +447,12 @@ class Setup:
     def _do_hooks_connect(self, args) -> Outcome:
         rc, why = self._hooks("--apply")
         if rc == 0:
+            try:
+                blocked = install_hooks.blockers(install_hooks.read_settings(Path(self.deps.claude_settings)))
+            except install_hooks.SettingsError:
+                blocked = []
+            if blocked:  # written, but Claude Code's own settings stop them firing: say so, never edit those keys
+                return Outcome("hooks_connect", True, f"Connected, but Claude Code will block it: {'; '.join(blocked)}")
             return Outcome("hooks_connect", True, f"Connected. {_RESTART}")
         return Outcome("hooks_connect", False, _installer_why(why, self.deps.token_path))
 
