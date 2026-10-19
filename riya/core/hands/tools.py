@@ -200,6 +200,15 @@ def _lookup(args: dict, ctx: ToolCtx) -> ToolResult:
     return lookup(ctx.http, args["query"])
 
 
+def _fit_q(head: str, text: str, tail: str, n: int) -> str:
+    """head + _q(text) + tail within RESULT_MAX, shortening the quoted text (never cutting inside an escape)."""
+    for k in range(min(n, len(text)), -1, -1):
+        s = head + _q(text, k) + tail
+        if len(s) <= RESULT_MAX:
+            return s
+    return head + '""' + tail
+
+
 def _store_full() -> ToolResult:
     return ToolResult(False, "I'm already keeping track of 50 reminders, so I can't add another.")
 
@@ -224,7 +233,7 @@ def _reminder_set(args: dict, ctx: ToolCtx) -> ToolResult:
     rid = ctx.db.add_reminder("reminder", due, text, now)
     if rid is None:
         return _store_full()
-    return ToolResult(True, f"Okay, I'll remind you at {fmt_when(due, now, ctx.tz)}: {_q(text, 80)}.",
+    return ToolResult(True, _fit_q(f"Okay, I'll remind you at {fmt_when(due, now, ctx.tz)}: ", text, ".", 80),
                       {"id": rid, "due_at": due})
 
 

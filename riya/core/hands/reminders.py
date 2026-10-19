@@ -13,7 +13,8 @@ from .records import MAX_ACTIVE, Reminder  # noqa: F401  (MAX_ACTIVE is part of 
 LATE_S = 120  # later than this past due_at, the line says when it was due
 REMIND_GAP_S = 20  # at most one spoken reminder line per this many seconds
 TEXT_MAX = 80
-SHOWN_MAX = 4  # a merged line names this many, then "and N more"
+SHOWN_MAX = 4  # a merged line names at most this many, then "and N more"
+LINE_MAX = 300  # a merged line is never longer than this: it names fewer reminders instead
 
 
 def delivery(state: str, restricted: bool) -> Literal["speak", "bubble", "wait"]:
@@ -85,8 +86,10 @@ def reminder_line(items: list[Reminder], now: float, tz=None) -> str:
         return ""
     if len(items) == 1:
         return _part(items[0], now, tz, False)
-    parts = [_part(r, now, tz, True) for r in items[:SHOWN_MAX]]
-    more = len(items) - SHOWN_MAX
-    if more > 0:
-        parts.append(f"and {more} more")
-    return f"Hey~ a few things are due: {'; '.join(parts)}."
+    parts = [_part(r, now, tz, True) for r in items]
+    for k in range(min(len(parts), SHOWN_MAX), 0, -1):
+        shown = parts[:k] + ([f"and {len(parts) - k} more"] if k < len(parts) else [])
+        line = f"Hey~ a few things are due: {'; '.join(shown)}."
+        if len(line) <= LINE_MAX:
+            break
+    return line

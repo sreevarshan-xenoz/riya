@@ -79,13 +79,22 @@ def test_find_active(h):
     assert h.find_active("mom").text == "Call Mom later"           # cancelled ones are never found
 
 
-def test_find_active_timer_matches_the_soonest_timer(h):
+def test_find_active_timer_prefers_a_real_timer_newest_first(h):
     h.add_reminder("timer", 900.0, "timer", 0.0)
-    t2 = h.add_reminder("timer", 500.0, "timer", 0.0)
+    t2 = h.add_reminder("timer", 500.0, "timer", 5.0)
     h.add_reminder("reminder", 100.0, "water plants", 0.0)
-    assert h.find_active("timer").id == t2
-    h.cancel(t2, 1.0)
+    assert h.find_active("timer").id == t2                         # the newest-created timer
+    h.cancel(t2, 6.0)
     assert h.find_active("timer").due_at == 900.0
+
+
+def test_find_active_timer_beats_a_reminder_that_mentions_one(h):
+    h.add_reminder("reminder", 100.0, "check the timer on oven", 0.0)       # due sooner, and the text contains "timer"
+    t = h.add_reminder("timer", 900.0, "timer", 0.0)
+    assert h.find_active("timer").id == t
+    assert h.find_active("oven").text == "check the timer on oven"
+    h.cancel(t, 1.0)
+    assert h.find_active("timer").text == "check the timer on oven"         # no real timer left: the text match
 
 
 def test_like_wildcards_in_the_search_are_literal(h):
