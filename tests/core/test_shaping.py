@@ -1,7 +1,8 @@
 import pytest
 
-from riya.core.shaping import (BUDGETS, CAPS, GENERIC_PHRASES, cap_sentences, count_emoji, drop_generic, is_generic,
-                                is_identity_question, limit_emoji, strip_label, tts_text, turn_kind)
+from riya.core.shaping import (BUDGETS, CAPS, GENERIC_PHRASES, cap_for, cap_sentences, count_emoji, drop_generic,
+                                emoji_limit, is_generic, is_identity_question, limit_emoji, strip_label, tts_text,
+                                turn_kind)
 
 
 @pytest.mark.parametrize("about_me, thinking, expected", [
@@ -167,3 +168,21 @@ def test_drop_generic_keeps_a_sole_generic_sentence_and_with_a_lead_drops_it():
     assert list(drop_generic(iter(["You've got this!"]))) == ["You've got this!"]
     assert list(drop_generic(iter(["You've got this!"]), others=True)) == []
     assert list(drop_generic(iter(["No pressure.", "Feel free."]))) == ["Feel free."]
+
+
+@pytest.mark.parametrize("kind, verbosity, cap", [
+    ("small", 0.35, 3), ("small", 0.24, 2), ("small", 0.25, 3), ("small", 0.45, 3), ("small", 0.46, 4),
+    ("about_me", 0.2, 5), ("about_me", 0.6, 7), ("greeting", 0.2, 2), ("greeting", 0.6, 4),
+    ("explain", 0.15, 8), ("explain", 0.7, 8), ("report", 0.15, 1), ("report", 0.7, 1), ("tool", 0.15, 2)])
+def test_cap_for_scales_small_about_me_and_greeting(kind, verbosity, cap):
+    assert cap_for(kind, verbosity) == cap
+
+
+def test_cap_never_drops_below_one(monkeypatch):
+    monkeypatch.setitem(CAPS, "greeting", 1)
+    assert cap_for("greeting", 0.15) == 1
+
+
+@pytest.mark.parametrize("emoji, limit", [(0.0, 0), (0.149, 0), (0.15, 1), (0.3, 1), (0.6, 1)])
+def test_emoji_limit(emoji, limit):
+    assert emoji_limit(emoji) == limit

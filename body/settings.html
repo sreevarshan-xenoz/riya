@@ -196,6 +196,38 @@
     </div>
   </section>
 
+  <section aria-labelledby="h-learning">
+    <h2 id="h-learning">She learns you</h2>
+    <p class="note">She adjusts to you when you tell her how you like her, and learns when you like her to speak up. What she learned is all here, and you can undo it.</p>
+    <div class="row check" data-key="learning_enabled">
+      <input id="learning_enabled" type="checkbox"><label for="learning_enabled">Let her learn from you</label>
+      <p class="note">With this off she keeps what she learned but learns nothing new.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row">
+      <span class="label">Her personality</span>
+      <ul id="dials" class="dials"></ul>
+      <p class="note">The bar shows her band: she never goes outside it. Only you asking moves these, apart from talking a little less when you often cut her off.</p>
+    </div>
+    <div class="row">
+      <span class="label">What changed</span>
+      <ul id="dial-history" class="list"></ul>
+      <p id="dial-history-empty" class="empty" hidden>Nothing has changed yet.</p>
+    </div>
+    <div class="row">
+      <span class="label">How you like her</span>
+      <ul id="style-notes" class="list"></ul>
+      <p id="style-notes-empty" class="empty" hidden>No style notes.</p>
+    </div>
+    <div class="row">
+      <span class="label">When you like her to speak up</span>
+      <ul id="twin" class="list"></ul>
+      <p class="note">How often you took her up on it, by kind. She never goes quiet about anything urgent.</p>
+    </div>
+    <div class="inline"><button id="learning-reset" type="button" class="danger">Reset to her defaults</button></div>
+    <p id="learning-reset-err" class="err" role="alert" hidden></p>
+  </section>
+
   <section aria-labelledby="h-facts">
     <h2 id="h-facts">What she remembers</h2>
     <p id="global-err" class="err" role="alert" hidden></p>
@@ -258,6 +290,7 @@
 
 <script src="src/agents-logic.js"></script>
 <script src="src/hands-logic.js"></script>
+<script src="src/learning-logic.js"></script>
 <script src="src/settings-logic.js"></script>
 <script src="settings.js"></script>
 </body>

@@ -127,6 +127,19 @@
         "title": "GlanceDelete",
         "type": "object"
       },
+      "LearningReset": {
+        "description": "Reset to her defaults: the dials, the notes and the twin (the body confirms first).",
+        "properties": {
+          "type": {
+            "const": "learning_reset",
+            "default": "learning_reset",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "LearningReset",
+        "type": "object"
+      },
       "MemoryCorrect": {
         "properties": {
           "id": {
@@ -246,6 +259,25 @@
         "title": "SetSettings",
         "type": "object"
       },
+      "StyleNoteDelete": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "type": {
+            "const": "note_delete_style",
+            "default": "note_delete_style",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "StyleNoteDelete",
+        "type": "object"
+      },
       "TalkHotkey": {
         "properties": {
           "type": {
@@ -296,6 +328,32 @@
         "title": "TranscriptDelete",
         "type": "object"
       },
+      "TwinReset": {
+        "description": "Forget one kind of the decision twin (the kinds are twin.KINDS, written out: no import of the twin here).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "bid",
+              "game_offer",
+              "report",
+              "greeting"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "type": {
+            "const": "twin_reset",
+            "default": "twin_reset",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TwinReset",
+        "type": "object"
+      },
       "UserText": {
         "properties": {
           "text": {
@@ -327,15 +385,18 @@
         "episode_delete": "#/$defs/EpisodeDelete",
         "get_memories": "#/$defs/GetMemories",
         "glance_delete": "#/$defs/GlanceDelete",
+        "learning_reset": "#/$defs/LearningReset",
         "memory_correct": "#/$defs/MemoryCorrect",
         "memory_delete": "#/$defs/MemoryDelete",
         "note_delete": "#/$defs/NoteDelete",
+        "note_delete_style": "#/$defs/StyleNoteDelete",
         "quit_core": "#/$defs/QuitCore",
         "reminder_cancel": "#/$defs/ReminderCancel",
         "set_settings": "#/$defs/SetSettings",
         "talk_hotkey": "#/$defs/TalkHotkey",
         "thread_resolve": "#/$defs/ThreadResolve",
         "transcript_delete": "#/$defs/TranscriptDelete",
+        "twin_reset": "#/$defs/TwinReset",
         "user_text": "#/$defs/UserText"
       },
       "propertyName": "type"
@@ -391,6 +452,15 @@
       },
       {
         "$ref": "#/$defs/ActionsClear"
+      },
+      {
+        "$ref": "#/$defs/StyleNoteDelete"
+      },
+      {
+        "$ref": "#/$defs/TwinReset"
+      },
+      {
+        "$ref": "#/$defs/LearningReset"
       }
     ]
   },
@@ -610,6 +680,29 @@
         "title": "ConfirmRequest",
         "type": "object"
       },
+      "DialInfo": {
+        "properties": {
+          "hi": {
+            "title": "Hi",
+            "type": "number"
+          },
+          "lo": {
+            "title": "Lo",
+            "type": "number"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "lo",
+          "hi"
+        ],
+        "title": "DialInfo",
+        "type": "object"
+      },
       "EpisodeInfo": {
         "properties": {
           "ended_at": {
@@ -786,6 +879,58 @@
           "expressions"
         ],
         "title": "Hello",
+        "type": "object"
+      },
+      "LearningMsg": {
+        "description": "What she learned, for the settings page (on change, on hello and on get_memories): the dials with their bands,\nthe last 20 changes (newest first), the style notes (newest first), the twin's buckets and the master toggle.",
+        "properties": {
+          "dials": {
+            "additionalProperties": {
+              "$ref": "#/$defs/DialInfo"
+            },
+            "title": "Dials",
+            "type": "object"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/TraitChangeInfo"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/$defs/StyleNoteInfo"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "twin": {
+            "items": {
+              "$ref": "#/$defs/TwinInfo"
+            },
+            "title": "Twin",
+            "type": "array"
+          },
+          "type": {
+            "const": "learning",
+            "default": "learning",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dials",
+          "history",
+          "notes",
+          "twin",
+          "enabled"
+        ],
+        "title": "LearningMsg",
         "type": "object"
       },
       "Look": {
@@ -1095,6 +1240,40 @@
         "title": "StateMsg",
         "type": "object"
       },
+      "StyleNoteInfo": {
+        "description": "A style note in her own words (\"They like it when I ask about their day.\"): never a fact.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "polarity": {
+            "enum": [
+              "like",
+              "dislike",
+              "rule"
+            ],
+            "title": "Polarity",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "text",
+          "polarity"
+        ],
+        "title": "StyleNoteInfo",
+        "type": "object"
+      },
       "ThreadInfo": {
         "properties": {
           "due_at": {
@@ -1117,6 +1296,78 @@
         ],
         "title": "ThreadInfo",
         "type": "object"
+      },
+      "TraitChangeInfo": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "dial": {
+            "title": "Dial",
+            "type": "string"
+          },
+          "new": {
+            "title": "New",
+            "type": "number"
+          },
+          "old": {
+            "title": "Old",
+            "type": "number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "explicit",
+              "drift",
+              "reset"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "dial",
+          "old",
+          "new",
+          "reason",
+          "source"
+        ],
+        "title": "TraitChangeInfo",
+        "type": "object"
+      },
+      "TwinInfo": {
+        "description": "One decision-twin bucket: p is the decayed engagement estimate, n the decayed evidence above the prior.",
+        "properties": {
+          "bucket": {
+            "title": "Bucket",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "n": {
+            "title": "N",
+            "type": "number"
+          },
+          "p": {
+            "title": "P",
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind",
+          "bucket",
+          "p",
+          "n"
+        ],
+        "title": "TwinInfo",
+        "type": "object"
       }
     },
     "discriminator": {
@@ -1129,6 +1380,7 @@
         "expression": "#/$defs/ExpressionMsg",
         "eyes": "#/$defs/EyesMsg",
         "hello": "#/$defs/Hello",
+        "learning": "#/$defs/LearningMsg",
         "look": "#/$defs/Look",
         "memories": "#/$defs/MemoriesMsg",
         "mouth": "#/$defs/Mouth",
@@ -1188,6 +1440,9 @@
       },
       {
         "$ref": "#/$defs/ActionsMsg"
+      },
+      {
+        "$ref": "#/$defs/LearningMsg"
       }
     ]
   },

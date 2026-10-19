@@ -89,7 +89,8 @@ def test_binds_localhost_only():
 
 def test_non_text_messages_go_to_the_core_and_state_is_exposed():
     with client() as c, c.websocket_connect("/ws") as ws:
-        assert receive_until(ws, "actions") == ["hello", "settings", "state", "agents", "eyes", "reminders", "actions"]
+        assert receive_until(ws, "actions") == ["hello", "settings", "state", "agents", "eyes", "learning",
+                                                "reminders", "actions"]
         ws.send_json({"type": "get_memories"})
         assert "memories" in receive_until(ws, "memories")
         assert c.app.state.core.hello_messages()[0].type == "hello"
@@ -406,3 +407,36 @@ def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
     assert runner.main(["--no-voice", "--hash-embed"]) is None
     assert made["core"].agent_inbox is not None and made["stopped"]
     assert made["core"]._agents_msg().receiver_ok is False
+
+
+def test_a_typed_turn_while_she_streams_is_measured_but_still_queued():
+    typed, cores, calls = threading.Event(), [], []
+
+    def factory(emit):
+        core, _, _, _ = make_core(local_replies=["One two. Three four.", "Second."])
+        core.emit, real = emit, core.note_typed_turn
+
+        def note():  # every typed turn is noted; the second one arrives while the first reply streams
+            real()
+            calls.append(1)
+            if len(calls) == 2:
+                typed.set()
+        core.note_typed_turn = note
+        cores.append(core)
+        return core
+
+    def speak(sentences):  # her first sentence is out; the rest streams only once the next turn was typed
+        for i, _ in enumerate(sentences):
+            if i == 0:
+                typed.wait(5)
+
+    with TestClient(create_app(factory, speak=speak)) as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "actions")  # the end of hello
+        ws.send_json({"type": "user_text", "text": "tell me something"})
+        receive_until(ws, "say")
+        ws.send_json({"type": "user_text", "text": "wait"})
+        receive_until(ws, "say_end")
+        receive_until(ws, "say_end")  # still queued: answered after the first, in order
+    core = cores[0]
+    assert len(calls) == 2 and [(e.kind, e.outcome) for e in core.learn.events()] == [("barge", "barged")]
+    assert [t["content"] for t in core.turns if t["role"] == "user"] == ["tell me something", "wait"]

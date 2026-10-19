@@ -54,6 +54,7 @@ class Settings:
     commands: list[dict] = field(default_factory=list)  # {name, argv, cwd, timeout_s}: what "run <name>" may run
     weather_place: str | None = None
     hands_online: bool = True
+    learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
 
 
 def load_settings(kv: KV) -> Settings:

@@ -1,10 +1,12 @@
 """Live persona scorecard: scripted probes through the real RiyaCore against the real local model. Always exits 0.
 
   python -m evaluation.persona_eval --local-url http://127.0.0.1:8090 [--online] [--label baseline] [--repeat 2]
+                                    [--dials]
 
 Starts nothing itself (run `python -m riya.server --model <gguf>` first). Writes
 scratch_runs/persona_eval/<timestamp>_<label>.json and prints a table with pass/fail per target. It's a measurement,
-not a gate.
+not a gate. --dials runs the probes at baseline, at low and high teasing/verbosity, and prints a "Dial check": the
+dials should change her style, not break her character (the share metrics stay within the noise).
 """
 import argparse
 import json
@@ -19,6 +21,7 @@ from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
 from riya.core.initiative import Action
+from riya.core.learn.dials import BANDS
 from riya.core.models import ModelUnavailable, load_dotenv, load_online_from_env, local_model
 from riya.core.presence import FakeIdleSource
 from riya.core.protocol import ErrorMsg
@@ -44,6 +47,11 @@ TARGETS = [  # (pass key, label, metric keys, format, target text)
     ("disclaimer", "Disclaimers (non-identity)", ("disclaimer_rate",), "{:.0%}", "<= 5%"),
 ]
 GREET_AWAY_H = 30
+DIAL_SETS = {"low": {d: BANDS[d][0] for d in ("teasing", "verbosity")},  # the band edges, by definition
+             "high": {d: BANDS[d][1] for d in ("teasing", "verbosity")}}
+NOISE_PTS = 0.15  # a share metric moving less than this between two runs is sampling noise
+SHARE_KEYS = ("generic_share", "marker_share", "unknown_honesty", "ai_honesty", "remember_ack", "about_me_recall",
+              "disclaimer_rate")
 
 
 def load_probes(path: Path = PROBES) -> dict:
@@ -61,8 +69,9 @@ def style_phrases(probes: dict) -> list[str]:
     return out
 
 
-def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list[dict]:
-    """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed).
+def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: dict | None = None) -> list[dict]:
+    """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed). `dials` are
+    set on the core's learn store (a temp db, never the user's) right after it is built.
     known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user.
     facts is what her memory holds at that turn. A "speak_first" turn is her greeting after away_hours away."""
     clock, emitted = FakeClock(), []
@@ -70,6 +79,8 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list
     try:
         core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=FakeIdleSource(), local=local,
                         online=online, emit=emitted.append)
+        if dials:
+            core.learn.set_dials(dials, "persona_eval", "explicit", clock.now())
         known = list(conv["facts"])
         for fact in conv["facts"]:
             core.memory.add_fact(fact, "user_said")
@@ -101,19 +112,20 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "") -> list
         db.close()
 
 
-def run_probes(probes: dict, local, online, repeat: int = 1) -> list[dict]:
+def run_probes(probes: dict, local, online, repeat: int = 1, dials: dict | None = None) -> list[dict]:
     """Every conversation, fresh each time, `repeat` passes over the probes (sampling is noisy: score them together).
     Rows carry their pass number; probe ids after the first pass get a "#n" suffix."""
     transcript = []
     for n in range(1, repeat + 1):
         for conv in probes["conversations"]:
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-                rows = run_conversation(conv, local, online, tmp, "" if n == 1 else f"#{n}")
+                rows = run_conversation(conv, local, online, tmp, "" if n == 1 else f"#{n}", dials)
             transcript += [r | {"pass": n} for r in rows]
     return transcript
 
 
-def run(local_url: str, online_wanted: bool = False, repeat: int = 1) -> tuple[list[dict], dict, str | None]:
+def run(local_url: str, online_wanted: bool = False, repeat: int = 1,
+        dials: dict | None = None) -> tuple[list[dict], dict, str | None]:
     """(transcript, score, problem). problem is set when the local server couldn't be reached (nothing is run)."""
     probes = load_probes()
     local = local_model(local_url, first_token_timeout_s=60.0)
@@ -127,7 +139,7 @@ def run(local_url: str, online_wanted: bool = False, repeat: int = 1) -> tuple[l
         online = load_online_from_env()
         if online is None:
             print("Note: --online given but no RIYA_ONLINE_API_KEY is set; running local only.")
-    transcript = run_probes(probes, local, online, repeat)
+    transcript = run_probes(probes, local, online, repeat, dials)
     answered = [r for r in transcript if not r["error"]]
     s = score(answered, style_phrases(probes))
     return transcript, s | {"failed_turns": len(transcript) - len(answered), "online": online is not None}, None
@@ -145,19 +157,39 @@ def format_table(s: dict) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    ap = argparse.ArgumentParser(prog="python -m evaluation.persona_eval", description=__doc__.splitlines()[0])
-    ap.add_argument("--local-url", default="http://127.0.0.1:8090", help="llama-server base URL")
-    ap.add_argument("--label", default="run", help="name for this scorecard (used in the file name)")
-    ap.add_argument("--online", action="store_true", help="also give the core the online model (needs the API key)")
-    ap.add_argument("--repeat", type=int, default=1, help="passes over the probes, scored together (default 1)")
-    args = ap.parse_args(argv)
-    transcript, s, problem = run(args.local_url, args.online, max(1, args.repeat))
-    if problem is not None:
-        print(f"No model server answered at {args.local_url} ({problem}). Start llama-server and re-run.")
-        return 0
+def dial_check(base: dict, other: dict) -> list[tuple[str, float | None, bool | None]]:
+    """Per share metric: (key, other - base, within the noise). (key, None, None) when either run has no value."""
+    out = []
+    for k in SHARE_KEYS:
+        if base.get(k) is None or other.get(k) is None:
+            out.append((k, None, None))
+        else:
+            d = other[k] - base[k]
+            out.append((k, d, abs(round(d, 6)) <= NOISE_PTS))
+    return out
+
+
+def format_dial_check(scores: dict[str, dict]) -> str:
+    """The "Dial check": for each dialled set, its small-talk median and emoji mean and the share deltas against
+    baseline, then a verdict. `scores` maps "baseline" and each set name to its score."""
+    base, moved = scores["baseline"], []
+    fmt = lambda v, f: "n/a" if v is None else f.format(v)  # noqa: E731
+    lines = ["Dial check (share metrics vs baseline, noise +/-15 points)"]
+    for name, s in scores.items():
+        lines.append(f"  {name}: small-talk median {fmt(s['small_median'], '{:g}')}, "
+                     f"emoji mean {fmt(s['emoji_mean'], '{:.2f}')}")
+        if name == "baseline":
+            continue
+        for key, d, ok in dial_check(base, s):
+            lines.append(f"    {key:18} {fmt(d, '{:+.0%}'):>6}  {'n/a' if ok is None else 'ok' if ok else 'OUT OF NOISE'}")
+            if ok is False:
+                moved.append(f"{name}/{key}")
+    lines.append("Verdict: " + ("every share metric stays within the noise at both dial sets." if not moved else
+                                "OUT OF NOISE: " + ", ".join(moved) + " (read those transcripts; one run is noisy)."))
+    return "\n".join(lines)
+
+
+def _print_run(transcript: list[dict], s: dict) -> None:
     for r in transcript:
         t = "-" if r["first_sentence_s"] is None else f"{r['first_sentence_s']:.2f} s"
         print(f"[{r['probe_id']}] {r['text']}\n    ({t}) {r['reply'] or '(no reply: ' + str(r['error']) + ')'}")
@@ -168,12 +200,44 @@ def main(argv: list[str] | None = None) -> int:
     print("Tone check (rudeness is an anti-goal; read these): " + ("none" if not s.get("tone_check") else ""))
     for pid in s.get("tone_check", []):
         print(f"    [{pid}] {replies[pid]}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser(prog="python -m evaluation.persona_eval", description=__doc__.splitlines()[0])
+    ap.add_argument("--local-url", default="http://127.0.0.1:8090", help="llama-server base URL")
+    ap.add_argument("--label", default="run", help="name for this scorecard (used in the file name)")
+    ap.add_argument("--online", action="store_true", help="also give the core the online model (needs the API key)")
+    ap.add_argument("--repeat", type=int, default=1, help="passes over the probes, scored together (default 1)")
+    ap.add_argument("--dials", action="store_true",
+                    help="run at baseline, low and high teasing/verbosity and print a Dial check")
+    args = ap.parse_args(argv)
+    repeat = max(1, args.repeat)
+    sets = [("baseline", None), *DIAL_SETS.items()] if args.dials else [("baseline", None)]
+    results: dict[str, tuple[list[dict], dict]] = {}
+    for name, dials in sets:
+        # the plain run keeps its three-argument call; with --dials the baseline run's reachability check is the check
+        transcript, s, problem = (run(args.local_url, args.online, repeat, dials=dials) if args.dials
+                                  else run(args.local_url, args.online, repeat))
+        if problem is not None:
+            print(f"No model server answered at {args.local_url} ({problem}). Start llama-server and re-run.")
+            return 0
+        results[name] = (transcript, s)
+        if args.dials:
+            print(f"\n===== {name}" + (f" {dials}" if dials else "") + " =====")
+        _print_run(transcript, s)
+    if args.dials:
+        print("\n" + format_dial_check({n: s for n, (_, s) in results.items()}))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{time.strftime('%Y%m%dT%H%M%S')}_{args.label}.json"
-    path.write_text(json.dumps({"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url,
-                                "repeat": max(1, args.repeat), "score": s, "transcript": transcript},
-                               ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    body = {"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url, "repeat": repeat}
+    if args.dials:
+        body |= {"dials": {n: s for n, (_, s) in results.items()}, "transcripts": {n: t for n, (t, _) in results.items()}}
+    else:
+        ((transcript, s),) = results.values()
+        body |= {"score": s, "transcript": transcript}
+    path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {path}")
     return 0
 

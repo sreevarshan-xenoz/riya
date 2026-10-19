@@ -5,7 +5,7 @@
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 10000];
 /** Every core -> body message type (docs/protocol.schema.json core_to_body; a test keeps them equal). */
 const CORE_TYPES = ["hello", "settings", "state", "expression", "say", "say_end", "mouth", "memories", "error", "look",
-  "eyes", "agents", "confirm_request", "confirm_done", "reminders", "actions"];
+  "eyes", "agents", "confirm_request", "confirm_done", "reminders", "actions", "learning"];
 
 class CoreClient {
   constructor({ url, WebSocketImpl, setTimeoutFn = (fn, ms) => setTimeout(fn, ms) }) {
