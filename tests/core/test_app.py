@@ -508,3 +508,96 @@ def test_build_core_reads_secrets_after_dotenv(tmp_path, monkeypatch):
     key = core.setup.deps.key
     assert key.info().source == "app" and (key.base, key.base_source) == ("DOTENV-1234567890", ".env")
     assert key.path == secrets and core.local_url == "http://127.0.0.1:1"
+
+
+def test_no_parse_error_over_the_socket_echoes_the_key(caplog):
+    caplog.set_level("DEBUG")
+    sent = ['{"type":"setup_requesx","args":{"key":"' + CANARY + '"}}',
+            '{"type":"set_settings","patch":"' + CANARY + '"}',
+            '{"type":"user_text","text":["' + CANARY + '"]}']
+    with client() as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "actions")  # the end of hello
+        frames = []
+        for raw in sent:
+            ws.send_text(raw)
+            frames.append(ws.receive_json())
+    assert [f["message"] for f in frames] == ["invalid message", "invalid set_settings", "invalid user_text"]
+    for text in [str(f) for f in frames] + [caplog.text]:
+        assert not any(part in text for part in (CANARY, CANARY[:10], CANARY[-10:]))
+
+
+# --- fix round 1: her voices without the voice loop -----------------------------------------------------------------
+
+def test_voice_choices_fall_back_to_the_feminine_list(monkeypatch):
+    from riya import voice_candidates as vc
+    monkeypatch.setattr(vc, "builtin_voices", lambda: [])  # no pocket_tts
+    assert vc.voice_choices() == list(vc.FEMININE)
+
+    def broken():
+        raise RuntimeError("a broken install")
+    monkeypatch.setattr(vc, "builtin_voices", broken)
+    assert vc.voice_choices() == list(vc.FEMININE)
+    monkeypatch.setattr(vc, "builtin_voices", lambda: ["marius", "eve", "alba"])
+    assert vc.voice_choices() == ["alba", "eve"]
+
+
+def test_build_core_lists_her_voices_without_the_voice_stack(tmp_path, monkeypatch):
+    from riya import voice_candidates as vc
+    asked = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    monkeypatch.setattr(vc, "builtin_voices", lambda: asked.append(1) or [])
+    core = runner.build_core(core_args(tmp_path, hash_embed=True), lambda m: None)
+    core.setup.load_voices()
+    assert core.setup.voices() == list(vc.FEMININE) and asked == [1]
+    core.kv.conn.close()
+    quiet = runner.build_core(core_args(tmp_path, hash_embed=True, no_voice=True), lambda m: None)
+    quiet.setup.load_voices()                             # --no-voice never touches the TTS stack
+    assert quiet.setup.voices() == list(vc.FEMININE) and asked == [1]
+
+
+def test_main_lists_her_voices_when_text_only(monkeypatch):
+    import uvicorn
+
+    from riya.core.protocol import QuitCore, VoicesMsg
+    from tests.fakes import wait_for
+    made = {}
+
+    def build_core(args, emit, body_present):
+        core, emitted, *_ = make_core()
+        made["emitted"] = emitted
+        core.handle(QuitCore())
+        return core
+
+    class Server:
+        def __init__(self, config):
+            self.config, self.should_exit = config, False
+
+        def run(self):
+            with TestClient(self.config.app):
+                while not self.should_exit:
+                    threading.Event().wait(0.01)
+
+    class Receiver:
+        ok = True
+
+        def __init__(self, enqueue):
+            pass
+
+        def start(self):
+            return self
+
+        def stop(self):
+            pass
+
+    def start_logwatch(core):
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return threading.Event(), thread
+
+    monkeypatch.setattr(runner, "build_core", build_core)
+    monkeypatch.setattr(runner, "HookReceiver", Receiver)
+    monkeypatch.setattr(runner, "start_logwatch", start_logwatch)
+    monkeypatch.setattr(uvicorn, "Server", Server)
+    assert runner.main(["--no-voice", "--hash-embed"]) is None
+    assert wait_for(made["emitted"], VoicesMsg).items == ["alba"]  # the sandboxed list, read on riya-voices

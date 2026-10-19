@@ -28,7 +28,7 @@ from riya.core.protocol import Mouth
 from riya.core.secrets import KEY_VAR, OnlineKey
 from riya.core.setup import SetupDeps
 from riya.core.store import open_db
-from riya.voice_candidates import builtin_voices, pick_voices
+from riya.voice_candidates import FEMININE, voice_choices
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -76,8 +76,10 @@ def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None],
     load_dotenv()
     key = OnlineKey.at_start(os.environ, had, Path(getattr(args, "secrets", None) or keystore.default_path()))
     online, vision = online_pair(key.env(os.environ))
+    # --no-voice never loads the TTS stack, not even to list its voices
+    voices = (lambda: list(FEMININE)) if getattr(args, "no_voice", False) else voice_choices
     deps = SetupDeps(key, dict(os.environ), install_hooks.default_settings_path(), install_hooks.default_token_path(),
-                     subprocess.run, lambda: pick_voices(builtin_voices()))
+                     subprocess.run, voices)
     core = RiyaCore(db=open_db(args.db), embedder=make_embedder(args.hash_embed), clock=SystemClock(),
                     idle_source=make_idle_source(), local=local_model(args.local_url),
                     online=online, emit=emit, vision=vision,
@@ -112,8 +114,15 @@ def connect_voice(core: RiyaCore, loop):
     core.on_spoke_first = loop.gate.open
     core.voice_sampler = loop.sample
     core.mic_prober = riya.voice.probe_mic
-    threading.Thread(target=core.cache_voices, name="riya-voices", daemon=True).start()
+    start_voices(core)
     return loop
+
+
+def start_voices(core: RiyaCore) -> threading.Thread:
+    """Her voice list, read once on a riya-voices daemon thread (off the core lock and off the health thread)."""
+    thread = threading.Thread(target=core.cache_voices, name="riya-voices", daemon=True)
+    thread.start()
+    return thread
 
 
 class Speaker:
@@ -209,6 +218,8 @@ def main(argv: list[str] | None = None) -> None:
                 threading.Thread(target=speaker.loop.run, name="riya-voice", daemon=True).start()
             except Exception:
                 log.exception("voice failed to start; running text-only")
+        if speaker.loop is None:  # text-only: Health and the welcome still list her voices
+            start_voices(core)
         run_ticks(core, speaker, thread.is_alive)
         if core.quit_requested.is_set():
             log.info("Riya was quit from the tray; stopping the core")

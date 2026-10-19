@@ -53,6 +53,7 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, Actio
                                 StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo, TranscriptDelete, TwinInfo,
                                 TwinReset, VoicesMsg)
 from riya.core.router import Router, needs_thinking
+from riya.core.secrets import KeyInfo
 from riya.core.settings import (Settings, apply_patch, default_startup_dir, in_quiet_hours, load_settings,
                                 save_settings, set_autostart)
 from riya.core.setup import NONCE_REFUSED, TESTS_KEY, Outcome, Setup, SetupDeps
@@ -205,6 +206,21 @@ class Utterance:
                 done()
 
 
+class _Unreadable:
+    """A Health context field that couldn't be read: any use of it raises that error again, so the check that reads it
+    becomes one warn row ("This check failed (KeyError).") and the rest of the checklist still reports."""
+
+    def __init__(self, error: Exception):
+        object.__setattr__(self, "_error", error)
+
+    def _fail(self, *_args, **_kw):
+        raise object.__getattribute__(self, "_error").with_traceback(None)
+
+    __getattr__ = __fspath__ = __bool__ = __str__ = __format__ = __eq__ = __lt__ = __le__ = __gt__ = __ge__ = _fail
+    __iter__ = __getitem__ = __contains__ = __len__ = __add__ = __sub__ = __rsub__ = __float__ = __int__ = _fail
+    __hash__ = None
+
+
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None, vision: ChatModel | None = None,
@@ -317,7 +333,7 @@ class RiyaCore:
         self.health_http = health.default_http_get
         self.health_timeout_s = health.CHECK_TIMEOUT_S
         self.startup_dir: Path | None = None  # None: the real Startup folder
-        self._settings_lock = threading.Lock()  # a settings read-modify-write; only memory is taken inside it
+        self._settings_lock = threading.Lock()  # a settings patch: saved, applied and sent as one
         self._health_lock = threading.Lock()  # guards _health_running and _health_again
         self._health_running = self._health_again = False
         self.setup = Setup(self, setup_deps or SetupDeps.sandboxed(self.riya_dir / ".setup"),
@@ -328,7 +344,8 @@ class RiyaCore:
         return load_settings(self.kv)
 
     def _consolidation_model(self) -> ChatModel:
-        return self.online if self.settings.online_consolidation and self.online else self.local
+        online = self.online  # read once: a key cleared in between must not hand the consolidator None
+        return online if self.settings.online_consolidation and online else self.local
 
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
@@ -2054,31 +2071,33 @@ class RiyaCore:
         """Validate, save and apply a settings patch, then emit it. ValueError for a bad patch (nothing is saved). A
         patch holding "autostart" always rewrites or removes the Startup shortcut (so Health can repair a missing one);
         when that fails, everything else still applies and is emitted, and an OSError is raised at the end."""
+        failed: OSError | None = None
+        # saved, applied and sent as one: two racing patches (a setup thread and the socket) can't leave the runtime
+        # state or the last SettingsMsg on the older one. Inside it only _eyes_lock, _expr_lock and memory are taken
         with self._settings_lock:
             old = self.settings
             new = apply_patch(old, patch)
             save_settings(self.kv, new)
-        self.router.online_enabled = new.online_enabled
-        with self._eyes_lock:
-            self.policy.cap, self.policy.min_gap_s = new.glance_daily_cap, new.glance_min_gap_s
-            if any(getattr(old, k) != getattr(new, k) for k in _EYES_KEYS):
-                self._eyes_gen += 1  # a look in flight was allowed under the old settings: drop it
-            self._dont_look, self._eyes_on = new.dont_look, new.eyes_enabled
-        failed: OSError | None = None
-        if "autostart" in patch:
-            try:
-                set_autostart(new.autostart, LAUNCHER, startup_dir=self.startup_dir)
-            except OSError as e:
-                log.warning("autostart change failed: %s", e)
-                failed = e
-            except KeyError as e:  # APPDATA isn't set
-                log.warning("autostart change failed: %s", e)
-                failed = OSError(f"APPDATA isn't set ({e})")
-        self.emit(SettingsMsg(settings=asdict(new)))
-        if new.learning_enabled != old.learning_enabled:
-            self._emit_learning()
-        self._emit_eyes(new)
-        self._sync_expression()
+            self.router.online_enabled = new.online_enabled
+            with self._eyes_lock:
+                self.policy.cap, self.policy.min_gap_s = new.glance_daily_cap, new.glance_min_gap_s
+                if any(getattr(old, k) != getattr(new, k) for k in _EYES_KEYS):
+                    self._eyes_gen += 1  # a look in flight was allowed under the old settings: drop it
+                self._dont_look, self._eyes_on = new.dont_look, new.eyes_enabled
+            if "autostart" in patch:
+                try:
+                    set_autostart(new.autostart, LAUNCHER, startup_dir=self.startup_dir)
+                except OSError as e:
+                    log.warning("autostart change failed: %s", e)
+                    failed = e
+                except KeyError as e:  # APPDATA isn't set
+                    log.warning("autostart change failed: %s", e)
+                    failed = OSError(f"APPDATA isn't set ({e})")
+            self.emit(SettingsMsg(settings=asdict(new)))
+            if new.learning_enabled != old.learning_enabled:
+                self._emit_learning()
+            self._emit_eyes(new)
+            self._sync_expression()
         if failed is not None:
             raise failed
         return new
@@ -2127,19 +2146,37 @@ class RiyaCore:
             log.exception("couldn't list her voices")
 
     def _health_ctx(self) -> health.HealthCtx:
-        """Everything the checks read, gathered on the health thread (never under the core lock)."""
-        with self.memory.lock:
-            dbs = self.kv.conn.execute("pragma database_list").fetchall()
-            version = self.kv.conn.execute("pragma user_version").fetchone()[0]
-        db_path = next((row[2] for row in dbs if row[1] == "main"), "") or ""
-        tests = self.kv.get(TESTS_KEY, {})
+        """Everything the checks read, gathered on the health thread (never under the core lock). A field that can't
+        be read (APPDATA unset, a DB error) becomes an _Unreadable: only the rows that use it warn."""
+        def read(name: str, fn: Callable[[], object]):
+            try:
+                return fn()
+            except Exception as e:
+                log.warning("Health couldn't read %s (%s)", name, type(e).__name__)
+                return _Unreadable(e)
+
+        def db() -> tuple[str, int]:
+            with self.memory.lock:
+                dbs = self.kv.conn.execute("pragma database_list").fetchall()
+                version = self.kv.conn.execute("pragma user_version").fetchone()[0]
+            return next((row[2] for row in dbs if row[1] == "main"), "") or "", version
+
+        def tests() -> dict:
+            got = self.kv.get(TESTS_KEY, {})
+            return got if isinstance(got, dict) else {}
+
+        where = read("the database", db)
+        db_path, version = (where, where) if isinstance(where, _Unreadable) else where
         receiver = self.receiver
         return health.HealthCtx(
-            now=self.clock.now(), settings=self.settings, local_url=self.local_url, key=self.setup.deps.key.info(),
-            last_tests=tests if isinstance(tests, dict) else {}, voice_running=self.voice_sampler is not None,
-            vision_ready=self.vision is not None, receiver_ok=None if receiver is None else bool(receiver.ok),
-            hooks_seen_at=self._hooks_seen_at, claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT,
-            db_path=db_path, schema_version=version, startup_dir=self.startup_dir or default_startup_dir(),
+            now=read("the clock", self.clock.now), settings=read("the settings", lambda: self.settings),
+            local_url=self.local_url, key=read("the key", self.setup.deps.key.info),
+            last_tests=read("the tests", tests),
+            voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
+            receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,
+            claude_settings=self.setup.deps.claude_settings, repo_root=REPO_ROOT, db_path=db_path,
+            schema_version=version,
+            startup_dir=read("the Startup folder", lambda: self.startup_dir or default_startup_dir()),
             http_get=self.health_http, tz=self.tz)
 
     def _start_health(self) -> None:
@@ -2172,6 +2209,7 @@ class RiyaCore:
             self.emit(self._voices_msg())
             ctx = self._health_ctx()
             items = [HealthItemInfo(**asdict(i)) for i in health.run_checks(ctx, self.health_timeout_s)]
-            self.emit(HealthMsg(items=items, key_source=ctx.key.source))
+            source = ctx.key.source if isinstance(ctx.key, KeyInfo) else None
+            self.emit(HealthMsg(items=items, key_source=source))
         except Exception:
             log.exception("the health checks failed")

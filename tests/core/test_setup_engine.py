@@ -220,6 +220,8 @@ def test_the_key_never_leaves_the_core(tmp_path, caplog):
 
         hello = core.hello_messages()
         list(core.reply("hi"))
+        list(core.reply("explain how my keys work"))       # routed online: the failing fake's error is logged
+        assert any("online model failed" in r.getMessage() for r in caplog.records)
         core.handle(GetMemories())
         sinks = {
             "emitted": "\n".join(dump(m) for m in emitted),
@@ -250,11 +252,12 @@ def test_a_bad_setup_request_never_echoes_its_args(tmp_path):
 
 def test_key_set_and_clear_rebuild_both_models(tmp_path):
     d = deps(tmp_path, key=keyed(tmp_path))
-    core, emitted, *_ = make_core(setup_deps=d)
+    core, emitted, *_ = make_core(online=FakeModel("old-online"), vision=FakeModel("old-vision"), setup_deps=d)
     start = (core.online, core.vision)
+    assert start[0] is not None and start[1] is not None
     assert run(core, emitted, "online_key_set", key=CANARY).ok
     assert core.online.api_key == CANARY and core.vision.api_key == CANARY
-    assert core.online is not core.vision and core.online not in start and core.vision not in start
+    assert core.online is not core.vision and core.online is not start[0] and core.vision is not start[1]
     assert core.router.online is core.online
     assert (core.online.name, core.vision.name) == ("online", "vision")
     mark = len(emitted)
@@ -295,13 +298,21 @@ def test_health_runs_off_the_core_lock(tmp_path):
     wait_health_idle(core)
 
     core.setup.load_voices()
+    gathered, real_ctx = [], core._health_ctx
+
+    def ctx():
+        gathered.append((threading.current_thread().name, core._lock.locked()))
+        return real_ctx()
+
+    core._health_ctx = ctx
     with core._lock:
         mark = len(emitted)
         t0 = time.monotonic()
         core.handle(HealthGet())
         assert time.monotonic() - t0 < 0.5
-        h = wait_for(emitted, HealthMsg, after=mark)
-        assert core._lock.locked()
+        h = wait_for(emitted, HealthMsg, after=mark)      # it arrived while the test still held the lock
+    assert gathered == [("riya-health", True)]            # gathered on its own thread, the core lock held elsewhere
+    core._health_ctx = real_ctx
     assert [i.key for i in h.items] == list(health.ROWS)
     v = wait_for(emitted, VoicesMsg, after=mark)
     assert v == VoicesMsg(items=["alba", "eve"], current="alba") and pos(emitted, v) < pos(emitted, h)
@@ -409,3 +420,68 @@ def test_autostart_action_uses_the_guarded_startup_dir(tmp_path, monkeypatch):
     assert err.message.startswith("couldn't change autostart:")
     settings = [i for i, m in enumerate(new) if isinstance(m, SettingsMsg)]
     assert settings and settings[0] < new.index(err)
+
+
+# ---- fix round 1: racing patches, one read of the online model, an unreadable Health field --------------------------
+
+def test_racing_patches_never_leave_the_older_state_behind(tmp_path):
+    """A (voice eve) is held just as it sends its SettingsMsg, while B (online off) is patched from another thread.
+    However they interleave, the runtime and the last SettingsMsg carry both."""
+    core, emitted, *_ = make_core(setup_deps=deps(tmp_path))
+    b_sent, done = threading.Event(), []
+    real_emit = core.emit
+
+    def emit(m):
+        if isinstance(m, SettingsMsg) and m.settings["voice"] == "eve" and m.settings["online_enabled"]:
+            threading.Thread(target=lambda: done.append(core.patch_settings({"online_enabled": False}))).start()
+            b_sent.wait(0.5)  # with the fix B waits for A's lock, so this times out; without it B runs to the end
+        real_emit(m)
+        if isinstance(m, SettingsMsg) and not m.settings["online_enabled"]:
+            b_sent.set()
+
+    core.emit = emit
+    a = threading.Thread(target=lambda: done.append(core.patch_settings({"voice": "eve"})))
+    a.start()
+    a.join(5)
+    deadline = time.monotonic() + 5
+    while len(done) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(done) == 2
+    last = [m for m in emitted if isinstance(m, SettingsMsg)][-1].settings
+    assert (last["voice"], last["online_enabled"]) == ("eve", False)
+    assert core.router.online_enabled is False
+    assert (core.settings.voice, core.settings.online_enabled) == ("eve", False)
+
+
+def test_consolidation_reads_the_online_model_once(tmp_path):
+    from dataclasses import replace
+
+    from riya.core.settings import save_settings
+    core, *_ = make_core(setup_deps=deps(tmp_path))
+
+    class Cleared(FakeModel):
+        def __bool__(self):  # the key is cleared right as the consolidator asks
+            core.swap_online(None, None)
+            return True
+
+    model = Cleared("online")
+    core.online = core.router.online = model
+    save_settings(core.kv, replace(core.settings, online_consolidation=True))
+    assert core._consolidation_model() is model
+    assert core.online is None and core._consolidation_model() is core.local
+
+
+def test_an_unreadable_health_field_warns_only_its_row(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from riya.core.settings import save_settings
+    core, emitted, *_ = make_core(setup_deps=deps(tmp_path))
+    save_settings(core.kv, replace(core.settings, autostart=True))
+    monkeypatch.delenv("APPDATA")                         # core.startup_dir is None: the real default can't resolve
+    core.handle(HealthGet())
+    h = wait_for(emitted, HealthMsg)
+    rows = {i.key: i for i in h.items}
+    assert [i.key for i in h.items] == list(health.ROWS)
+    assert (rows["autostart"].status, rows["autostart"].detail) == ("warn", "This check failed (KeyError).")
+    assert all("This check failed" not in i.detail for k, i in rows.items() if k != "autostart")
+    assert rows["memory"].status == "ok" and rows["local"].detail == "No local server is configured."

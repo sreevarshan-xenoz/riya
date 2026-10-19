@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, Union, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
@@ -412,18 +412,22 @@ _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)
 
 
+_BODY_TYPES = frozenset(m.model_fields["type"].default for m in get_args(get_args(BodyMessage)[0]))
+
+
 def parse_body_message(raw: str) -> BodyMessage:
-    """A bad setup_request gets a fixed message: pydantic's text quotes input values, and its args may hold the key."""
+    """A message that doesn't parse gets a fixed error: pydantic's and json's texts quote the input, and a body bug
+    could put the key into any message. Only a known type name (a constant here, not input) is named."""
     try:
         data = json.loads(raw)
-    except ValueError as e:  # JSONDecodeError: names a position, never the content
-        raise ProtocolError(str(e)) from e
+    except ValueError:
+        raise ProtocolError("invalid message: not JSON") from None
     try:
         return _BODY.validate_python(data)
-    except ValidationError as e:
-        if isinstance(data, dict) and data.get("type") == "setup_request":
-            raise ProtocolError("invalid setup_request") from None
-        raise ProtocolError(str(e)) from e
+    except ValidationError:
+        kind = data.get("type") if isinstance(data, dict) else None
+        known = isinstance(kind, str) and kind in _BODY_TYPES  # a list "type" is unhashable: never a set lookup
+        raise ProtocolError(f"invalid {kind}" if known else "invalid message") from None
 
 
 def dump(msg: BaseModel) -> str:

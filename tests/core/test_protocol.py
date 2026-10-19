@@ -179,3 +179,30 @@ def test_setup_messages():
     with pytest.raises(ValueError):
         SetupConfirm(nonce="n", action="autostart", text="t")
     test_committed_schema_matches()
+
+
+CANARY = "CANARY-k3y-0123456789abcdef"
+KEYED = [  # (raw, the fixed error): the canary under an unknown type, wrong-shaped known types, and not JSON
+    ('{"type":"setup_requesx","args":{"key":"' + CANARY + '"}}', "invalid message"),
+    ('{"type":"nope","k":"' + CANARY + '"}', "invalid message"),
+    ('{"type":["' + CANARY + '"]}', "invalid message"),
+    ('["' + CANARY + '"]', "invalid message"),
+    ('{"type":"set_settings","patch":"' + CANARY + '"}', "invalid set_settings"),
+    ('{"type":"user_text","text":["' + CANARY + '"]}', "invalid user_text"),
+    ('{"type":"memory_correct","id":"' + CANARY + '","text":"x"}', "invalid memory_correct"),
+    ('{"type":"setup_request","action":"online_key_set","args":{"key":["' + CANARY + '"]}}', "invalid setup_request"),
+    ('{"type":"user_text","text":"' + CANARY + '"', "invalid message: not JSON"),
+]
+
+
+def leaks(text: str) -> bool:
+    """Any of the canary, or its head or tail (pydantic cuts a long input out of the middle)."""
+    return any(part in text for part in (CANARY, CANARY[:10], CANARY[-10:]))
+
+
+@pytest.mark.parametrize("raw,expected", KEYED)
+def test_parse_errors_never_echo_input(raw, expected):
+    with pytest.raises(ProtocolError) as e:
+        parse_body_message(raw)
+    assert str(e.value) == expected and not leaks(str(e.value))
+    assert e.value.__cause__ is None and e.value.__suppress_context__  # no chained pydantic text for a traceback
