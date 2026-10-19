@@ -1220,14 +1220,18 @@ class RiyaCore:
         """A T2 call parked during a game: once they're neither gaming nor away it's asked, unless it waited over 10
         min (dropped, logged expired). The confirm_request and the question go out here, in the tick under the core
         lock, so no turn can answer it before it's shown; restricted (quiet hours, may not start conversations) it's
-        only the bubble, with no Utterance (never the mic), else the Utterance just speaks the line."""
+        only the bubble, with no Utterance (never the mic), else the Utterance just speaks the line. A pending
+        confirmation it replaces gets confirm_done "replaced" and is logged so."""
         if self.presence.state in ("gaming", "away"):
             return None
         with self._hands_lock:
+            old = self.confirms.pending
             got = self.confirms.unpark()
         if got is None:
             return None
         what, p = got
+        if what == "raised" and old is not None:  # the raised call replaced a pending one: the body and the log know
+            self._confirm_done(old, "replaced")
         if what == "expired":
             self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, "expired")
             return None

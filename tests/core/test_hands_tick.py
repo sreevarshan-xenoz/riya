@@ -682,3 +682,24 @@ def test_a_bubble_result_and_report_with_no_body_wait_for_one():
     texts = [m.text for m in of(emitted, Say)]
     assert "\"backup\" finished: 12 files copied" in texts and len([m for m in of(emitted, Say)]) == 2
     assert core._results.empty() and core._reports == {}
+
+
+# ---- final review: M6, a raised parked call that replaces a pending one says so -----------------------------------
+def test_a_raised_parked_call_replacing_a_pending_one_sends_replaced_and_logs_it():
+    core, emitted, src, local, clock = tick_core(tools_ask=["media"], **T2)
+    gaming_park(core, src, clock)
+    list(core.reply("pause the music"))                          # a raised T1 call: pending, as a bubble
+    old = core.confirms.pending
+    assert old is not None and old.call.tool == "media"
+    src.is_fullscreen = False
+    emitted.clear()
+    clock.advance(1)
+    u = core.tick()
+    new = core.confirms.pending
+    assert new is not None and new.call.tool == "run_command" and new.id != old.id
+    done = [(m.id, m.outcome) for m in of(emitted, ConfirmDone)]
+    assert done == [(old.id, "replaced")]
+    order = [type(m).__name__ for m in emitted if isinstance(m, (ConfirmRequest, ConfirmDone))]
+    assert order == ["ConfirmDone", "ConfirmRequest"]
+    assert logged(core) == [("media", 1, "replaced")]
+    u.close()
