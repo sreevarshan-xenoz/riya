@@ -762,3 +762,48 @@ def test_a_button_yes_runs_its_effect_outside_the_hands_lock():
     core.handle(Confirm(id=p.id, yes=True))
     assert free == [True]
     assert done(emitted)[-1] == (p.id, "ran") and logged(core) == [("open_url", 1, "ran")]
+
+
+# ---- residual ruling: riddle and 20 questions guesses; reminders beat the screen intent ----------------------------
+def test_what_is_a_candle_wins_the_candle_riddle(monkeypatch):
+    from riya.core import games
+    candle = games.Riddle("I'm tall when I'm young and short when I'm old. What am I?", ("candle",), "a candle")
+    monkeypatch.setattr(games, "RIDDLES", games.RIDDLES + (candle,))
+    core, *_ = hands_core()
+    core.http.responses.update({net.WIKI_API_URL: ["Candle", ["Candle"], [""], [""]],
+                                net.WIKI_SUMMARY_URL + "Candle": {"type": "standard", "extract": "A candle is wax."}})
+    g = core.game = games.new_game("riddles", random.Random(3))
+    g.riddle = len(games.RIDDLES) - 1
+    list(core.reply("what is a candle?"))
+    assert g.solved == 1 and g.turns == 1
+    assert core.http.requests == [] and logged(core) == []
+
+
+@pytest.mark.parametrize("turn", ["who is Santa Claus?", "who is Santa Claus", "what is a black hole"])
+def test_a_lookup_form_mid_twenty_questions_is_a_move(turn):
+    from riya.core import games
+    core, *_ = hands_core()
+    core.http.responses.update(LOOKUP)
+    g = core.game = games.new_game("twenty_questions", random.Random(3))
+    list(core.reply(turn))
+    assert g.questions == 1
+    assert core.http.requests == [] and logged(core) == []
+
+
+def test_a_reminder_about_the_screen_is_set():
+    core, *_ = hands_core()
+    list(core.reply("remind me to look at my screen at 5"))
+    assert [r.text for r in core.hands.active()] == ["look at my screen"]
+    assert logged(core) == [("reminder_set", 0, "ran")]
+
+
+def test_a_timer_about_the_screen_is_set():
+    core, *_ = hands_core()
+    list(core.reply("set a timer for 5 minutes to check my screen"))
+    assert [r.kind for r in core.hands.active()] == ["timer"]
+
+
+def test_whats_on_my_screen_is_still_a_screen_question():
+    core, *_ = hands_core()
+    list(core.reply("what's on my screen?"))
+    assert core.hands.active() == [] and logged(core) == [] and core.effects.calls == []

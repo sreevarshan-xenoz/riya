@@ -23,7 +23,7 @@ _ASK = re.compile(_LEAD + r"(?:let'?s\s+play|(?:can|could|shall|should)\s+we\s+p
 _PLAY = re.compile(_LEAD + r"play\s+" + _GAME + r"(?:\s+with\s+me)?(?:\s+please)?[\s.!?~]*$")
 _BARE = re.compile(_LEAD + _GAME + r"\s*[?!]+[\s~]*$")
 _NEGATION = re.compile(r"\b(?:not|never|no|dont)\b|n't\b")
-_QUESTION = re.compile(r"^(?:is|are|does|do|can|could|would|has|have|was)\b")
+_QUESTION = re.compile(r"^(?:is|are|does|do|can|could|would|has|have|was|who's|what's|(?:who|what) (?:is|was|are))\b")
 _GUESS = re.compile(r"^(?:is it|it's|its|it is|maybe|a|an)\b")
 _STOP = re.compile(r"(?:ok |okay |alright )?(?:stop|quit|enough|stop the game|stop playing|let's stop|lets stop"
                    r"|i give up|give up|i quit)(?: please| now)?")
@@ -275,7 +275,8 @@ def _chain(s: GameState, text: str) -> Verdict:
 
 
 def _twenty(s: GameState, text: str) -> Verdict:
-    """A move is a yes/no question (ends with "?" or starts with is/are/does/...) or a guess (names the secret or any
+    """A move is a yes/no question (ends with "?" or starts with is/are/does/... or who/what is: a lookup-form turn is a
+    move here, never a lookup) or a guess (names the secret or any
     curated thing, or "it's a ..."); 20 of them end the game. Anything else is off-topic."""
     toks = _tokens(text)
     said = " ".join(toks)
