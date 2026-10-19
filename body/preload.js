@@ -23,4 +23,8 @@ contextBridge.exposeInMainWorld("riya", {
   /** Resolves to the active don't-look hotkey accelerator string, or null if none could be registered. */
   dontLookHotkey: () => ipcRenderer.invoke("hotkey:dontlook"),
   getPack: () => ipcRenderer.invoke("pack:get"),
+  /** Settings only: open the first-run welcome again. Takes no argument. */
+  openWelcome: () => ipcRenderer.send("welcome:open"),
+  /** Welcome and Settings: the main process opens its one fixed "get a free key" page. Takes no argument, never a URL. */
+  openKeyPage: () => ipcRenderer.send("welcome:key-page"),
 });

@@ -456,6 +456,8 @@
     send({ type: "setup_request", action: "online_key_clear", args: {} });
   });
 
+  $("welcome-open").addEventListener("click", () => window.riya.openWelcome());
+
   const refreshHealth = () => send({ type: "health_get" });
   setInterval(() => { if (shouldRefresh({ hidden: document.hidden, connected: coreConnected })) refreshHealth(); }, REFRESH_MS);
   document.addEventListener("visibilitychange", () => {
