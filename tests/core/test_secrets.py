@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -215,3 +216,57 @@ def test_remembered_keys_are_reset_between_tests():
 def test_gitignore_lists_secrets_env():
     lines = (Path(__file__).parents[2] / ".gitignore").read_text().splitlines()
     assert "secrets.env" in lines
+
+
+def test_redaction_scrubs_extra_fields():
+    root = logging.getLogger()
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(logging.Formatter("%(message)s | %(x)s"))
+    root.addHandler(handler)
+    try:
+        keystore.remember(CANARY)
+        keystore.install_redaction()
+        logging.getLogger("riya.models").warning("hello", extra={"x": CANARY})
+    finally:
+        keystore.uninstall_redaction()
+        root.removeHandler(handler)
+    assert CANARY not in buf.getvalue() and "hello | " + REDACTED in buf.getvalue()
+
+
+def test_scrub_covers_repr_and_json_escaped_forms():
+    tricky = "abcd\\efgh\"ijkl\\mn"
+    keystore.remember(tricky)
+    for shown in (tricky, repr(tricky), repr([tricky]), json.dumps(tricky), json.dumps({"k": tricky})):
+        out = keystore.scrub(shown)
+        assert "efgh" not in out and "ijkl" not in out, shown
+        assert REDACTED in out
+
+
+def test_load_strips_matching_outer_quotes(tmp_path):
+    p = tmp_path / "secrets.env"
+    for line, want in (('RIYA_ONLINE_API_KEY="quoted-key-1234"', "quoted-key-1234"),
+                       ("RIYA_ONLINE_API_KEY='single-key-5678'", "single-key-5678"),
+                       ('RIYA_ONLINE_API_KEY="unbalanced-1234', '"unbalanced-1234')):  # only a matching pair goes
+        p.write_text(line + "\n")
+        assert keystore.load(p) == want
+
+
+def test_clear_on_a_folder_raises_a_clean_oserror(tmp_path):
+    folder = tmp_path / "secrets.env"
+    folder.mkdir()
+    with pytest.raises(keystore.KeyFileError) as e:
+        keystore.clear(folder)
+    assert isinstance(e.value, OSError) and str(e.value) == "The key file path is a folder."
+    assert str(folder) not in str(e.value)
+
+
+def test_mask_has_its_own_threshold():
+    assert keystore.MASK_MIN == 8
+    assert keystore.mask("1234567") == MASK and keystore.mask("12345678") == MASK + "5678"
+
+
+def test_env_vars_are_guarded_too(tmp_path):
+    assert os.environ["LOCALAPPDATA"].startswith(str(tmp_path))
+    assert os.environ["USERPROFILE"].startswith(str(tmp_path))
+    assert tmp_path in Path.home().parents

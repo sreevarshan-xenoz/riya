@@ -4,6 +4,7 @@ how it is scrubbed from every log record. Always imported as `from riya.core imp
 The key never leaves the core except as `mask(key)`; nothing here logs a value."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -20,9 +21,14 @@ KEY_VAR = "RIYA_ONLINE_API_KEY"
 MAX_KEY_LEN = 200
 MASK = "••••"
 REDACTED = "[redacted key]"
+MASK_MIN = 8  # a key shorter than this masks to MASK alone, with no tail of its characters
 REDACT_MIN = 8  # a shorter value (a test key like "k") would shred every log line, so it is never scrubbed
 Source = Literal["app", ".env", "env"]
 log = logging.getLogger("riya.secrets")
+
+
+class KeyFileError(OSError):
+    """The key file can't be removed; the message is plain and holds no key or path."""
 
 
 class InvalidKey(ValueError):
@@ -52,7 +58,7 @@ def validate(raw: str) -> str:
 def mask(key: str | None) -> str | None:
     if key is None:
         return None
-    return MASK + key[-4:] if len(key) >= REDACT_MIN else MASK
+    return MASK + key[-4:] if len(key) >= MASK_MIN else MASK
 
 
 def load(path: Path) -> str | None:
@@ -72,6 +78,9 @@ def load(path: Path) -> str | None:
             raw = value
     if raw is None:
         return None
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":  # quoted, as load_dotenv accepts
+        raw = raw[1:-1]
     try:
         return validate(raw)
     except InvalidKey as e:
@@ -88,11 +97,16 @@ def save(key: str, path: Path) -> str:
 
 
 def clear(path: Path) -> bool:
-    """True when a file was removed."""
+    """True when a file was removed. KeyFileError (an OSError) when the path is a folder or can't be removed."""
+    path = Path(path)
+    if path.is_dir():
+        raise KeyFileError("The key file path is a folder.")
     try:
-        Path(path).unlink()
+        path.unlink()
     except FileNotFoundError:
         return False
+    except OSError as e:
+        raise KeyFileError("The key file can't be removed.") from e
     return True
 
 
@@ -114,13 +128,18 @@ def forget_all() -> None:
 
 
 def scrub(text: str) -> str:
-    """text with every remembered key (of REDACT_MIN or more characters) replaced by REDACTED."""
+    """text with every remembered key (of REDACT_MIN or more characters), and its repr- and JSON-escaped forms,
+    replaced by REDACTED."""
     with _lock:
-        keys = sorted((k for k in _remembered if len(k) >= REDACT_MIN), key=len, reverse=True)
-    for k in keys:
-        if k in text:
-            text = text.replace(k, REDACTED)
+        keys = [k for k in _remembered if len(k) >= REDACT_MIN]
+    forms = {f for k in keys for f in (k, repr(k)[1:-1], json.dumps(k)[1:-1])}
+    for f in sorted(forms, key=len, reverse=True):
+        if f in text:
+            text = text.replace(f, REDACTED)
     return text
+
+
+_STANDARD_ATTRS = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
 
 
 class RedactFilter(logging.Filter):
@@ -134,6 +153,9 @@ class RedactFilter(logging.Filter):
             record.exc_text = scrub(logging.Formatter().formatException(record.exc_info))
         if record.stack_info:
             record.stack_info = scrub(record.stack_info)
+        for name, value in list(record.__dict__.items()):  # `extra=` fields a format string may print
+            if name not in _STANDARD_ATTRS and isinstance(value, str):
+                setattr(record, name, scrub(value))
         return True
 
 

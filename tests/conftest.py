@@ -13,6 +13,8 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setattr(install_hooks, "default_token_path", lambda: riya_dir / "hook_token")
     monkeypatch.setattr(hooks, "default_token_path", lambda: riya_dir / "hook_token")
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders
     keystore.forget_all()
     yield
     keystore.forget_all()
