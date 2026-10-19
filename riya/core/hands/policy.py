@@ -5,6 +5,7 @@ Nothing else here accepts text, and the confirmation wording is a template built
 """
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from dataclasses import dataclass
@@ -69,7 +70,7 @@ class Confirmations:
         self._parked: Pending | None = None
 
     def _new(self, call: Call, summary: str, ttl: float) -> Pending:
-        return Pending(uuid.uuid4().hex, call, summary, self._clock.now() + ttl)
+        return Pending(uuid.uuid4().hex, copy.deepcopy(call), summary, self._clock.now() + ttl)
 
     def ask(self, call: Call, summary: str) -> Pending:
         """Raise a confirmation, silently replacing any pending one."""
@@ -92,7 +93,12 @@ class Confirmations:
         return (a, p) if a else ("cancelled", p)
 
     def take_button(self, id: str, yes: bool):
-        """A body button for `id`: stale ids are "replaced" (or "expired" if that confirmation timed out)."""
+        """A body button for `id`: stale ids are "replaced" (or "expired" if that confirmation timed out).
+
+        `yes` must be exactly True or False; anything else is refused ("replaced") and changes nothing.
+        """
+        if yes is not True and yes is not False:
+            return "replaced", None
         p = self.pending
         if p is not None and p.id == id:
             self.pending = None

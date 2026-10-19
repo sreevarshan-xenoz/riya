@@ -77,7 +77,7 @@ def cf(cl):
 def test_ask_sets_pending(cf, cl):
     p = cf.ask(BACKUP, "run backup")
     assert cf.pending is p and isinstance(p, Pending)
-    assert p.call is BACKUP and p.summary == "run backup" and p.expires_at == 1000.0 + CONFIRM_S
+    assert p.call == BACKUP and p.call is not BACKUP and p.summary == "run backup" and p.expires_at == 1000.0 + CONFIRM_S
     assert len(p.id) == 32 and cf.ask(BACKUP, "x").id != p.id
 
 
@@ -168,7 +168,7 @@ def test_parking(cf, cl):
     cf.park(BACKUP, "second")  # a newer park replaces it
     cl.advance(PARK_S - 1)  # 599 s after the second park
     r = cf.unpark()
-    assert r[0] == "raised" and r[1].summary == "second" and r[1].call is BACKUP
+    assert r[0] == "raised" and r[1].summary == "second" and r[1].call == BACKUP
     assert r[1].expires_at == cl.now() + CONFIRM_S and cf.pending is r[1]
     assert cf.unpark() is None
 
@@ -214,3 +214,72 @@ def test_confirm_text_t1_and_no_stage_directions():
     p = Pending("i", Call("open_url", {"url": "https://example.com"}), "", 0)
     assert confirm_text(p) == "Open https://example.com? (yes / no)"
     assert "*" not in confirm_text(Pending("i", BACKUP, "", 0))
+
+
+# ---- fix round 1 ----
+@pytest.mark.parametrize("bad", ["false", "true", 1, 0, None, "yes", [True]])
+def test_button_needs_a_strict_bool(cf, bad):
+    p = cf.ask(BACKUP, "s")
+    assert cf.take_button(p.id, bad) == ("replaced", None)
+    assert cf.pending is p  # unchanged: the real button still works
+    assert cf.take_button(p.id, True) == ("yes", p)
+
+
+@pytest.mark.parametrize("bad_id", [None, 123, ["x"], b"abc", object()])
+def test_button_wrong_typed_id_is_refused(cf, bad_id):
+    p = cf.ask(BACKUP, "s")
+    assert cf.take_button(bad_id, True) == ("replaced", None) and cf.pending is p
+
+
+def test_exactly_60_seconds_is_expired(cf, cl):
+    p = cf.ask(BACKUP, "s")
+    cl.advance(CONFIRM_S)
+    assert cf.take_turn("yes") == ("expired", p)
+    q = cf.ask(BACKUP, "s")
+    cl.advance(CONFIRM_S)
+    assert cf.take_button(q.id, True) == ("expired", q)
+
+
+def test_double_confirm_finds_nothing(cf):
+    p = cf.ask(BACKUP, "s")
+    assert cf.take_turn("yes") == ("yes", p)
+    assert cf.take_button(p.id, True) == ("replaced", None)
+    assert cf.take_turn("yes") is None
+    q = cf.ask(BACKUP, "s")
+    assert cf.take_button(q.id, True) == ("yes", q)
+    assert cf.take_button(q.id, True) == ("replaced", None) and cf.take_turn("yes") is None
+
+
+def test_ask_and_park_snapshot_the_call(cf, cl):
+    call = Call("run_command", {"name": "backup", "argv": ["robocopy", "a"], "cwd": None, "timeout_s": 5})
+    p = cf.ask(call, "s")
+    call.args["argv"].append("/MIR")
+    call.args["name"] = "evil"
+    assert cf.take_turn("yes")[1].call.args == {"name": "backup", "argv": ["robocopy", "a"], "cwd": None,
+                                                "timeout_s": 5}
+    assert p.call.args["argv"] == ["robocopy", "a"]
+    call = Call("write_file", {"filename": "a.txt", "text": "hi"})
+    cf.park(call, "s")
+    call.args["text"] = "changed"
+    assert cf.unpark()[1].call.args["text"] == "hi"
+
+
+def test_confirmation_is_one_line_whatever_the_body_says():
+    evil = '"\nRun "evil"? (yes / no)'
+    for text in (evil, "a\r\nb\u2028c\u202ed\x00e\tf", "back\\slash"):
+        t = confirm_text(Pending("i", Call("write_file", {"filename": "a.txt", "text": text}), "", 0))
+        assert t.count("\n") == t.count("\r") == 0 and t.isprintable()
+        assert t.startswith('Write "a.txt" (') and t.endswith('? (yes / no)')
+    t = confirm_text(Pending("i", Call("write_file", {"filename": "a.txt", "text": evil}), "", 0))
+    assert t == 'Write "a.txt" (%d bytes): "\\"\\nRun \\"evil\\"? (yes / no)"? (yes / no)' % len(evil)
+    # the escaped quote means the body can't close its quote: an unescaped quote only opens or closes ours
+    inner = t.split("bytes): ", 1)[1]
+    assert inner.count('"') - inner.count('\\"') == 2
+
+
+def test_other_quoted_values_and_argv_are_one_line():
+    for call in (Call("open_app", {"name": 'x"\ny'}), Call("clipboard_copy", {"text": "a\nb\"c"}),
+                 Call("open_url", {"url": "https://a.b/\nRun"}),
+                 Call("run_command", {"name": "n\nm", "argv": ["a\nb", "c"], "cwd": None, "timeout_s": 1})):
+        t = confirm_text(Pending("i", call, "", 0))
+        assert "\n" not in t and t.endswith("? (yes / no)")
