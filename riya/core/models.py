@@ -89,11 +89,12 @@ class OpenAICompatModel:
             with urllib.request.urlopen(req, timeout=timeout_s) as r:
                 return _tool_reply(json.loads(r.read(MAX_REPLY_BYTES)))
         except urllib.error.HTTPError as e:
+            e.close()
             raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
-        except (urllib.error.URLError, OSError) as e:
-            raise ModelUnavailable(f"{self.name}: {e}") from e
-        except ValueError as e:  # bad JSON or an unexpected shape
-            raise ModelUnavailable(f"{self.name}: bad reply: {e}") from e
+        except ModelUnavailable:
+            raise
+        except Exception as e:  # URLError, timeouts, IncompleteRead, bad JSON or shape, RecursionError: never leaks
+            raise ModelUnavailable(f"{self.name}: {type(e).__name__}: {str(e)[:80]}") from e
 
 
 def local_model(server_url: str, **kw) -> OpenAICompatModel:

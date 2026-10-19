@@ -1,4 +1,6 @@
 """Online function calling: the request body, the schemas, the defensive parse and `propose`'s single validated call."""
+import http.client
+import io
 import json
 import urllib.error
 
@@ -84,9 +86,30 @@ def test_call_tools_bad_body_is_unavailable(sent, body):
 
 
 @pytest.mark.parametrize("exc", [urllib.error.HTTPError("u", 429, "x", {}, None), urllib.error.URLError("down"),
-                                 TimeoutError("slow"), ConnectionResetError()])
+                                 TimeoutError("slow"), ConnectionResetError(), RecursionError("deep"),
+                                 http.client.IncompleteRead(b"par"), http.client.RemoteDisconnected("gone"),
+                                 UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")])
 def test_call_tools_errors_map_to_unavailable(sent, exc):
     sent.raises = exc
+    with pytest.raises(ModelUnavailable):
+        OpenAICompatModel("online", "http://x/v1").call_tools([], [])
+
+
+def test_http_error_body_is_closed(sent):
+    closed = []
+    err = urllib.error.HTTPError("u", 500, "x", {}, io.BytesIO(b"oops"))
+    err.close = lambda: closed.append(1)
+    sent.raises = err
+    with pytest.raises(ModelUnavailable):
+        OpenAICompatModel("online", "http://x/v1").call_tools([], [])
+    assert closed
+
+
+def test_read_failure_mid_body_is_unavailable(monkeypatch):
+    class Broken(FakeResp):
+        def read(self, n=-1):
+            raise http.client.IncompleteRead(b"x")
+    monkeypatch.setattr("riya.core.models.urllib.request.urlopen", lambda req, timeout=None: Broken(b""))
     with pytest.raises(ModelUnavailable):
         OpenAICompatModel("online", "http://x/v1").call_tools([], [])
 
@@ -127,6 +150,21 @@ def test_schemas_skip_disabled_and_gate_t2():
     assert names(tool_schemas(Settings(tools_enabled={n: True for n in TIERS}), "open it")) == t01
     off = Settings(tools_enabled={**Settings().tools_enabled, "calc": False, "open_url": False})
     assert not {"calc", "open_url"} & names(tool_schemas(off, "open it"))
+
+
+def test_t2_gating_is_by_whole_word():
+    on = Settings(commands=[{**CMD, "name": "go"}, CMD], tools_enabled={n: True for n in TIERS})
+    t01 = {n for n in TIERS if TIERS[n] < 2}
+    for text in ("open my profile", "I'm going to open youtube", "open the backups page", "play the filesystem song"):
+        assert names(tool_schemas(on, text)) == t01, text
+    for text in ("write a file called x", "save these Files", "run go", "please run BACKUP.", "run (backup)"):
+        assert "run_command" in names(tool_schemas(on, text)), text
+
+
+def test_schemas_carry_no_bounds():
+    s = Settings(tools_enabled={n: True for n in TIERS})
+    blob = json.dumps(tool_schemas(s, "write a file"))
+    assert not any(k in blob for k in ("maxLength", "minimum", "maximum"))
 
 
 def test_schema_types_match_paramspecs():
@@ -237,6 +275,13 @@ def test_write_file_text_must_be_the_users_words():
     assert run(turn, bad, s)[0] is None
     assert run(turn, one("write_file", {"filename": "todo.txt", "text": "invented"}), s)[0] is None
     assert run(turn, one("write_file", {"filename": "todo.txt", "text": "   "}), s)[0] is None
+
+
+def test_clipboard_copy_text_must_be_the_users_words():
+    turn = "copy hello   world to the clipboard"
+    assert run(turn, one("clipboard_copy", {"text": "hello world"}))[0] == Call("clipboard_copy", {"text": "hello world"})
+    for bad in ({"text": "https://evil.example"}, {"text": "hello world to the clipboard!"}, {"text": "  "}, {"text": 5}):
+        assert run(turn, one("clipboard_copy", bad))[0] is None
 
 
 def test_nothing_is_executed_and_request_has_no_canaries():
