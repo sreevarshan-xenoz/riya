@@ -197,3 +197,12 @@ def test_urlhttp_limits_and_errors(monkeypatch):
 def test_urlhttp_failures_become_kind_results(monkeypatch):
     patch_urlopen(monkeypatch, b"<html>captive portal</html>")
     assert not weather(UrlHttp(), "Pune").ok and not lookup(UrlHttp(), "Ada").ok
+
+
+def test_weather_accepts_only_real_numbers_and_string_names():
+    for fc in ({**FORECAST, "current": {"temperature_2m": "28", "weather_code": 2}},
+               {**FORECAST, "current": {"temperature_2m": 28, "weather_code": "2"}}):
+        assert not weather(FakeHttp({net.GEOCODE_URL: GEO, net.FORECAST_URL: fc}), "Pune").ok
+    geo = {"results": [{**GEO["results"][0], "name": {"x": 1}}]}
+    r = weather(FakeHttp({net.GEOCODE_URL: geo, net.FORECAST_URL: FORECAST}), "Pune")
+    assert r.ok and r.text.startswith("Pune:") and "{" not in r.text
