@@ -564,3 +564,69 @@ def test_the_runner_hands_the_core_real_effects_and_http(tmp_path, monkeypatch):
                               legacy_memory=str(tmp_path / "none.json"))
     core = runner.build_core(args, lambda m: None)
     assert isinstance(core.effects, StubEffects) and isinstance(core.http, StubHttp)
+
+
+# ---- final review: I2, nothing spoken while a confirmation waits for its answer -------------------------------------
+def stop_hook(msg, sid="abc123def"):
+    return {"hook_event_name": "Stop", "session_id": sid, "cwd": "E:/riya", "last_assistant_message": msg}
+
+
+def asking(core):
+    list(core.reply("run backup"))
+    p = core.confirms.pending
+    assert p is not None
+    return p
+
+
+def test_a_reminder_due_while_a_confirmation_waits_is_only_a_bubble():
+    core, emitted, src, local, clock = tick_core(**T2)
+    p = asking(core)
+    add(core, 5, "take your pills")
+    emitted.clear()
+    assert ticks(core, clock, 10) == []                          # no Utterance: never spoken, the mic stays shut
+    [say] = reminder_says(emitted, "take your pills")
+    assert say.spoken is False and core.hands.active() == []
+    assert core.confirms.pending == p and core.effects.calls == []
+    list(core.reply("ok"))                                       # the question actually on the table is the backup
+    core._command_thread.join(5)
+    assert core.effects.calls == [("run", BACKUP["argv"], None, 60)]
+
+
+def test_an_agent_report_while_a_confirmation_waits_is_only_a_bubble():
+    core, emitted, src, local, clock = tick_core(local_replies=("Done~", "It finished!"), **T2)
+    p = asking(core)
+    core.agent_inbox.put(stop_hook("all done"))
+    emitted.clear()
+    n = len(local.calls)
+    assert ticks(core, clock, 5) == []
+    reports = [m for m in of(emitted, Say) if m.kind == "report"]
+    assert reports and all(m.spoken is False for m in reports) and len(local.calls) == n
+    assert core._reports == {} and core.confirms.pending == p and core.effects.calls == []
+
+
+def test_a_command_result_while_a_confirmation_waits_is_only_a_bubble():
+    core, emitted, src, local, clock = tick_core(**T2)
+    asking(core)
+    queue_result(core)
+    emitted.clear()
+    n = len(local.calls)
+    assert ticks(core, clock, 5) == [] and len(local.calls) == n
+    [say] = of(emitted, Say)
+    assert say.spoken is False and say.text == "\"backup\" finished: 12 files copied"
+
+
+def test_no_bid_while_a_confirmation_waits():
+    core, emitted, src, local, clock = tick_core(local_replies=("Water break?",), **T2)
+    hooked = []
+    core.on_spoke_first = hooked.append
+    ticks(core, clock, 2 * 3600 + 600, step=300)                 # a long focused stretch
+    from riya.core.hands.tools import validate_call, Call
+    with core._hands_lock:
+        core.confirms.ask(validate_call(Call("run_command", {"name": "backup"}), core.settings), "run backup")
+    src.idle = 150
+    ticks(core, clock, 1)
+    assert core.presence.state == "break"
+    assert not [m for m in of(emitted, Say) if m.kind == "bid"] and hooked == []
+    core.confirms.pending = None                                 # positive control: the same tick bids without it
+    ticks(core, clock, 1)
+    assert [m for m in of(emitted, Say) if m.kind == "bid"] and hooked == ["bid"]
