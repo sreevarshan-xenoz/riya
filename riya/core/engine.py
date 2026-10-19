@@ -23,7 +23,10 @@ from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, c
 from riya.core.eyes.policy import GlancePolicy, window_refusal
 from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
+from riya.core.learn.dials import BANDS
+from riya.core.learn.feedback import ack_line, detect_feedback
 from riya.core.learn.records import LearnDB
+from riya.core.learn.twin import evidence, mean
 from riya.core.hands import online as hands_online
 from riya.core.hands.intent import is_command_form, is_forbidden, match
 from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
@@ -35,16 +38,17 @@ from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
-from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
-                              build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
-                              hands_situation, remember_situation, reminders_block, report_bubble, report_line,
-                              report_situation, style_line, tool_turn)
+from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION,
+                              agents_block, bid_situation, build_messages, cant_see_situation, eyes_block,
+                              greeting_reports, greeting_situation, hands_situation, likes_block, remember_situation,
+                              reminders_block, report_bubble, report_line, report_situation, style_line, tool_turn)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
-                                Confirm, ConfirmDone, ConfirmRequest, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
-                                EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
-                                MemoryDelete, NoteDelete, NoteInfo, QuitCore, ReminderCancel, ReminderInfo,
-                                RemindersMsg, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey, ThreadResolve,
-                                TranscriptDelete)
+                                Confirm, ConfirmDone, ConfirmRequest, DialInfo, DontLook, EpisodeDelete, ErrorMsg,
+                                ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, LearningMsg,
+                                LearningReset, Look, MemoriesMsg, MemoryCorrect, MemoryDelete, NoteDelete, NoteInfo,
+                                QuitCore, ReminderCancel, ReminderInfo, RemindersMsg, Say, SayEnd, SetSettings,
+                                SettingsMsg, StateMsg, StyleNoteDelete, StyleNoteInfo, TalkHotkey, ThreadResolve,
+                                TraitChangeInfo, TranscriptDelete, TwinInfo, TwinReset)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, in_quiet_hours, load_settings, save_settings, set_autostart
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_for, cap_sentences, count_emoji,
@@ -288,7 +292,8 @@ class RiyaCore:
         """The user's turn, in priority order: a pending confirmation takes it first (even mid-game); then the
         priority intents (screen, remember-that, identity, about-me, feelings; mid-game also a mention of their agents)
         never act; then the game; then a T3 refusal, a matched call, or the online model's proposal; else a normal
-        reply. Only this turn's own text ever reaches match, propose or a confirmation."""
+        reply. Only this turn's own text ever reaches match, propose, a confirmation or detect_feedback: feedback is
+        read last, only when nothing above took the turn, and its turn (and her answer) never reaches consolidation."""
         with self._lock:
             taken = None
             try:
@@ -326,15 +331,21 @@ class RiyaCore:
                 note = yield from self._hands_turn(text, call)
                 if note is None:
                     return
+            ack = None
+            try:
+                ack = self._feedback(text) if taken is None and not chat and call is None and move is None else None
+            except Exception:
+                log.exception("couldn't read the turn for feedback")
             saved = None
             try:
-                saved = self._take_user_turn(text)
+                saved = self._take_user_turn(text, consolidate=ack is None)
             except Exception:
                 log.exception("couldn't record the user's turn")
             base = [note, remember_situation(saved) if saved else None,
                     IDENTITY_SITUATION if is_identity_question(text) else None,
                     FEELINGS_SITUATION if is_feelings_question(text) else None,
-                    games.mid_game_note(move[0]) if move else None]  # chat mid-game: the game stays on
+                    games.mid_game_note(move[0]) if move else None,  # chat mid-game: the game stays on
+                    FEEDBACK_SITUATION if ack else None]
             seeing = None
             if not saved and is_screen_question(text):
                 try:
@@ -346,7 +357,8 @@ class RiyaCore:
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
-                                   small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None)
+                                   ack=ack, small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None,
+                                   consolidate=ack is None)
 
     def _game_move(self, text: str, acting: bool = False) -> tuple[games.GameState, games.Verdict] | None:
         """The game side of a user turn, judged by the engine before the model is asked: a stop phrase ends the
@@ -459,12 +471,14 @@ class RiyaCore:
 
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
-               lead: str | None = None, small: bool = False, seeing: SimpleNamespace | None = None,
+               lead: str | None = None, ack: str | None = None, small: bool = False,
+               seeing: SimpleNamespace | None = None,
                game: SimpleNamespace | None = None, consolidate: bool = True, shape: str | None = None,
                tail: str | None = None, tail_if_silent: bool = False) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
-        lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
+        lead is a fixed sentence said first, before the model is even asked; the model may add only one more. ack (a
+        feedback acknowledgement, never with lead) is said first the same way, but the model keeps its full cap.
         small makes it small talk on the local model whatever the text (a remember-that turn just reacts).
         seeing (from _look_now, with an image) sends the image with her full prompt to the vision model; the same
         shaping applies. A short generic sentence of the model's (shaping.drop_generic) is dropped: not said, not
@@ -495,10 +509,10 @@ class RiyaCore:
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
-            if lead:
-                self.emit(Say(utterance_id=uid, text=lead, spoken=spoken, kind=kind))
-                said.append(lead)
-                yield lead
+            if first := lead or ack:
+                self.emit(Say(utterance_id=uid, text=first, spoken=spoken, kind=kind))
+                said.append(first)
+                yield first
             route_text = "" if small or game or tool else user_text or ""
             dials = self.learn.dials()
             emoji_max = emoji_limit(dials["emoji"])
@@ -508,12 +522,13 @@ class RiyaCore:
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
             reminders = self._reminders_context()
+            likes = None if route == "online" else self._likes_context()  # the notes never go online
 
             def build(persona: str, situation: str | None) -> list[dict]:
                 return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
                                       now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders,
-                                      cap=cap if turn == "small" else None)
+                                      cap=cap if turn == "small" else None, likes=likes)
 
             messages = build(self._persona(route), situation)
             if route == "online":
@@ -530,8 +545,8 @@ class RiyaCore:
             else:
                 stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn))
                 ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
-            kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead), emoji_max=emoji_max),
-                                others=bool(lead), dropped=dropped)
+            kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead or ack),
+                                                emoji_max=emoji_max), others=bool(lead or ack), dropped=dropped)
             sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
@@ -568,8 +583,8 @@ class RiyaCore:
             whole = (outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
                      and not told["tail"])
             text = None if outcome == "failed" else (
-                " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip(), emoji_max)])) if whole
-                else " ".join(said))
+                " ".join(filter(None, [lead or ack, limit_emoji(strip_label("".join(parts)).strip(), emoji_max)]))
+                if whole else " ".join(said))
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
@@ -588,6 +603,52 @@ class RiyaCore:
         is ever added: never the notes or the dial values."""
         line = style_line(self.learn.dials())
         return self.personas[route] + (f"\n\n{line}" if line else "")
+
+    def _likes_context(self) -> str | None:
+        """The `### How they like you:` block (local only, outside the memory block)."""
+        return likes_block([n.text for n in self.learn.notes()])
+
+    def _feedback(self, text: str) -> str | None:
+        """Explicit feedback in the user's own turn (never anything else): a dial nudge or a style note, then the
+        templated ack. None when there's none, or while learning is off (then nothing is read or changed)."""
+        if not self.settings.learning_enabled or (fb := detect_feedback(text)) is None:
+            return None
+        now = self.clock.now()
+        if fb.dial:
+            old, new = self.learn.nudge(fb.dial, fb.delta, f'they said "{summarize(text, 60)}"', "explicit", now)
+            changed = old != new
+        else:
+            self.learn.add_note(fb.note, fb.polarity, now)
+            changed = True
+        if changed:
+            self._emit_learning()
+        return ack_line(fb)
+
+    def _learning_msg(self) -> LearningMsg:
+        now, learn = self.clock.now(), self.learn
+        return LearningMsg(
+            dials={d: DialInfo(value=v, lo=BANDS[d][0], hi=BANDS[d][1]) for d, v in learn.dials().items()},
+            history=[TraitChangeInfo(at=h.at, dial=h.dial, old=h.old, new=h.new, reason=h.reason, source=h.source)
+                     for h in learn.history(20)],
+            notes=[StyleNoteInfo(id=n.id, at=n.at, text=n.text, polarity=n.polarity) for n in learn.notes()],
+            twin=[TwinInfo(kind=k, bucket=b, p=round(mean(c, now), 3), n=round(evidence(c, now), 2))
+                  for k, b, c in learn.cells()],
+            enabled=self.settings.learning_enabled)
+
+    def _emit_learning(self) -> None:
+        """learning, for the settings page; never raises."""
+        try:
+            self.emit(self._learning_msg())
+        except Exception:
+            log.exception("couldn't send what she learned")
+
+    def _reset_learning(self) -> None:
+        """Reset to her defaults: the dials (logged as "reset"), the notes and the whole twin."""
+        now = self.clock.now()
+        self.learn.reset_dials(now)
+        self.learn.clear_notes()
+        self.learn.reset_twin(None)
+        self._emit_learning()
 
     @staticmethod
     def _shape(kind: str, text: str, verbosity: float | None = None) -> tuple[str | None, int, int]:
@@ -724,7 +785,7 @@ class RiyaCore:
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=situation,
                                       now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context(),
-                                      reminders=self._reminders_context())
+                                      reminders=self._reminders_context(), likes=self._likes_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip(), emoji_limit(self.learn.dials()["emoji"]))
         except Exception:
@@ -1672,21 +1733,21 @@ class RiyaCore:
         return SimpleNamespace(arousal=s.arousal, valence=s.valence), s.energy
 
     def hello_messages(self) -> list[BaseModel]:
-        """Everything a newly connected body needs: settings, state, agents, eyes, look, the reminders, the action
-        log and a confirmation still pending."""
+        """Everything a newly connected body needs: settings, state, agents, eyes, look, what she learned, the
+        reminders, the action log and a confirmation still pending."""
         with self._hands_lock:
             p = self.confirms.pending
         pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else []), self._reminders_msg(), self._actions_msg(),
+                *([self._look] if self._look else []), self._learning_msg(), self._reminders_msg(), self._actions_msg(),
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
     def handle(self, msg: BaseModel) -> None:
         try:
-            if isinstance(msg, GetMemories):
-                pass
+            if isinstance(msg, GetMemories):  # the settings page opened: what she learned, then the memories
+                self._emit_learning()
             elif isinstance(msg, MemoryDelete):
                 self.memory.delete_fact(msg.id, delete_episodes=msg.delete_episodes)
             elif isinstance(msg, MemoryCorrect):
@@ -1711,6 +1772,17 @@ class RiyaCore:
             elif isinstance(msg, ActionsClear):
                 self.hands.clear_actions()
                 self.emit(self._actions_msg())
+                return
+            elif isinstance(msg, StyleNoteDelete):
+                self.learn.delete_note(msg.id)
+                self._emit_learning()
+                return
+            elif isinstance(msg, TwinReset):
+                self.learn.reset_twin(msg.kind)
+                self._emit_learning()
+                return
+            elif isinstance(msg, LearningReset):
+                self._reset_learning()
                 return
             elif isinstance(msg, SetSettings):
                 self._set_settings(msg.patch)
@@ -1761,5 +1833,7 @@ class RiyaCore:
                 log.warning("autostart change failed: %s", e)
                 self.emit(ErrorMsg(message=f"couldn't change autostart: {e}"))
         self.emit(SettingsMsg(settings=asdict(new)))
+        if new.learning_enabled != old.learning_enabled:
+            self._emit_learning()
         self._emit_eyes(new)
         self._sync_expression()

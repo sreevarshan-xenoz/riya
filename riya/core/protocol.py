@@ -186,6 +186,48 @@ class ActionsMsg(BaseModel):
     items: list[ActionInfo]
 
 
+class DialInfo(BaseModel):
+    value: float
+    lo: float
+    hi: float
+
+
+class TraitChangeInfo(BaseModel):
+    at: float
+    dial: str
+    old: float
+    new: float
+    reason: str
+    source: Literal["explicit", "drift", "reset"]
+
+
+class StyleNoteInfo(BaseModel):
+    """A style note in her own words ("They like it when I ask about their day."): never a fact."""
+    id: int
+    at: float
+    text: str
+    polarity: Literal["like", "dislike", "rule"]
+
+
+class TwinInfo(BaseModel):
+    """One decision-twin bucket: p is the decayed engagement estimate, n the decayed evidence above the prior."""
+    kind: str
+    bucket: str
+    p: float
+    n: float
+
+
+class LearningMsg(BaseModel):
+    """What she learned, for the settings page (on change, on hello and on get_memories): the dials with their bands,
+    the last 20 changes (newest first), the style notes (newest first), the twin's buckets and the master toggle."""
+    type: Literal["learning"] = "learning"
+    dials: dict[str, DialInfo]
+    history: list[TraitChangeInfo]
+    notes: list[StyleNoteInfo]
+    twin: list[TwinInfo]
+    enabled: bool
+
+
 # body -> core
 class BodyReady(BaseModel):
     type: Literal["body_ready"] = "body_ready"
@@ -274,12 +316,30 @@ class ActionsClear(BaseModel):
     type: Literal["actions_clear"] = "actions_clear"
 
 
+class StyleNoteDelete(BaseModel):
+    type: Literal["note_delete_style"] = "note_delete_style"
+    id: int
+
+
+class TwinReset(BaseModel):
+    """Forget one kind of the decision twin (the kinds are twin.KINDS, written out: no import of the twin here)."""
+    type: Literal["twin_reset"] = "twin_reset"
+    kind: Literal["bid", "game_offer", "report", "greeting"]
+
+
+class LearningReset(BaseModel):
+    """Reset to her defaults: the dials, the notes and the twin (the body confirms first)."""
+    type: Literal["learning_reset"] = "learning_reset"
+
+
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
-                              Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg],
+                              Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg,
+                              LearningMsg],
                         Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
-                              QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear],
+                              QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear, StyleNoteDelete, TwinReset,
+                              LearningReset],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)
