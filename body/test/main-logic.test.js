@@ -203,7 +203,7 @@ test("agents is replayed to a new window (the settings page reads hooks_seen_at 
   assert.equal(cache.get("agents").hooks_seen_at, 5);
 });
 
-const { forgetOnDisconnect } = require("../src/main-logic");
+const { forgetOnDisconnect, FORGET_ON_DISCONNECT } = require("../src/main-logic");
 
 test("a disconnect forgets the cached look and agents, so a reload never replays a stale agents list", () => {
   const cache = new Map();
@@ -211,4 +211,40 @@ test("a disconnect forgets the cached look and agents, so a reload never replays
     { type: "agents", items: [{ id: "a", status: "busy" }] }, { type: "state" }]) rememberForReplay(cache, msg);
   forgetOnDisconnect(cache);
   assert.deepEqual([...cache.keys()], ["hello", "settings", "state"]);
+});
+
+const { NOW_ONLY } = require("../src/main-logic");
+
+test("reminders and actions are replayed to a new window; a confirm answer is never queued while the core is away", () => {
+  assert.ok(REPLAY_TYPES.includes("reminders") && REPLAY_TYPES.includes("actions"));
+  assert.ok(!REPLAY_TYPES.includes("confirm_request"), "a confirmation expires: it is not replayed");
+  assert.ok(NOW_ONLY.includes("confirm"));
+  assert.equal(shouldSendToCore({ type: "confirm", id: "c", yes: true }, false), false);
+  assert.equal(shouldSendToCore({ type: "confirm", id: "c", yes: true }, true), true);
+  assert.equal(shouldSendToCore({ type: "reminder_cancel", id: 1 }, false), false);
+  const cache = new Map();
+  rememberForReplay(cache, { type: "reminders", items: [] });
+  rememberForReplay(cache, { type: "reminders", items: [{ id: 1 }] });
+  rememberForReplay(cache, { type: "actions", items: [] });
+  assert.equal(cache.size, 2);
+  assert.equal(cache.get("reminders").items.length, 1);
+});
+
+test("a disconnect forgets reminders, actions and a confirm request, so a window opened while the core is away gets none", () => {
+  const cache = new Map();
+  for (const msg of [{ type: "hello" }, { type: "reminders", items: [{ id: 1 }] }, { type: "actions", items: [{ id: 1 }] },
+    { type: "confirm_request", id: "c" }, { type: "settings" }]) rememberForReplay(cache, msg);
+  assert.deepEqual([...cache.keys()], ["hello", "reminders", "actions", "settings"], "confirm_request is never cached");
+  forgetOnDisconnect(cache);
+  assert.deepEqual([...cache.keys()], ["hello", "settings"]);
+  assert.ok(FORGET_ON_DISCONNECT.includes("confirm_request"), "even if one were cached");
+});
+
+test("confirm, reminder_cancel, note_delete and actions_clear sent while the core is away are dropped, never replayed", () => {
+  for (const type of ["confirm", "reminder_cancel", "note_delete", "actions_clear"]) {
+    assert.ok(NOW_ONLY.includes(type), type);
+    assert.equal(shouldSendToCore({ type, id: 1 }, false), false, type);
+    assert.equal(shouldSendToCore({ type, id: 1 }, true), true, type);
+  }
+  assert.equal(shouldSendToCore({ type: "set_settings", patch: {} }, false), true, "settings still queue");
 });

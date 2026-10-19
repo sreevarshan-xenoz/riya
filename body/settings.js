@@ -1,6 +1,6 @@
 "use strict";
-/** The settings window: one `set_settings` patch per control, and the memory inspector (facts, follow-ups, conversation
- *  summaries, transcript days). Text from the core is only ever put in with textContent. Pure logic is in
+/** The settings window: one `set_settings` patch per control, her hands (tools, apps, commands), the memory inspector
+ *  (facts, notes, follow-ups, conversation summaries, transcript days) and her action log. Text from the core is only ever put in with textContent. Pure logic is in
  *  src/settings-logic.js. */
 (() => {
   const {
@@ -8,6 +8,7 @@
     DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
+  const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
   const $ = (id) => document.getElementById(id);
   const router = new ErrorRouter();
   const errorEls = new Map(); // target -> its inline error element
@@ -97,10 +98,150 @@
   $("agents-setup").textContent = SETUP_COMMAND;
   setInterval(() => { if (!document.hidden) renderHooks(); }, 60_000);
 
+  // ---- hands: tool toggles, and the apps and commands editors -----------------------------------------------------
+
+  let latest = {}; // the core's latest settings, for the tool patches
+  let appsDirty = false; // edited and not yet saved: a settings message must not overwrite it
+  let commandsDirty = false;
+  const toolBoxes = new Map(); // tool name -> { enabled, ask }
+
+  function labelled(box, text, input) {
+    input.id = `hand-${Math.random().toString(36).slice(2)}`;
+    const label = h("label", null, text);
+    label.htmlFor = input.id;
+    box.append(label, input);
+  }
+
+  function textInput(key, value, maxLength, onInput) {
+    const input = h("input");
+    input.type = "text";
+    input.dataset.key = key;
+    input.value = value;
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.maxLength = maxLength;
+    input.addEventListener("input", onInput);
+    return input;
+  }
+
+  function removeButton(box, onRemove) {
+    const remove = h("button", "small hand-remove", "Remove");
+    remove.type = "button";
+    remove.addEventListener("click", () => { box.remove(); onRemove(); });
+    return remove;
+  }
+
+  function buildTools() {
+    const rows = toolRows({}).map((row) => {
+      const line = h("div", "tool");
+      const enabled = h("input");
+      enabled.type = "checkbox";
+      enabled.id = `tool-${row.name}`;
+      enabled.addEventListener("change", () => changeTool(row.name, "enabled", enabled.checked));
+      const label = h("label", null, row.label);
+      label.htmlFor = enabled.id;
+      label.append(h("span", `tier${row.tier === 2 ? " t2" : ""}`, `T${row.tier}`));
+      const boxes = { enabled, ask: null };
+      line.append(enabled, label);
+      if (row.askToggle) {
+        const ask = h("input");
+        ask.type = "checkbox";
+        ask.id = `tool-ask-${row.name}`;
+        ask.addEventListener("change", () => changeTool(row.name, "ask", ask.checked));
+        const askLabel = h("label", "tool-ask", "ask first");
+        askLabel.htmlFor = ask.id;
+        askLabel.prepend(ask);
+        line.append(askLabel);
+        boxes.ask = ask;
+      } else {
+        line.append(h("span", "tool-ask", row.note));
+      }
+      toolBoxes.set(row.name, boxes);
+      return line;
+    });
+    $("hands-tools").replaceChildren(...rows);
+  }
+
+  function changeTool(name, field, value) {
+    const patch = toolsPatch(latest, name, field, value);
+    if (!patch) return;
+    // the next toggle builds on this one even before the core's echo arrives (the core replaces both with its own)
+    latest = { ...latest, ...patch, ...(patch.tools_enabled ? { tools_enabled: { ...latest.tools_enabled, ...patch.tools_enabled } } : {}) };
+    act(`setting:${field === "ask" ? "tools_ask" : "tools_enabled"}`, { type: "set_settings", patch });
+  }
+
+  function showTools(s) {
+    for (const row of toolRows(s)) {
+      const boxes = toolBoxes.get(row.name);
+      boxes.enabled.checked = row.enabled;
+      if (boxes.ask) boxes.ask.checked = row.ask;
+    }
+  }
+
+  function appEntry(app) {
+    const box = h("div", "hand-entry");
+    const dirty = () => { appsDirty = true; };
+    labelled(box, "Name", textInput("name", typeof app.name === "string" ? app.name : "", 40, dirty));
+    labelled(box, "Target", textInput("target", typeof app.target === "string" ? app.target : "", 500, dirty));
+    box.append(removeButton(box, dirty));
+    return box;
+  }
+
+  function renderApps(list) {
+    $("hands-apps").replaceChildren(...list.filter((a) => a && typeof a === "object").map(appEntry));
+    appsDirty = false;
+  }
+
+  /** The entries as typed; validation (and trimming) is settingPatch's job. */
+  function readEntries(container) {
+    return [...container.children].map((box) => {
+      const entry = {};
+      for (const input of box.querySelectorAll("input[data-key]")) entry[input.dataset.key] = input.value;
+      return entry;
+    });
+  }
+
+  const readApps = () => readEntries($("hands-apps"));
+
+  function commandEntry(cmd) {
+    const box = h("div", "hand-entry");
+    const argv = Array.isArray(cmd.argv) ? cmd.argv.filter((a) => typeof a === "string") : [];
+    box._argv = argv; // kept while the line is untouched, so an argument holding a quote survives a round trip
+    box._line = joinCommandLine(argv);
+    const dirty = () => { commandsDirty = true; };
+    labelled(box, "Name", textInput("name", typeof cmd.name === "string" ? cmd.name : "", 40, dirty));
+    labelled(box, "Command", textInput("line", box._line, 4000, dirty));
+    labelled(box, "Folder", textInput("cwd", typeof cmd.cwd === "string" ? cmd.cwd : "", 500, dirty));
+    const timeout = h("input");
+    timeout.type = "number";
+    timeout.min = "1";
+    timeout.max = "60";
+    timeout.step = "1";
+    timeout.dataset.key = "timeout_s";
+    timeout.value = Number.isFinite(cmd.timeout_s) ? String(cmd.timeout_s) : "30";
+    timeout.addEventListener("input", dirty);
+    labelled(box, "Timeout (s)", timeout);
+    box.append(removeButton(box, dirty));
+    return box;
+  }
+
+  function renderCommands(list) {
+    $("hands-commands").replaceChildren(...list.filter((c) => c && typeof c === "object").map(commandEntry));
+    commandsDirty = false;
+  }
+
+  function readCommands() {
+    const boxes = [...$("hands-commands").children];
+    return readEntries($("hands-commands")).map((entry, i) => (entry.line === boxes[i]._line ? { ...entry, argv: boxes[i]._argv } : entry));
+  }
+
+  buildTools();
+
   // ---- settings controls ------------------------------------------------------------------------------------------
 
   const SETTING_ROWS = document.querySelectorAll(".row[data-key]");
   for (const row of SETTING_ROWS) errorEls.set(`setting:${row.dataset.key}`, row.querySelector(".err"));
+  errorEls.set("setting:tools_ask", errorEls.get("setting:tools_enabled")); // one error line for both tool controls
 
   function changeSetting(key, raw) {
     const target = `setting:${key}`;
@@ -114,7 +255,7 @@
   }
 
   const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-    "eyes_enabled"];
+    "eyes_enabled", "hands_online"];
   for (const key of CHECK_KEYS) $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
   for (const key of ["glance_daily_cap", "glance_min_gap_s"]) $(key).addEventListener("change", (e) => changeSetting(key, e.target.value));
   for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
@@ -127,6 +268,20 @@
     $("agent-logs").append(logEntry({ name: "", glob: "", done_re: "", fail_re: "", lost_re: "" }));
     logsDirty = true;
   });
+  $("weather-save").addEventListener("click", () => changeSetting("weather_place", $("weather_place").value));
+  $("weather_place").addEventListener("keydown", (e) => { if (e.key === "Enter") changeSetting("weather_place", e.target.value); });
+  $("apps-save").addEventListener("click", () => {
+    if (changeSetting("apps", readApps())) appsDirty = false; // the core's echo then replaces the rows
+  });
+  $("app-add").addEventListener("click", () => { $("hands-apps").append(appEntry({ name: "", target: "" })); appsDirty = true; });
+  $("commands-save").addEventListener("click", () => {
+    if (changeSetting("commands", readCommands())) commandsDirty = false;
+  });
+  $("command-add").addEventListener("click", () => {
+    $("hands-commands").append(commandEntry({ name: "", argv: [], cwd: null, timeout_s: 30 }));
+    commandsDirty = true;
+  });
+  $("actions-clear").addEventListener("click", clearActions);
   $("mode").addEventListener("change", (e) => changeSetting("mode", e.target.value));
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
   $("volume").addEventListener("input", (e) => { $("volume-out").textContent = `${Math.round(e.target.value * 100)}%`; });
@@ -173,6 +328,11 @@
       if (Array.isArray(s[key])) set(key, "value", s[key].filter((p) => typeof p === "string").join("\n"));
     }
     if (Array.isArray(s.agent_logs) && !logsDirty) renderLogs(s.agent_logs);
+    latest = s;
+    showTools(s);
+    if (Array.isArray(s.apps) && !appsDirty) renderApps(s.apps);
+    if (Array.isArray(s.commands) && !commandsDirty) renderCommands(s.commands);
+    if (s.weather_place === null || typeof s.weather_place === "string") set("weather_place", "value", s.weather_place || "");
     if (s.quiet_hours === null || typeof s.quiet_hours === "string") set("quiet_hours", "value", s.quiet_hours || "");
   }
 
@@ -293,6 +453,30 @@
     if (r.ok) act(`glance:${glance.id}`, { type: "glance_delete", id: glance.id });
   }
 
+  async function deleteNote(note) {
+    const r = await confirmDialog({ title: "Delete this note?", body: String(note.text), okLabel: "Delete" });
+    if (r.ok) act(`note:${note.id}`, { type: "note_delete", id: note.id });
+  }
+
+  async function clearActions() {
+    const r = await confirmDialog({
+      title: "Clear her action log?",
+      body: "This only clears the list. It does not undo anything she did.",
+      okLabel: "Clear",
+    });
+    if (r.ok) act("actions", { type: "actions_clear" });
+  }
+
+  function renderActions(msg) {
+    const list = msg && Array.isArray(msg.items) ? msg.items.filter((a) => a && typeof a === "object") : [];
+    fill("actions", "actions-empty", list.map((a) => {
+      const li = h("li", "item");
+      li.append(h("div", "item-text", actionText(a)));
+      li.append(h("div", "item-meta", `${formatWhen(a.at)} · ${typeof a.tool === "string" ? a.tool : "unknown"}`));
+      return li;
+    }));
+  }
+
   function renderEyes(eyes) {
     $("eyes-count").textContent = eyesCountText(eyes);
     const status = eyesStatusText(eyes);
@@ -302,7 +486,7 @@
 
   function renderMemories(msg) {
     for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:")) errorEls.delete(target);
-    const { facts, episodes, threads, days } = memoryLists(msg);
+    const { facts, episodes, threads, days, notes } = memoryLists(msg);
 
     fill("facts", "facts-empty", facts.map((fact) => {
       const parts = item(`fact:${fact.id}`, String(fact.text), {
@@ -312,6 +496,11 @@
       });
       return parts.li;
     }));
+
+    fill("notes", "notes-empty", notes.filter((n) => n && Number.isInteger(n.id)).map((note) => item(`note:${note.id}`, String(note.text), {
+      meta: formatWhen(note.at),
+      actions: [button("Delete", () => deleteNote(note))],
+    }).li));
 
     fill("glances", "glances-empty", glanceRows(msg).map((glance) => item(`glance:${glance.id}`, glance.text, {
       meta: glance.meta,
@@ -340,6 +529,7 @@
     $("conn").classList.toggle("off", !connected);
     coreConnected = Boolean(connected);
     renderHooks();
+    if (!connected) renderActions(null); // a stale log would pass for live; the core sends it again on change
     if (connected) send({ type: "get_memories" });
   });
 
@@ -348,6 +538,8 @@
     if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
       router.settle();
       applySettings(msg.settings);
+    } else if (msg.type === "actions") {
+      renderActions(msg);
     } else if (msg.type === "eyes") {
       renderEyes(msg);
     } else if (msg.type === "agents") {
@@ -360,6 +552,8 @@
     } else if (msg.type === "error") {
       const target = router.route(msg.message);
       if (target === "setting:agent_logs") logsDirty = true; // the core refused them: keep what was typed
+      if (target === "setting:apps") appsDirty = true;
+      if (target === "setting:commands") commandsDirty = true;
       showError(target, String(msg.message));
     }
   });

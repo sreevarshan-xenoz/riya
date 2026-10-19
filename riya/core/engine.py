@@ -1,5 +1,6 @@
 """RiyaCore: wires memory, feelings, presence, initiative, routing and consolidation into replies and speaking first."""
 import logging
+import os
 import queue
 import random
 import re
@@ -14,7 +15,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from riya.agents.hub import AgentEvent, AgentHub
+from riya.agents.hub import AgentEvent, AgentHub, summarize
 from riya.core import games
 from riya.core.appraise import SENTENCE_END
 from riya.core.consolidate import Consolidator, remember_intent, third_person
@@ -22,6 +23,12 @@ from riya.core.eyes.capture import FakeWindowSource, WindowInfo, WindowSource, c
 from riya.core.eyes.policy import GlancePolicy, window_refusal
 from riya.core.eyes.see import describe, is_private, is_screen_question, vision_messages
 from riya.core.feelings import Feelings
+from riya.core.hands import online as hands_online
+from riya.core.hands.intent import is_command_form, is_forbidden, match
+from riya.core.hands.policy import Confirmations, Pending, confirm_text, decide, yes_no
+from riya.core.hands.records import HandsDB
+from riya.core.hands.reminders import delivery, gap_ok, reminder_line
+from riya.core.hands.tools import ONLINE_OFF, REGISTRY, TIERS, Call, ToolCtx, ToolResult, _q, validate_call
 from riya.core.initiative import Action, Initiative
 from riya.core.memory import Memory, about_me
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
@@ -29,11 +36,14 @@ from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import (FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION, agents_block, bid_situation,
                               build_messages, cant_see_situation, eyes_block, greeting_reports, greeting_situation,
-                              remember_situation, report_bubble, report_line, report_situation)
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, AgentInfo, AgentsMsg, DontLook, EpisodeDelete, ErrorMsg,
-                                ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg,
-                                MemoryCorrect, MemoryDelete, QuitCore, Say, SayEnd, SetSettings, SettingsMsg, StateMsg,
-                                TalkHotkey, ThreadResolve, TranscriptDelete)
+                              hands_situation, remember_situation, reminders_block, report_bubble, report_line,
+                              report_situation, tool_turn)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo, AgentsMsg,
+                                Confirm, ConfirmDone, ConfirmRequest, DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg,
+                                EyesMsg, GetMemories, GlanceDelete, GlanceInfo, Hello, Look, MemoriesMsg, MemoryCorrect,
+                                MemoryDelete, NoteDelete, NoteInfo, QuitCore, ReminderCancel, ReminderInfo,
+                                RemindersMsg, Say, SayEnd, SetSettings, SettingsMsg, StateMsg, TalkHotkey, ThreadResolve,
+                                TranscriptDelete)
 from riya.core.router import Router, needs_thinking
 from riya.core.settings import Settings, apply_patch, in_quiet_hours, load_settings, save_settings, set_autostart
 from riya.core.shaping import (BUDGETS, CAPS, CODE_BLOCK, ONLINE_BUDGETS, cap_sentences, count_emoji, drop_generic,
@@ -75,13 +85,43 @@ HOOKS_SEEN_KEY = "agents.hooks_seen_at"
 HOOKS_SEEN_EVERY_S = 60  # hooks_seen_at (KV and AgentsMsg) moves at most this often: a tool-call flood isn't news
 REPORTS_KEY = "agents.reports"  # pending reports survive a restart
 _EYES_KEYS = ("eyes_enabled", "dont_look", "online_enabled", "eyes_deny_titles", "eyes_deny_processes")
+# her hands: every line here is a template (the model never words a refusal or a confirmation)
+FORBIDDEN = "forbidden"  # a T3 request: there's no tool for it, only the kind refusal
+FORBIDDEN_LINE = ("Sorry, that's one thing I never do: no deleting or moving files, no messages or email, no buying "
+                  "things, nothing with passwords and no shell. I can help another way, though~")
+INVALID_LINE = "I couldn't do that one: something about it didn't check out."
+AFTER_GAME = "I'll ask you about that after your game~"
+CONFIRM_CANCELLED = "Okay, I'll leave that one, then."
+CONFIRM_DECLINED = "Okay, I won't."
+CONFIRM_TIMED_OUT = "That one timed out, so I didn't do it. Ask me again?"
+COMMAND_BUSY = "Something's still running, so I'll wait until it's done."
+TOOL_FAILED = "Something went wrong when I tried that."
+LOOKUP_MISS = ("You tried to look this up online and found nothing useful. Answer from what you know, and say so "
+               "if you're not sure.")
+REMINDER_TOOLS = frozenset({"timer_set", "reminder_set", "reminder_cancel"})
+_BUTTON = {"no": "declined", "expired": "expired", "replaced": "replaced"}  # a yes reports what then happened
+_NOT_RUN = frozenset({"declined", "expired", "cancelled", "replaced"})  # confirm outcomes logged as themselves
+FRIENDLY = {"time_now": "telling the time", "timer_set": "timers", "reminder_set": "reminders",
+            "reminder_list": "reminders", "reminder_cancel": "reminders", "note_add": "notes", "note_list": "notes",
+            "calc": "the calculator", "weather": "the weather", "lookup": "looking things up",
+            "open_url": "opening websites", "open_app": "opening apps", "media": "media keys", "volume": "volume",
+            "clipboard_copy": "the clipboard", "run_command": "running your commands", "write_file": "writing files"}
 _TILDES = re.compile(r"[~\s]*")
 _ENDED = re.compile(r"[.!?…~][\"')\]]?[\s~]*$")  # a sentence's end, at the end of the text
 
 
-def local_time(t: float) -> datetime:
-    """t as the machine's local wall-clock time (quiet hours are local)."""
-    return datetime.fromtimestamp(t)
+def local_time(t: float, tz=None) -> datetime:
+    """t as the wall-clock time in tz (quiet hours are local; None: the machine's zone)."""
+    return datetime.fromtimestamp(t, tz)
+
+
+def default_riya_dir() -> Path:
+    """Her own folder, the only place write_file writes: Documents/Riya under %USERPROFILE%."""
+    return Path(os.environ.get("USERPROFILE") or Path.home()) / "Documents" / "Riya"
+
+
+def refusal(tool: str) -> str:
+    return f"\"{FRIENDLY.get(tool, tool)}\" is switched off in my settings, so I can't do that."
 
 
 def _worded(text: str) -> bool:
@@ -96,11 +136,20 @@ def _threads(action: Action) -> list:
     return [action.thread] if action.thread else []
 
 
-def _chat_mid_game(text: str) -> bool:
-    """Never a game move, in any game: a screen question, a remember-that, an identity, about-me or feelings question,
-    or a mention of their agents ("how's my agent doing?")."""
-    return (is_screen_question(text) or remember_intent(text) is not None or is_identity_question(text)
-            or about_me(text) or is_feelings_question(text) or games.about_agents(text))
+def _priority(text: str, screen: bool = True) -> bool:
+    """The spec's priority intents, which pre-empt her hands: a screen question (unless screen is False), a
+    remember-that, an identity, about-me or feelings question."""
+    return ((screen and is_screen_question(text)) or remember_intent(text) is not None or is_identity_question(text)
+            or about_me(text) or is_feelings_question(text))
+
+
+def _chat_mid_game(text: str, screen: bool = True) -> bool:
+    """Never a game move, in any game: a priority intent or a mention of their agents ("how's my agent doing?")."""
+    return _priority(text, screen) or games.about_agents(text)
+
+
+SCREEN_LOSES_TO = frozenset({"reminder_set", "timer_set"})  # "remind me to look at my screen at 5" sets the reminder
+GUESS_GAMES = frozenset({"riddles", "twenty_questions"})  # where a lookup-form turn ("what is a candle?") is a guess
 
 
 def _thumb(jpeg: bytes) -> bytes:
@@ -115,10 +164,11 @@ def _key(info: WindowInfo) -> tuple[int, str]:
 
 
 class Utterance:
-    """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud."""
+    """What tick() hands over when she speaks first: iterate it for the sentences; spoken says if it's meant aloud.
+    on_close runs once on close(), even for one closed before its first step (it releases what tick claimed)."""
 
-    def __init__(self, sentences: Iterator[str], spoken: bool):
-        self._sentences, self.spoken = sentences, spoken
+    def __init__(self, sentences: Iterator[str], spoken: bool, on_close: Callable[[], None] | None = None):
+        self._sentences, self.spoken, self._on_close = sentences, spoken, on_close
 
     def __iter__(self) -> "Utterance":
         return self
@@ -127,18 +177,28 @@ class Utterance:
         return next(self._sentences)
 
     def close(self) -> None:
-        self._sentences.close()
+        try:
+            self._sentences.close()
+        finally:
+            done, self._on_close = self._on_close, None
+            if done is not None:
+                done()
 
 
 class RiyaCore:
     def __init__(self, *, db, embedder, clock, idle_source, local: ChatModel, online: ChatModel | None,
                  emit: Callable[[BaseModel], None], persona: str | None = None, vision: ChatModel | None = None,
                  window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
-                 body_present: Callable[[], bool] = lambda: True):
+                 body_present: Callable[[], bool] = lambda: True, effects=None, http=None,
+                 riya_dir: str | Path | None = None, tz=None):
         """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
         window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
-        body is connected (her eyes stay shut without one)."""
+        body is connected (her eyes stay shut without one). effects and http: her hands on the OS and the network
+        (None: she has none, and every such tool fails kindly; the runner passes the real ones). riya_dir: the only
+        folder write_file writes into. tz: the zone for times she parses and for quiet hours (None: the machine's)."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
+        self.effects, self.http, self.tz = effects, http, tz
+        self.riya_dir = Path(riya_dir) if riya_dir is not None else default_riya_dir()
         self.body_present, self.quit_requested = body_present, threading.Event()  # quit_requested: the tray's Quit
         self.vision, self.windows, self._grab = vision, window_source or FakeWindowSource(None), grab
         # the small local model gets the short persona, the online one the full sheet; persona= overrides both
@@ -146,10 +206,22 @@ class RiyaCore:
         self.examples = style_examples()
         self.memory = Memory(db, embedder, clock)
         self.kv = KV(db, self.memory.lock)
+        self.hands = HandsDB(db, self.memory.lock)
+        # one pending confirmation (and one parked call), taken by the user's turn or a body button: _hands_lock guards
+        # them and the command worker's start; it's taken after the core lock and before _eyes_lock and memory
+        self._hands_lock = threading.RLock()
+        self.confirms = Confirmations(clock)
+        self._results: queue.SimpleQueue = queue.SimpleQueue()  # (summary, ToolResult): _results_step says them
+        self._command_thread: threading.Thread | None = None  # the riya-command worker: one command at a time
+        # reminder ids an Utterance tick returned is about to say (skipped until it ends), and the ones the came-back
+        # greeting about to be said carries in its tail; both under _hands_lock
+        self._reminding: set[int] = set()
+        self._greet_reminders: list = []
+        self._last_remind_at: float | None = None  # the last spoken reminder line (REMIND_GAP_S apart)
         traits, saved = load_traits(), self.kv.get("feelings")
         self.feelings = Feelings.from_dict(saved, clock, traits) if saved else Feelings(clock, traits)
         self.presence = Presence(idle_source, clock, self.kv)
-        self.initiative = Initiative(clock, lambda: self.settings)
+        self.initiative = Initiative(clock, lambda: self.settings, tz)
         self.router = Router(local, online, self.settings.online_enabled)
         self.consolidator = Consolidator(self.memory, self._consolidation_model, clock)
         self.turns: list[dict] = []
@@ -209,21 +281,53 @@ class RiyaCore:
 
     # ---- speaking -----------------------------------------------------------------------------------
     def reply(self, text: str, source: Literal["typed", "voice"] = "typed") -> Iterator[str]:
+        """The user's turn, in priority order: a pending confirmation takes it first (even mid-game); then the
+        priority intents (screen, remember-that, identity, about-me, feelings; mid-game also a mention of their agents)
+        never act; then the game; then a T3 refusal, a matched call, or the online model's proposal; else a normal
+        reply. Only this turn's own text ever reaches match, propose or a confirmation."""
         with self._lock:
+            taken = None
+            try:
+                taken = self._confirm_turn(text)
+            except Exception:
+                log.exception("couldn't take the confirmation turn")
+            if taken is not None and not (yield from self._confirm_answer(text, *taken)):
+                return
+            gate = _chat_mid_game if self.game is not None else _priority
+            chat, call = gate(text), None
+            try:
+                if not chat or (is_screen_question(text) and not gate(text, screen=False)):
+                    found = FORBIDDEN if is_forbidden(text) else self._match(text)
+                    if not chat or (isinstance(found, Call) and found.tool in SCREEN_LOSES_TO):
+                        chat, call = False, found
+                if (isinstance(call, Call) and call.tool == "lookup" and not self.settings.online_enabled
+                        and not is_command_form(text)):
+                    call = None  # online off: a question she may answer from what she knows (she can't look it up)
+            except Exception:
+                log.exception("couldn't read the turn for a tool")
             move = None
             try:
-                move = self._game_move(text)
+                guess = (isinstance(call, Call) and call.tool == "lookup" and self.game is not None
+                         and self.game.kind in GUESS_GAMES)  # a guess, never a lookup (unless the game says it's chat)
+                move = self._game_move(text, acting=call is not None and not guess)
             except Exception:
                 log.exception("couldn't play the game turn")
             if move is not None and move[1].kind != "off":
                 yield from self._game_reply(text, *move)
                 return
+            if call is None and not chat:
+                call = self._propose(text)
+            note = None
+            if call is not None:
+                note = yield from self._hands_turn(text, call)
+                if note is None:
+                    return
             saved = None
             try:
                 saved = self._take_user_turn(text)
             except Exception:
                 log.exception("couldn't record the user's turn")
-            base = [remember_situation(saved) if saved else None,
+            base = [note, remember_situation(saved) if saved else None,
                     IDENTITY_SITUATION if is_identity_question(text) else None,
                     FEELINGS_SITUATION if is_feelings_question(text) else None,
                     games.mid_game_note(move[0]) if move else None]  # chat mid-game: the game stays on
@@ -240,12 +344,13 @@ class RiyaCore:
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
                                    small=bool(saved), seeing=seeing if seeing and seeing.jpeg else None)
 
-    def _game_move(self, text: str) -> tuple[games.GameState, games.Verdict] | None:
+    def _game_move(self, text: str, acting: bool = False) -> tuple[games.GameState, games.Verdict] | None:
         """The game side of a user turn, judged by the engine before the model is asked: a stop phrase ends the
         active game; a start request (or a yes to a fresh offer, with no game on) starts one, and mid-game only a
         request for a different game switches; otherwise an active game plays the turn (an "off" verdict: chat, a
-        normal reply; _chat_mid_game turns are always off). None when no game is involved. Any turn uses up a
-        pending offer."""
+        normal reply; _chat_mid_game turns are always off). acting (match or the T3 check recognised the turn): it's
+        off too, so "pause the music" mid-game pauses the music, except a one-word turn in word chain, always a move.
+        None when no game is involved. Any turn uses up a pending offer."""
         now = self.clock.now()
         offer, self._offer = self._offer, None
         offered = offer[0] if offer and now - offer[1] < BID_IGNORED_S else None
@@ -260,7 +365,8 @@ class RiyaCore:
             return g, games.opening(g)
         if g is None:
             return None
-        v = games.off(g) if _chat_mid_game(text) else games.play(g, text)
+        word = g.kind == "word_chain" and len(text.split()) == 1
+        v = games.off(g) if _chat_mid_game(text) or (acting and not word) else games.play(g, text)
         self._game_at = now
         if v.over:
             self.game = None
@@ -297,17 +403,34 @@ class RiyaCore:
         return saved
 
     def speak_first(self, action: Action) -> Iterator[str]:
+        """The greeting. Reminders that fell due while they were away (_greet_reminders) are its templated tail, said
+        even when the model fails, and marked fired once it went out (due() and mark_fired() both here, under the
+        core lock); the claim on them ends with the greeting."""
         with self._lock:
-            reports, self._greet_reports = self._greet_reports, []
-            situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
-            if reports:  # what her agents did while they were away
-                situation += " " + greeting_reports([ev for ev, _ in reports])
-            said: list[str] = []
-            yield from self._counted(self._speak(
-                "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
-                threads=_threads(action), after=lambda outcome: self._greeted(action, outcome, reports, bool(said)),
-                consolidate=not reports),
-                said)
+            with self._hands_lock:
+                greet, self._greet_reminders = self._greet_reminders, []
+            ids = {r.id for r in greet}
+            try:
+                reports, self._greet_reports = self._greet_reports, []
+                situation = greeting_situation(self._away_s, self.feelings.state.missing, action.thread)
+                if reports:  # what her agents did while they were away
+                    situation += " " + greeting_reports([ev for ev, _ in reports])
+                now = self.clock.now()
+                due = [r for r in self.hands.due(now) if r.id in ids] if ids else []  # not cancelled meanwhile
+                tail = reminder_line(due, now, self.tz) or None
+                said: list[str] = []
+
+                def after(outcome: str) -> None:
+                    if due:  # fired first: no bookkeeping failure can make the tail go out again
+                        self._last_remind_at = self.clock.now()  # the tail counts for the reminder spacing
+                        self._fire([r.id for r in due], self._last_remind_at)
+                    mine = [x for x in said if x != tail]  # the reminder tail isn't the greeting itself
+                    self._greeted(action, outcome if mine or not tail else "failed", reports, bool(mine))
+                yield from self._counted(self._speak(
+                    "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
+                    threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail), said)
+            finally:
+                self._release(ids)
 
     @staticmethod
     def _counted(sentences: Iterator[str], said: list[str]) -> Iterator[str]:
@@ -333,7 +456,8 @@ class RiyaCore:
     def _speak(self, kind: str, *, user_text: str | None, query: str, situation: str | None, spoken: bool,
                threads: list | None = None, after: Callable[[str], None] | None = None,
                lead: str | None = None, small: bool = False, seeing: SimpleNamespace | None = None,
-               game: SimpleNamespace | None = None, consolidate: bool = True) -> Iterator[str]:
+               game: SimpleNamespace | None = None, consolidate: bool = True, shape: str | None = None,
+               tail: str | None = None, tail_if_silent: bool = False) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more.
@@ -344,16 +468,26 @@ class RiyaCore:
         game.guard, and game.say (the engine's line: her word, the next riddle, the reveal) follows unless game.key
         was already said. The game state already moved, so that line goes out even when the model failed or said
         nothing, and on a barge-in it's still shown (not spoken) and recorded. A report, a game turn or consolidate
-        off (a greeting carrying reports) is kept in the transcript but never reaches consolidation."""
+        off (a greeting carrying reports) is kept in the transcript but never reaches consolidation.
+        shape="tool": her line about a tool's result, on the local model only, with the tool budget and cap and no
+        reply-rules line. tail (never with game): one engine line after the model's sentences, said like the game's
+        (even when the model failed; shown, not spoken, on a barge-in); tail_if_silent: only when the model said
+        nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line)."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
-        sentences, done, dropped = None, {"stream": False}, []
+        sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
+        tool = shape == "tool"
 
-        def tail() -> str | None:
-            """The engine's game line, at most once, unless she already said its key."""
-            if not game or not game.say or game.told or games.mentions(" ".join(said), game.key):
+        def engine_line() -> str | None:
+            """The engine's line, at most once: the game's (unless she already said its key), or the tail."""
+            if game:
+                if not game.say or game.told or games.mentions(" ".join(said), game.key):
+                    return None
+                game.told = True
+                return game.guard(game.say)
+            if not tail or told["tail"] or (tail_if_silent and model_said):
                 return None
-            game.told = True
-            return game.guard(game.say)
+            told["tail"] = True
+            return tail
         try:
             self.router.online_enabled = self.settings.online_enabled
             spoken = spoken and not self.settings.mute_voice
@@ -361,16 +495,18 @@ class RiyaCore:
                 self.emit(Say(utterance_id=uid, text=lead, spoken=spoken, kind=kind))
                 said.append(lead)
                 yield lead
-            route_text = "" if small or game else user_text or ""
-            turn, budget, cap = ("game", BUDGETS["small"], 1) if game else self._shape(kind, route_text)
+            route_text = "" if small or game or tool else user_text or ""
+            turn, budget, cap = (("game", BUDGETS["small"], 1) if game else (None, BUDGETS["tool"], CAPS["tool"])
+                                 if tool else self._shape(kind, route_text))
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
             retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
+            reminders = self._reminders_context()
 
             def build(persona: str, situation: str | None) -> list[dict]:
                 return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
-                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents)
+                                      now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders)
 
             messages = build(self.personas[route], situation)
             if route == "online":
@@ -396,8 +532,9 @@ class RiyaCore:
                     sentence = game.guard(sentence)
                 self.emit(Say(utterance_id=uid, text=sentence, spoken=spoken, kind=kind))
                 said.append(sentence)
+                model_said.append(sentence)
                 yield sentence
-            if line := tail():
+            if line := engine_line():
                 self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
                 said.append(line)
                 yield line
@@ -407,8 +544,9 @@ class RiyaCore:
             raise
         except Exception:
             log.exception("model failed during a %s", kind)
-            self.emit(ErrorMsg(message=MODEL_DOWN))
-            if line := tail():  # the game moved on: her word, the riddle or the reveal still reaches them
+            if not (tail_if_silent and tail and not model_said):  # else the tail stands in for her line
+                self.emit(ErrorMsg(message=MODEL_DOWN))
+            if line := engine_line():  # the game moved on (her word, the riddle, the reveal), or the tail
                 self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
                 said.append(line)
                 outcome = "done"
@@ -416,22 +554,27 @@ class RiyaCore:
         finally:
             if sentences is not None:
                 sentences.close()  # stops the model stream however the utterance ended
-            if outcome == "closed" and (line := tail()):  # barged in on: shown, not spoken, and kept
+            if outcome == "closed" and (line := engine_line()):  # barged in on: shown, not spoken, and kept
                 self.emit(Say(utterance_id=uid, text=line, spoken=False, kind=kind))
                 said.append(line)
             # the model finished on its own and nothing of it was dropped: keep its own spacing
-            whole = outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
+            whole = (outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
+                     and not told["tail"])
             text = None if outcome == "failed" else (
                 " ".join(filter(None, [lead, limit_emoji(strip_label("".join(parts)).strip())])) if whole
                 else " ".join(said))
             try:
                 self._end_thinking(thinking)
                 self.emit(SayEnd(utterance_id=uid))
-                self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report")
-                if after:
-                    after(outcome)
+                self._finish_turn(user_text, text, consolidate=consolidate and not game and kind != "report",
+                                  quoted=tool)
             except Exception:
                 log.exception("couldn't record the %s", kind)
+            if after:  # even when the recording failed (a greeting's after marks its reminders fired)
+                try:
+                    after(outcome)
+                except Exception:
+                    log.exception("couldn't finish the %s", kind)
 
     @staticmethod
     def _shape(kind: str, text: str) -> tuple[str | None, int, int]:
@@ -521,13 +664,16 @@ class RiyaCore:
         r = self.memory.retrieve(query)
         return r if threads is None else replace(r, threads=threads)
 
-    def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True) -> None:
-        """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded."""
+    def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True,
+                     quoted: bool = False) -> None:
+        """said is None when the model failed: the user's turn stays in the transcript, her answer isn't recorded.
+        quoted (her line about a tool's result, which may carry web or command text): later prompts see it only
+        quoted, with the untrusted note (prompt.tool_turn); the transcript keeps what was shown."""
         if said is not None:
             if said:
                 self.memory.append_transcript("assistant", said, consolidate=consolidate)
             new = ([] if user_text is None else [{"role": "user", "content": user_text}]) + (
-                [{"role": "assistant", "content": said}] if said else [])
+                [{"role": "assistant", "content": tool_turn(said) if quoted else said}] if said else [])
             self.turns = (self.turns + new)[-KEEP_TURNS:]
             self.last_turn_at = self.clock.now()
         self._save_feelings()
@@ -562,7 +708,8 @@ class RiyaCore:
                                       feelings_tag=self.feelings.prompt_tag(),
                                       retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
                                       user_text=None, situation=situation,
-                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context())
+                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context(),
+                                      reminders=self._reminders_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip())
         except Exception:
@@ -589,6 +736,247 @@ class RiyaCore:
         except Exception:
             log.exception("on_spoke_first failed after a bid")
 
+    # ---- hands --------------------------------------------------------------------------------------
+    def _match(self, text: str) -> Call | None:
+        s = self.settings
+        names = lambda items: [i["name"] for i in items if isinstance(i, dict) and isinstance(i.get("name"), str)]  # noqa: E731
+        return match(text, self.clock.now(), apps=names(s.apps), commands=names(s.commands), tz=self.tz)
+
+    def _propose(self, text: str) -> Call | None:
+        """The online model's one call for a clear command (None when it, or her hands online, are off). Only the
+        turn, the time and the names of their apps and commands are sent; propose never raises."""
+        s = self.settings
+        model = self.online if s.online_enabled and s.hands_online else None
+        return hands_online.propose(model, text, self.clock.now(), s, self.tz)
+
+    def _confirm_turn(self, text: str) -> tuple[str, Pending, bool] | None:
+        """The user's turn against a pending confirmation: (answer, pending, it was still pending), or None."""
+        with self._hands_lock:
+            had = self.confirms.pending is not None
+            taken = self.confirms.take_turn(text)
+        return None if taken is None else (*taken, had)
+
+    def _confirm_answer(self, text: str, answer: str, p: Pending, had: bool) -> Iterator[str]:
+        """Answers a confirmation from the user's turn; returns True when the turn goes on to its normal reply (it
+        wasn't an answer: cancelled with a one-line note, or a pending one that had expired)."""
+        if answer == "cancelled" or (answer == "expired" and yes_no(text) is None):
+            self._confirm_done(p, answer)
+            if answer == "cancelled":
+                yield from self._say_line(CONFIRM_CANCELLED)
+            return True
+        try:
+            self._take_user_turn(text, remember=False, consolidate=False)
+        except Exception:
+            log.exception("couldn't record the user's turn")
+        if answer == "yes":
+            yield from self._run_call(text, p.call, p.summary, confirmed=p)
+        elif answer == "no":
+            self._confirm_done(p, "declined")
+            yield from self._say_line(CONFIRM_DECLINED, user_text=text)
+        else:  # a yes or no too late: expired (the tick already told the body if it had been expired there)
+            if had:
+                self._confirm_done(p, "expired")
+            yield from self._say_line(CONFIRM_TIMED_OUT, user_text=text)
+        return False
+
+    def _confirm_done(self, p: Pending, outcome: str) -> None:
+        """confirm_done for the body. An answer that ran nothing is logged here; a run (ran, started, failed) is
+        logged where it happens."""
+        self.emit(ConfirmDone(id=p.id, outcome=outcome))
+        if outcome in _NOT_RUN:
+            self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, outcome)
+
+    def _confirm_button(self, id: str, yes: bool) -> None:
+        """A body Yes/No button. Only the exact pending id counts; a stale one gets "replaced" (or "expired"). A yes
+        runs the snapshot the user was asked about, outside _hands_lock (a slow effect stalls neither the socket loop
+        nor the tick), and its result is queued for tick, never spoken from here."""
+        with self._hands_lock:
+            current = self.confirms.pending
+            answer, p = self.confirms.take_button(id, yes)
+            if p is None or answer != "yes":
+                self.emit(ConfirmDone(id=p.id if p else str(id), outcome=_BUTTON[answer]))
+                if p is not None and (answer == "no" or (current is not None and current.id == p.id)):
+                    self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, _BUTTON[answer])
+                return  # (an expiry the tick saw was logged there)
+        _, result = self._execute(p.call, p.summary, confirmed=p)  # taken: no turn or tick can answer it now
+        if result is not None:  # a command that started reports through its worker
+            self._results.put((p.summary, result))
+
+    def _hands_turn(self, text: str, call: Call | str) -> Iterator[str]:
+        """A turn that asks her to act. Every call (matched or proposed) is validated against the settings first;
+        then the policy refuses, asks or runs. The turn never reaches consolidation. With online access off a network
+        tool makes no request: a plain templated line. A lookup that finds nothing (or fails) returns LOOKUP_MISS
+        before the turn is recorded: the turn goes on to the normal reply with that situation."""
+        s = self.settings
+        checked = verdict = found = None
+        if call != FORBIDDEN:
+            checked = validate_call(call, s)
+            verdict = decide(checked, s)
+            if verdict == "run" and checked.tool == "lookup" and s.online_enabled:
+                found = self._run_tool(checked, self._summary(checked))
+                if not found.ok:
+                    return LOOKUP_MISS
+        try:
+            self._take_user_turn(text, remember=False, consolidate=False)
+        except Exception:
+            log.exception("couldn't record the user's turn")
+        if call == FORBIDDEN:
+            self._log_action(FORBIDDEN, 3, summarize(text, 80), "refused")
+            yield from self._say_line(FORBIDDEN_LINE, user_text=text)
+            return
+        if verdict == "refuse":
+            self._log_action(call.tool, TIERS.get(call.tool, 3), self._summary(checked or call), "refused")
+            yield from self._say_line(INVALID_LINE if checked is None else refusal(call.tool), user_text=text)
+            return
+        summary = self._summary(checked)
+        if checked.tool in ONLINE_OFF and not s.online_enabled:
+            self._log_action(checked.tool, TIERS[checked.tool], summary, "refused")
+            yield from self._say_line(ONLINE_OFF[checked.tool], user_text=text)
+            return
+        if verdict == "run":
+            yield from self._run_call(text, checked, summary, found=found)
+            return
+        gaming = self.presence.state == "gaming"
+        if gaming and TIERS[checked.tool] >= 2:  # asked once the game ends (_park_step raises it)
+            with self._hands_lock:
+                self.confirms.park(checked, summary)
+            yield from self._say_line(AFTER_GAME, user_text=text)
+            return
+        with self._hands_lock:
+            p = self.confirms.ask(checked, summary)
+        yield from self._raise_confirm(p, not (gaming or self._quiet(self.clock.now())), user_text=text)
+
+    def _raise_confirm(self, p: Pending, spoken: bool, *, user_text: str | None = None,
+                       kind: str = "reply") -> Iterator[str]:
+        """confirm_request, then the templated question as a Say (spoken only when spoken; yielded only then)."""
+        self.emit(ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at))
+        yield from self._say_line(confirm_text(p), user_text=user_text, spoken=spoken, kind=kind)
+
+    def _run_call(self, text: str, call: Call, summary: str, confirmed: Pending | None = None,
+                  found: ToolResult | None = None) -> Iterator[str]:
+        """Runs a validated call for the user's turn: a command goes to the worker ("Running ..." at once, the result
+        later through tick); anything else runs here and she says how it went (the result text is the fallback).
+        found: the call already ran (a lookup that found something), so only her line about it is left."""
+        how, result = ("ran", found) if found is not None else self._execute(call, summary, confirmed)
+        if how == "started":
+            yield from self._say_line(f"Running {_q(call.args['name'], 40)}~", user_text=text)
+        elif how == "refused":
+            yield from self._say_line(result.text, user_text=text)
+        else:
+            yield from self._speak("reply", user_text=text, query=text, spoken=True, consolidate=False, shape="tool",
+                                   situation=hands_situation(summary, result), tail=result.text, tail_if_silent=True)
+
+    def _execute(self, call: Call, summary: str,
+                 confirmed: Pending | None = None) -> tuple[str, ToolResult | None]:
+        """Executes a validated call: ("started", None) when a command went to the worker, ("refused", a templated
+        result) when it can't run now (its tool was switched off since she asked, or a command is still running),
+        else ("ran", the result). A confirmed call's confirm_done says what actually happened."""
+        if confirmed is not None and not self.settings.tools_enabled.get(call.tool, False):
+            how, result = "refused", ToolResult(False, refusal(call.tool))
+        elif call.tool == "run_command":
+            started = self._start_command(call, summary)
+            how, result = ("started", None) if started else ("refused", ToolResult(False, COMMAND_BUSY))
+        else:
+            how, result = "ran", self._run_tool(call, summary)
+        if how == "refused":
+            self._log_action(call.tool, TIERS[call.tool], summary, "refused")
+        if confirmed is not None:
+            ok = how == "started" or (how == "ran" and result.ok)
+            self._confirm_done(confirmed, ("started" if how == "started" else "ran") if ok else "failed")
+        return how, result
+
+    def _run_tool(self, call: Call, summary: str) -> ToolResult:
+        """Runs one validated, non-command call now; logs it, saves a first weather place, sends the reminders."""
+        try:
+            result = REGISTRY[call.tool].run(call.args, self._ctx())
+        except Exception:
+            log.exception("the %s tool failed", call.tool)
+            result = ToolResult(False, TOOL_FAILED)
+        self._log_action(call.tool, TIERS[call.tool], summary, "ran" if result.ok else "failed")
+        place = (result.data or {}).get("save_place")
+        if isinstance(place, str) and place.strip():
+            try:
+                self._set_settings({"weather_place": place})
+            except Exception:
+                log.exception("couldn't save the weather place")
+        if call.tool in REMINDER_TOOLS:
+            self._emit_reminders()
+        return result
+
+    def _start_command(self, call: Call, summary: str) -> bool:
+        """Starts the riya-command worker on the snapshot; False while another command is still running."""
+        with self._hands_lock:
+            if self._command_thread is not None and self._command_thread.is_alive():
+                return False
+            self._command_thread = threading.Thread(target=self._command_worker, args=(call, summary),
+                                                    name="riya-command", daemon=True)
+            self._command_thread.start()
+            return True
+
+    def _command_worker(self, call: Call, summary: str) -> None:
+        """Off the core lock: the run owns effects.run and the redacted output tail; the result waits for tick."""
+        try:
+            result = REGISTRY["run_command"].run(call.args, self._ctx())
+        except Exception:
+            log.exception("the command worker failed")
+            result = ToolResult(False, f"{_q(str(call.args.get('name', '')), 40)} couldn't start.")
+        self._log_action("run_command", 2, summary, "ran" if result.ok else "failed")
+        self._results.put((summary, result))
+
+    @staticmethod
+    def _summary(call: Call) -> str:
+        try:
+            return REGISTRY[call.tool].summary(call.args)
+        except Exception:
+            return str(call.tool)
+
+    def _ctx(self) -> ToolCtx:
+        return ToolCtx(settings=self.settings, db=self.hands, effects=self.effects, http=self.http, clock=self.clock,
+                       riya_dir=self.riya_dir, tz=self.tz)
+
+    def _quiet(self, now: float) -> bool:
+        return in_quiet_hours(self.settings.quiet_hours, local_time(now, self.tz))
+
+    def _say_line(self, line: str, *, user_text: str | None = None, spoken: bool = True,
+                  kind: str = "reply") -> Iterator[str]:
+        """One templated line of hers (the model never words it), kept out of consolidation; yielded only if
+        spoken."""
+        spoken = spoken and not self.settings.mute_voice
+        uid = uuid4().hex
+        self.emit(Say(utterance_id=uid, text=line, spoken=spoken, kind=kind))
+        self.emit(SayEnd(utterance_id=uid))
+        try:
+            self._finish_turn(user_text, line, consolidate=False)
+        except Exception:
+            log.exception("couldn't record her line")
+        if spoken:
+            yield line
+
+    def _log_action(self, tool: str, tier: int, summary: str, outcome: str) -> None:
+        """Logs an action (outcome from records.OUTCOMES) and sends the log; never raises."""
+        try:
+            self.hands.log_action(self.clock.now(), tool, tier, summary, outcome)
+            self.emit(self._actions_msg())
+        except Exception:
+            log.exception("couldn't log the action")
+
+    def _actions_msg(self) -> ActionsMsg:
+        return ActionsMsg(items=[ActionInfo(**asdict(a)) for a in self.hands.actions()])
+
+    def _reminders_msg(self) -> RemindersMsg:
+        return RemindersMsg(items=[ReminderInfo(id=r.id, kind=r.kind, due_at=r.due_at, text=r.text)
+                                   for r in self.hands.active()])
+
+    def _reminders_context(self) -> str | None:
+        """The `### Your reminders:` prompt line (the next 3, outside the memory block)."""
+        return reminders_block(self.hands.active(), self.clock.now(), self.tz)
+
+    def _emit_reminders(self) -> None:
+        try:
+            self.emit(self._reminders_msg())
+        except Exception:
+            log.exception("couldn't send the reminders")
+
     # ---- time ---------------------------------------------------------------------------------------
     def tick(self) -> Utterance | None:
         if not self._lock.acquire(blocking=False):  # a reply or greeting is running: catch up on the next tick
@@ -606,10 +994,16 @@ class RiyaCore:
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
         self._step("agents", lambda: self._agents_step(now))
+        self._step("confirm", self._confirm_step)
         action = self._step("greeting", lambda: self._greeting(events, now))
-        report = None if action else self._step("report", lambda: self._report_step(now))
-        if action is None and report is None:
-            self._step("bid", self._maybe_bid)
+        out = None
+        if action is None:  # a greeting tick runs none of these; otherwise the first that delivers ends the chain
+            for name, fn in (("reminders", self._reminder_step), ("results", self._results_step),
+                             ("park", self._park_step), ("report", self._report_step)):
+                if (out := self._step(name, lambda: fn(now))) is not None:
+                    break
+            else:
+                self._step("bid", self._maybe_bid)
         self._step("reports", self._save_reports)
         self._step("bid ignored", lambda: self._check_bid_ignored(now))
         self._step("game", lambda: self._end_idle_game(now))
@@ -621,8 +1015,11 @@ class RiyaCore:
         self._step("state", lambda: self._maybe_state(now))
         self._step("expression", self._sync_expression)
         if action:
-            return Utterance(self.speak_first(action), action.spoken)
-        return report if isinstance(report, Utterance) else None
+            with self._hands_lock:  # the greeting's reminders are claimed until it ends
+                ids = {r.id for r in self._greet_reminders}
+                self._reminding |= ids
+            return Utterance(self.speak_first(action), action.spoken, on_close=lambda: self._release(ids))
+        return out if isinstance(out, Utterance) else None
 
     @staticmethod
     def _step(name: str, fn: Callable[[], object]):
@@ -652,7 +1049,8 @@ class RiyaCore:
         return action
 
     def _maybe_bid(self) -> None:
-        if self.presence.state == "break" and self.game is None:  # no bids while a game is on
+        """No bids while a game is on, or while a confirmation waits (its mic would take the answer)."""
+        if self.presence.state == "break" and self.game is None and not self._asking():
             bid = self.initiative.on_break("break", self.presence.work_stretch_s(), self.memory.due_threads())
             if bid:
                 self._bid(bid)
@@ -681,6 +1079,7 @@ class RiyaCore:
             self.memory.purge_transcripts()
             self.memory.purge_glances()
             self.memory.resolve_stale_threads()
+            self.hands.purge(now)
 
     def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
@@ -702,11 +1101,153 @@ class RiyaCore:
         action = self.initiative.on_came_back(away_s, self.memory.due_threads())
         if action is not None:
             self._away_s = away_s  # the thread is marked by speak_first, once the greeting was actually said
-            if not self._restricted(self.clock.now()):  # else they stay pending: _report_step's bubble
+            now = self.clock.now()
+            if not self._restricted(now):  # else they stay pending: the report and reminder bubbles
                 self._greet_reports, self._reports = list(self._reports.values()), {}  # the greeting tells them
                 if self._greet_reports:
-                    self._last_report_at = self.clock.now()
+                    self._last_report_at = now
+                with self._hands_lock:  # overdue reminders: the greeting's tail
+                    self._greet_reminders = [r for r in self.hands.due(now) if r.id not in self._reminding]
         return action
+
+    # ---- hands on the tick ----------------------------------------------------------------------------
+    def _confirm_step(self) -> None:
+        """A pending confirmation past its 60 s: confirm_done "expired" and the log (never an utterance)."""
+        with self._hands_lock:
+            p = self.confirms.expire()
+        if p is not None:
+            self._confirm_done(p, "expired")
+
+    def _asking(self) -> bool:
+        """A confirmation waits for its answer: the tick says nothing aloud meanwhile (bubbles only, never the mic),
+        so a yes can only answer the question actually on the table."""
+        with self._hands_lock:
+            return self.confirms.pending is not None
+
+    def _release(self, ids) -> None:
+        """Ends tick's claim on reminder ids (and drops them from a greeting that never started)."""
+        with self._hands_lock:
+            self._reminding -= set(ids)
+            self._greet_reminders = [r for r in self._greet_reminders if r.id not in ids]
+
+    def _fire(self, ids, now: float) -> None:
+        self.hands.mark_fired(ids, now)
+        self._emit_reminders()
+
+    def _reminder_step(self, now: float) -> "Utterance | bool | None":
+        """Due reminders with manners, all merged into one line: spoken (focused, talking, break; at most one line
+        every REMIND_GAP_S), a bubble at once while gaming, restricted (quiet hours, may not start conversations),
+        muted or while a confirmation waits, and while away they wait for the came-back greeting. Never dropped: one
+        is marked fired only once its line went out, and a bubble waits until a body is there to show it. Ids claimed
+        by an Utterance still to be said are skipped."""
+        with self._hands_lock:
+            claimed = set(self._reminding)
+        due = [r for r in self.hands.due(now) if r.id not in claimed]
+        if not due:
+            return None
+        how = delivery(self.presence.state, self._restricted(now))
+        if how == "wait":
+            return None
+        if how == "bubble" or self._asking() or self.settings.mute_voice:
+            if not self.body_present():  # no one to show it to: it stays pending until a body connects
+                return None
+            line, uid = reminder_line(due, now, self.tz), uuid4().hex
+            self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
+            self.emit(SayEnd(utterance_id=uid))
+            self._fire([r.id for r in due], now)
+            self._finish_turn(None, line, consolidate=False)
+            return True
+        if not gap_ok(self._last_remind_at, now):
+            return None
+        ids = {r.id for r in due}
+        with self._hands_lock:
+            self._reminding |= ids
+        return Utterance(self._remind(ids), True, on_close=lambda: self._release(ids))
+
+    def _remind(self, ids: set[int]) -> Iterator[str]:
+        """The spoken reminder line (a template): due() is read again and mark_fired() called here, on this thread
+        under the core lock, so a reminder cancelled meanwhile isn't said and none is said twice."""
+        try:
+            with self._lock:
+                now = self.clock.now()
+                items = [r for r in self.hands.due(now) if r.id in ids]
+                if not items:
+                    return
+                line, uid = reminder_line(items, now, self.tz), uuid4().hex
+                try:
+                    self.emit(Say(utterance_id=uid, text=line, spoken=not self.settings.mute_voice, kind="report"))
+                    self.emit(SayEnd(utterance_id=uid))
+                finally:
+                    self._last_remind_at = now
+                    self._fire([r.id for r in items], now)
+                    self._release(ids)
+                try:
+                    self._finish_turn(None, line, consolidate=False)
+                except Exception:
+                    log.exception("couldn't record the reminder")
+                yield line
+        finally:
+            self._release(ids)
+
+    def _results_step(self, now: float) -> "Utterance | bool | None":
+        """A queued command or button result, one per tick, with the report manners (sharing REPORT_GAP_S with the
+        agent reports): it waits while they're away; while gaming, restricted or a confirmation waits it's the
+        ToolResult.text bubble (no model); otherwise she says it through the local model (the result text is the
+        fallback). A bubble (or a muted line) waits until a body is there to show it."""
+        if self._results.empty():
+            return None
+        how = delivery(self.presence.state, self._restricted(now))
+        if how == "wait" or (self._last_report_at is not None and 0 <= now - self._last_report_at < REPORT_GAP_S):
+            return None
+        bubble = how == "bubble" or self._asking()
+        if (bubble or self.settings.mute_voice) and not self.body_present():
+            return None
+        summary, result = self._results.get_nowait()
+        self._last_report_at = now
+        if bubble:
+            uid = uuid4().hex
+            self.emit(Say(utterance_id=uid, text=result.text, spoken=False, kind="report"))
+            self.emit(SayEnd(utterance_id=uid))
+            self.memory.append_transcript("assistant", result.text, consolidate=False)
+            self.turns = (self.turns + [{"role": "assistant", "content": tool_turn(result.text)}])[-KEEP_TURNS:]
+            self.last_turn_at = now
+            return True
+        started = {"yes": False}
+
+        def say() -> Iterator[str]:
+            started["yes"] = True
+            with self._lock:
+                yield from self._speak("report", user_text=None, query=summary, spoken=True, threads=[],
+                                       consolidate=False, shape="tool", situation=hands_situation(summary, result),
+                                       tail=result.text, tail_if_silent=True)
+
+        def unsaid() -> None:  # closed before it began: back in the queue for a later tick
+            if not started["yes"]:
+                self._results.put((summary, result))
+        return Utterance(say(), True, on_close=unsaid)
+
+    def _park_step(self, now: float) -> "Utterance | bool | None":
+        """A T2 call parked during a game: once they're neither gaming nor away it's asked, unless it waited over 10
+        min (dropped, logged expired). The confirm_request and the question go out here, in the tick under the core
+        lock, so no turn can answer it before it's shown; restricted (quiet hours, may not start conversations) it's
+        only the bubble, with no Utterance (never the mic), else the Utterance just speaks the line. A pending
+        confirmation it replaces gets confirm_done "replaced" and is logged so."""
+        if self.presence.state in ("gaming", "away"):
+            return None
+        with self._hands_lock:
+            old = self.confirms.pending
+            got = self.confirms.unpark()
+        if got is None:
+            return None
+        what, p = got
+        if what == "raised" and old is not None:  # the raised call replaced a pending one: the body and the log know
+            self._confirm_done(old, "replaced")
+        if what == "expired":
+            self._log_action(p.call.tool, TIERS.get(p.call.tool, 3), p.summary, "expired")
+            return None
+        restricted = self._restricted(now) or self.presence.state == "gaming"
+        lines = list(self._raise_confirm(p, not restricted, kind="report"))  # empty unless it's to be spoken
+        return Utterance((line for line in lines), True) if lines else True
 
     # ---- agents -------------------------------------------------------------------------------------
     def _agents_step(self, now: float) -> None:
@@ -744,8 +1285,9 @@ class RiyaCore:
         every 20 s. Never while away (the came-back greeting carries them). An urgent kind goes out now (focused,
         talking, break); a finished one waits for a break or a talking turn. While gaming it's a templated bubble and
         the model is never called. In quiet hours, or when she may not start conversations, it's always the bubble
-        (no voice, no mic): urgent ones now, finished ones only on a talking turn. Returns the spoken Utterance, True
-        when a bubble was shown, else None."""
+        (no voice, no mic): urgent ones now, finished ones only on a talking turn. While a confirmation waits it's the
+        bubble too. A bubble (or a muted line) waits until a body is there to show it. Returns the spoken Utterance,
+        True when a bubble was shown, else None."""
         state = self.presence.state
         if not self._reports or state == "away":
             return None
@@ -756,10 +1298,13 @@ class RiyaCore:
         restricted = self._restricted(now)
         if not (kinds & URGENT or state in (("talking",) if restricted else ("break", "talking"))):
             return None
+        bubble = state == "gaming" or restricted or self._asking()
+        if (bubble or self.settings.mute_voice) and not self.body_present():
+            return None  # no one to show it to: it stays pending until a body connects
         self._reports, self._last_report_at = {}, now
         self.feelings.show(REPORT_FACES[next(k for k in REPORT_FACES if k in kinds)], REPORT_FACE_S)
         self._sync_expression()
-        if state == "gaming" or restricted:
+        if bubble:
             self._report_bubble(events)
             return True
         return Utterance(self._report(events), True)
@@ -767,7 +1312,7 @@ class RiyaCore:
     def _restricted(self, now: float) -> bool:
         """Quiet hours, or she may not start conversations: reports are never spoken, only the bubble."""
         s = self.settings
-        return not s.may_start_conversations or in_quiet_hours(s.quiet_hours, local_time(now))
+        return not s.may_start_conversations or in_quiet_hours(s.quiet_hours, local_time(now, self.tz))
 
     def _report(self, events: list[AgentEvent]) -> Iterator[str]:
         """One spoken line from the local model (40 tokens, 1 sentence). When nothing of it was said (the model
@@ -1112,9 +1657,15 @@ class RiyaCore:
         return SimpleNamespace(arousal=s.arousal, valence=s.valence), s.energy
 
     def hello_messages(self) -> list[BaseModel]:
+        """Everything a newly connected body needs: settings, state, agents, eyes, look, the reminders, the action
+        log and a confirmation still pending."""
+        with self._hands_lock:
+            p = self.confirms.pending
+        pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else [])]
+                *([self._look] if self._look else []), self._reminders_msg(), self._actions_msg(),
+                *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
     # ---- body messages ------------------------------------------------------------------------------
     def handle(self, msg: BaseModel) -> None:
@@ -1133,6 +1684,19 @@ class RiyaCore:
                 self.memory.mark_thread(msg.id, status="resolved")
             elif isinstance(msg, GlanceDelete):
                 self.memory.delete_glance(msg.id)
+            elif isinstance(msg, NoteDelete):
+                self.hands.delete_note(msg.id)
+            elif isinstance(msg, Confirm):
+                self._confirm_button(msg.id, msg.yes)
+                return
+            elif isinstance(msg, ReminderCancel):
+                self.hands.cancel(msg.id, self.clock.now())
+                self._emit_reminders()
+                return
+            elif isinstance(msg, ActionsClear):
+                self.hands.clear_actions()
+                self.emit(self._actions_msg())
+                return
             elif isinstance(msg, SetSettings):
                 self._set_settings(msg.patch)
                 return
@@ -1158,7 +1722,8 @@ class RiyaCore:
                            episodes=[{"id": e.id, "started_at": e.started_at, "ended_at": e.ended_at,
                                       "summary": e.summary} for e in mem.list_episodes()],
                            threads=[{"id": t.id, "text": t.text, "due_at": t.due_at} for t in mem.open_threads()],
-                           glances=[GlanceInfo(**asdict(g)) for g in mem.list_glances()])
+                           glances=[GlanceInfo(**asdict(g)) for g in mem.list_glances()],
+                           notes=[NoteInfo(id=n.id, at=n.at, text=n.text) for n in self.hands.notes()])
 
     def _set_settings(self, patch: dict) -> None:
         old = self.settings
