@@ -413,3 +413,89 @@ def test_rows_carry_the_facts_she_holds_at_that_turn(tmp_path):
                       {"id": "m", "kind": "about_me", "text": "what do you remember about me?"}]}
     rows = run_conversation(conv, FakeModel("local", ["Okay."]), None, str(tmp_path))
     assert rows[1]["facts"] == ["The user is a college student", "The user said: their favourite colour is teal"]
+
+
+# ---- v0.6: the dial check (--dials) ----
+def test_dial_sets_are_the_band_edges():
+    from evaluation.persona_eval import DIAL_SETS
+    from riya.core.learn.dials import BANDS
+    assert DIAL_SETS == {"low": {"teasing": 0.1, "verbosity": 0.15}, "high": {"teasing": 0.8, "verbosity": 0.7}}
+    for name, i in (("low", 0), ("high", 1)):
+        assert DIAL_SETS[name] == {d: BANDS[d][i] for d in ("teasing", "verbosity")}
+
+
+def test_run_conversation_applies_dials(tmp_path):
+    from evaluation.persona_eval import DIAL_SETS, run_conversation
+    from tests.fakes import FakeModel
+    conv = {"id": "c", "facts": [], "turns": [{"id": "a", "kind": "small", "text": "hey"}]}
+    sys_of = lambda m: m.calls[0][0]["content"]  # noqa: E731
+    shaped, plain = FakeModel("local", ["Hmph."]), FakeModel("local", ["Hmph."])
+    (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
+    run_conversation(conv, shaped, None, str(tmp_path / "a"), dials=DIAL_SETS["low"])
+    run_conversation(conv, plain, None, str(tmp_path / "b"))
+    assert "Keep teasing very light." in sys_of(shaped) and "Keep it short." in sys_of(shaped)
+    assert "Keep teasing very light." not in sys_of(plain) and "Keep it short." not in sys_of(plain)
+
+
+def test_dial_check_flags_moves_over_15_points():
+    from evaluation.persona_eval import SHARE_KEYS, dial_check
+    base = {k: 0.5 for k in SHARE_KEYS} | {"generic_share": 0.10, "ai_honesty": None}
+    got = {k: (d, ok) for k, d, ok in dial_check(base, {k: 0.5 for k in SHARE_KEYS} | {"generic_share": 0.30})}
+    assert [k for k, _, _ in dial_check(base, base)] == list(SHARE_KEYS)
+    assert got["generic_share"][1] is False and got["generic_share"][0] == pytest.approx(0.20)
+    assert dial_check(base, base)[0] == ("generic_share", 0.0, True)
+    assert dict((k, (d, ok)) for k, d, ok in dial_check(base, base | {"generic_share": 0.20}))["generic_share"][1] is True
+    assert got["ai_honesty"] == (None, None)  # a missing metric is neither a pass nor a move
+    assert got["marker_share"] == (0.0, True)
+
+
+def test_dial_check_treats_exactly_15_points_as_noise():
+    from evaluation.persona_eval import dial_check
+    ((_, d, ok),) = [r for r in dial_check({"generic_share": 0.25}, {"generic_share": 0.10}) if r[0] == "generic_share"]
+    assert ok is True and d == pytest.approx(-0.15)
+
+
+def _canned(**over):
+    return score(good_transcript(), style_phrases=STYLE) | {"failed_turns": 0, "online": False} | over
+
+
+def test_format_dial_check_gives_a_verdict():
+    from evaluation.persona_eval import format_dial_check
+    base = _canned()
+    calm = format_dial_check({"baseline": base, "low": base, "high": base})
+    assert "Dial check" in calm and "within" in calm and "OUT OF NOISE" not in calm
+    assert "low" in calm and "high" in calm and "small-talk median" in calm and "emoji mean" in calm
+    moved = format_dial_check({"baseline": base, "low": _canned(generic_share=0.6), "high": base})
+    assert "OUT OF NOISE" in moved and "generic_share" in moved
+    assert "n/a" in format_dial_check({"baseline": base, "low": _canned(ai_honesty=None), "high": base})
+
+
+def test_dials_flag_runs_three_sets_and_exits_zero(monkeypatch, tmp_path, capsys):
+    from evaluation import persona_eval
+    from evaluation.persona_eval import DIAL_SETS
+    seen = []
+
+    def fake_run(url, online, repeat, dials=None):
+        seen.append(dials)
+        return [{"probe_id": "c.a", "text": "hey", "reply": "Hmph.", "first_sentence_s": 0.1, "error": None,
+                 "kind": "small"}], _canned(), None
+
+    monkeypatch.setattr(persona_eval, "run", fake_run)
+    monkeypatch.setattr(persona_eval, "OUT_DIR", tmp_path / "out")
+    assert persona_eval.main(["--dials", "--label", "d"]) == 0
+    assert seen == [None, DIAL_SETS["low"], DIAL_SETS["high"]]
+    out = capsys.readouterr().out
+    assert "Dial check" in out and "baseline" in out
+    (f,) = (tmp_path / "out").glob("*_d.json")
+    import json
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert set(data["dials"]) == {"baseline", "low", "high"} and set(data["transcripts"]) == {"baseline", "low", "high"}
+    assert {"label", "at", "url", "repeat"} <= set(data)
+
+
+def test_dials_flag_with_an_unreachable_server_prints_the_no_server_line(capsys, tmp_path, monkeypatch):
+    from evaluation import persona_eval
+    monkeypatch.chdir(tmp_path)
+    assert persona_eval.main(["--dials", "--local-url", "http://127.0.0.1:9"]) == 0
+    assert "No model server answered at http://127.0.0.1:9" in capsys.readouterr().out
+    assert not (tmp_path / "scratch_runs").exists()
