@@ -91,13 +91,15 @@ class HandsDB:
             return cur.rowcount > 0
 
     def find_active(self, text: str) -> Reminder | None:
-        """The soonest active reminder whose text contains `text` (case-insensitive); "timer" also matches the
-        soonest active timer."""
+        """The soonest active reminder whose text contains `text` (case-insensitive). "timer" prefers a real timer
+        (kind 'timer', the newest first) before any text match, so "cancel my timer" never hits "check the timer"."""
         needle = text.strip().casefold()
         if not needle:
             return None
-        return next((r for r in self.active() if needle in r.text.casefold() or (needle == "timer" and r.kind == "timer")),
-                    None)
+        items = self.active()
+        if needle == "timer" and (timers := [r for r in items if r.kind == "timer"]):
+            return max(timers, key=lambda r: (r.created_at, r.id))
+        return next((r for r in items if needle in r.text.casefold()), None)
 
     # ---- notes ----
     def add_note(self, text: str, now: float) -> int:

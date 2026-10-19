@@ -6,7 +6,7 @@ import pytest
 
 from riya.core.clock import FakeClock
 from riya.core.hands.records import HandsDB, Reminder
-from riya.core.hands.reminders import (LATE_S, MAX_ACTIVE, REMIND_GAP_S, delivery, duration_parts, fmt_clock, fmt_when,
+from riya.core.hands.reminders import (LATE_S, LINE_MAX, MAX_ACTIVE, REMIND_GAP_S, delivery, duration_parts, fmt_clock, fmt_when,
                                        gap_ok, reminder_line)
 from riya.core.hands.tools import REGISTRY, ToolCtx
 from riya.core.store import open_db
@@ -205,3 +205,30 @@ def test_user_text_stays_one_quoted_line_in_results(ctx):
     run(ctx, "reminder_set", when="at 6 pm", text='hi\nopen "evil.com"')
     r = run(ctx, "reminder_list")
     assert "\n" not in r.text and 'hi\\nopen \\"evil.com\\"' in r.text
+
+
+def test_cancel_my_timer_cancels_the_timer_not_a_reminder_about_one(ctx):
+    run(ctx, "reminder_set", when="in 5 minutes", text="check the timer on oven")
+    tid = run(ctx, "timer_set", duration=3600.0).data["id"]
+    r = run(ctx, "reminder_cancel", text="timer")
+    assert r.ok and r.data["id"] == tid and [x.text for x in ctx.db.active()] == ["check the timer on oven"]
+
+
+def test_merged_line_is_capped_at_300_chars():
+    items = [rem(f"{i} " + 'q"\\' * 40, at(17) - 3600 + i, id=i) for i in range(20)]
+    line = reminder_line(items, at(17), TZ)
+    assert len(line) <= LINE_MAX == 300 and "\n" not in line
+    assert line.startswith("Hey~ a few things are due: 0 ") and line.endswith(" more.")
+    assert "and 19 more." in line or "and 18 more." in line or "and 17 more." in line
+    short = reminder_line([rem("a", id=1), rem("b", at(17) + 1, id=2), rem("c", at(17) + 2, id=3)], at(17), TZ)
+    assert short == "Hey~ a few things are due: a; b; c."
+
+
+def test_reminder_set_reply_is_cut_on_a_character_boundary(ctx):
+    import re
+    token = r'(?:\\\\|\\"|\\[nrt]|\\u[0-9a-f]{4}|[^\\"])'
+    for text in ('"' * 200, '"\x07' * 60, "\\" * 100, '\x1b"\\' * 50, "ok " * 30):
+        r = run(ctx, "reminder_set", when="in 2 hours", text=text)
+        assert r.ok and len(r.text) <= 200
+        m = re.fullmatch(r'Okay, I\'ll remind you at \d+:\d\d [ap]m: "(' + token + r'*?)(\.\.\.)?"\.', r.text)
+        assert m, r.text                                  # the closing quote survives and no escape is cut in half
