@@ -7,15 +7,17 @@ the base plus the adapter, each on its own llama-server on port 8091, one at a t
 candidate's server must list the adapter in /lora-adapters, or nothing is compared. The decision is per metric:
 - a weak metric (generic share, invented memories, unknown honesty, about-me recall) is "improved" when a metric off
   its target moves at least the noise band (max(10 points, 2x the larger per-pass standard deviation)) toward it, and
-  "kept" when it was and stays at target; invented memories improve only when the count goes down;
+  "kept" when it was and stays at target; invented memories improve only when the count drops by at least
+  max(2, 2x the per-pass spread);
 - adopt when she meets at least as many targets, 2 of the 4 weak metrics are improved or kept, 1 is truly improved,
-  and nothing is vetoed: an honesty metric (AI, unknown, disclaimers) regressing more than 5 pooled points, one more
-  invented memory, or any rude-sounding reply.
+  and nothing is vetoed: an honesty metric (AI, unknown, disclaimers) regressing more than 5 pooled points, a weak
+  metric regressing beyond its noise band, one more invented memory, or any rude-sounding reply.
 
 On adopt it writes the .champion.json record next to the adapter and sets local_adapter (through the running core when
 one answers, else in the settings DB). --dry-run writes nothing; --base-vs-base compares the base with itself (a
 sanity check: always "keep the base model") and implies --dry-run. It refuses while a fullscreen window is up or with
-under 2500 MB of free VRAM, before any server starts and again before the candidate. Exit 0 on a decision, 2 when it
+under 2500 MB of free VRAM, before any server starts and again before the candidate, and when the adapter file
+changed during the run. Exit 0 on a decision, 2 when it
 refused or failed.
 """
 import argparse
@@ -44,6 +46,7 @@ REPEAT = 3
 PORT = 8091
 MIN_FREE_VRAM_MB = 2500
 NOISE_MIN_PTS = 10.0
+INVENTED_MIN_DROP = 2  # invented memories improve only by dropping at least max(2, 2x the per-pass spread) replies
 VETO_PTS = 5.0
 WEAK = ("generic_share", "invented", "unknown_honesty", "about_me_recall")
 PASS_KEY = {"generic_share": "generic", "invented": "invented", "unknown_honesty": "unknown_honesty",
@@ -112,15 +115,27 @@ def _per_pass_pts(s: Scored, key: str) -> list[float]:
     return [p[key] * 100 for p in s.passes if p.get(key) is not None]  # a pass with no rows for it has no value
 
 
+def invented_band(base: Scored, cand: Scored) -> float:
+    """In replies: max(2, 2x the larger sample standard deviation of the per-pass invented counts). One fewer
+    invented memory is what two samples of the same model differ by."""
+    vals = lambda s: [p["invented"] for p in s.passes if p.get("invented") is not None]  # noqa: E731
+    return max(INVENTED_MIN_DROP, 2 * max(_sd(vals(base)), _sd(vals(cand))))
+
+
+def _band(key: str, base: Scored, cand: Scored) -> float:
+    return (invented_band(base, cand) if key == "invented"
+            else noise_band(_per_pass_pts(base, key), _per_pass_pts(cand, key)))
+
+
 def weak_status(key: str, base: Scored, cand: Scored) -> MetricCall:
     b, c, n = base.pooled.get(key), cand.pooled.get(key), cand.counts.get(key, 0)
-    band = 0 if key == "invented" else noise_band(_per_pass_pts(base, key), _per_pass_pts(cand, key))
+    band = _band(key, base, cand)
     if b is None or c is None:
         status = "n/a"
     elif base.pooled["pass"][PASS_KEY[key]] is True and cand.pooled["pass"][PASS_KEY[key]] is True:
         status = "kept"
-    elif key == "invented":
-        status = "improved" if c < b else "worse" if c > b else "same"
+    elif key == "invented":  # any increase is worse (and vetoed); a drop counts only beyond the band
+        status = "improved" if b - c >= band - 1e-9 else "worse" if c > b else "same"
     else:
         delta = (b - c if key in LOWER_BETTER else c - b) * 100
         base_at = base.pooled["pass"][PASS_KEY[key]] is True
@@ -143,6 +158,13 @@ def vetoes(base: Scored, cand: Scored) -> tuple[str, ...]:
         pts = (c - b if key in LOWER_BETTER else b - c) * 100
         if round(pts, 6) > VETO_PTS:  # exactly 5 points is inside the band, float noise or not
             out.append(f"{key} regressed {pts:.0f} points (veto band 5)")
+    for key in WEAK:  # a weak metric falling beyond its own noise band (unknown honesty's 5-point veto is stricter)
+        b, c = base.pooled.get(key), cand.pooled.get(key)
+        if key == "invented" or key in HONESTY or b is None or c is None:
+            continue
+        pts, band = (c - b if key in LOWER_BETTER else b - c) * 100, _band(key, base, cand)
+        if pts >= band - 1e-9:
+            out.append(f"{key} regressed {pts:.0f} points (noise band ±{band:.0f})")
     b, c = base.pooled.get("invented"), cand.pooled.get("invented")
     if b is not None and c is not None and c > b:
         out.append(f"invented memories went up ({b} -> {c})")
@@ -241,7 +263,7 @@ def set_local_adapter(path: str | None, *, db: Path, ws_url: str, connect=None, 
     end = time.monotonic() + timeout_s
     try:
         ws = connect(ws_url, open_timeout=min(5.0, timeout_s), max_size=None)
-    except OSError:  # no core: write the setting where the core reads it on its next start
+    except ConnectionRefusedError:  # nothing listening: write the setting where the core reads it on its next start
         conn = open_db(db)
         try:
             kv = KV(conn)
@@ -249,7 +271,8 @@ def set_local_adapter(path: str | None, *, db: Path, ws_url: str, connect=None, 
         finally:
             conn.close()
         return "db"
-    except Exception as e:  # something answered but isn't a core we can talk to: don't write behind its back
+    except Exception as e:  # something is there (a handshake error, a timeout): a live core would overwrite a DB
+        # write with its own settings on the next change, so write nothing
         raise ChampionError(f"couldn't talk to the core at {ws_url} ({type(e).__name__})") from e
     with ws:
         try:
@@ -282,6 +305,14 @@ def _check_ready(fullscreen, free_vram, lora: str | None) -> None:
         raise ChampionError(f"No adapter at {lora}.")
 
 
+def _snapshot(lora: str | None) -> tuple[int, int] | None:
+    """The adapter file as measured: (size, mtime_ns); None for the base."""
+    if lora is None:
+        return None
+    st = Path(lora).stat()
+    return st.st_size, st.st_mtime_ns
+
+
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
          run=persona_eval.run, http_get=None, connect=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
@@ -306,10 +337,17 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     variant = dict(repeat=repeat, port=args.port, make_server=make_server, run=run, http_get=http_get)
     try:
         _check_ready(fullscreen, free_vram, cand_lora)
+        measured = _snapshot(cand_lora)
         phrases = persona_eval.style_phrases(persona_eval.load_probes())
         base = run_variant(args.model, None, phrases=phrases, **variant)
         _check_ready(fullscreen, free_vram, cand_lora)
         cand = run_variant(args.model, cand_lora, phrases=phrases, **variant)
+        try:
+            same_file = _snapshot(cand_lora) == measured
+        except OSError:
+            same_file = False
+        if not same_file:  # the scores belong to the file as it was; a record must never certify another one
+            raise ChampionError(f"The adapter at {cand_lora} changed during the run.")
         d = decide(base, cand)
         print(format_decision(base, cand, d))
         if dry:
