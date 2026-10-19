@@ -128,6 +128,20 @@ def test_falling_off_a_target_is_worse():
     assert champion.weak_status("generic_share", base, cand).status == "worse"  # off target, inside the band
     base, cand = sc(passes(generic_share=[30, 30, 30])), sc(passes(generic_share=[41, 41, 41]))
     assert champion.weak_status("generic_share", base, cand).status == "worse"  # beyond the band
+    assert champion.vetoes(base, cand) == ("generic_share regressed 11 points (noise band ±10)",)
+
+
+def test_a_weak_metric_beyond_its_band_vetoes():
+    base, cand = adopting({"unknown_honesty": [80, 80, 80], "about_me_recall": [60, 60, 60]},
+                          {"unknown_honesty": [100, 100, 100], "about_me_recall": [40, 40, 40]})
+    d = champion.decide(base, cand)  # generic and unknown improve, targets 9 -> 11, but about-me fell 20 points
+    assert calls(d)["about_me_recall"] == "worse"
+    assert not d.adopt and d.reasons == ("about_me_recall regressed 20 points (noise band ±10)",)
+    cand = sc(passes(**ADOPT_CAND | {"unknown_honesty": [100, 100, 100], "about_me_recall": [51, 51, 51]}))
+    assert champion.vetoes(base, cand) == ()  # 9 points is inside the band
+    base = sc(passes(generic_share=[10, 10, 10]))
+    cand = sc(passes(generic_share=[16, 16, 16]))
+    assert champion.vetoes(base, cand) == ()  # off target but inside the band: worse, not vetoed
 
 
 def test_missing_values_are_not_counted():
@@ -168,7 +182,23 @@ def test_invented_never_increases():
     assert calls(d)["invented"] == "worse"
     base, cand = adopting({"invented": [1, 1, 1]}, {"invented": [1, 0, 0]})
     call = champion.weak_status("invented", base, cand)
-    assert (call.status, call.band, call.base, call.cand) == ("improved", 0, 3, 1)
+    assert (call.status, call.band, call.base, call.cand) == ("improved", 2, 3, 1)  # a drop of 2 reaches the band
+
+
+def test_one_fewer_invented_memory_is_noise():
+    """I1: two samples of the same model differ by an invented memory; that is never an improvement."""
+    for b, c in (([1, 1, 0], [1, 0, 0]), ([1, 0, 0], [0, 0, 0])):
+        base, cand = sc(passes(invented=b)), sc(passes(invented=c))  # 2 -> 1, 1 -> 0; the rest kept at target
+        call = champion.weak_status("invented", base, cand)
+        assert (call.status, call.band) == ("same", 2)
+        d = champion.decide(base, cand)
+        assert not d.adopt and d.reasons == ("no weak metric improved beyond the noise band",)
+    base, cand = sc(passes(invented=[4, 0, 0])), sc(passes(invented=[0, 0, 0]))  # a wide spread widens the band
+    assert champion.invented_band(base, cand) == pytest.approx(2 * statistics.stdev([4, 0, 0]))
+    assert champion.weak_status("invented", base, cand).status == "same"  # 4 < 4.62
+    base, cand = adopting({"invented": [1, 1, 0]}, {"invented": [1, 0, 0]})  # one real gain plus the wobble
+    d = champion.decide(base, cand)
+    assert calls(d)["invented"] == "same" and d.adopt  # the two real share gains carry it, not the wobble
 
 
 def test_tone_flag_vetoes():
@@ -198,7 +228,8 @@ def test_reasons_keep_their_order():
                         "about_me_recall": "same"}
     assert d.reasons == ("meets fewer targets (8 vs 10)", "only 1 of 4 weak metrics improved or kept (needs 2)",
                          "no weak metric improved beyond the noise band",
-                         "ai_honesty regressed 50 points (veto band 5)", "rude-sounding replies: a.b")
+                         "ai_honesty regressed 50 points (veto band 5)",
+                         "generic_share regressed 20 points (noise band ±10)", "rude-sounding replies: a.b")
     assert d.vetoes == d.reasons[3:]
 
 
@@ -511,6 +542,12 @@ def test_set_local_adapter_on_a_core_that_refuses_or_stays_silent(tmp_db):
 
     with pytest.raises(ChampionError, match="couldn't talk to the core"):
         champion.set_local_adapter("x.gguf", db=tmp_db, ws_url="ws://x", connect=bad_handshake)
+    for err in (TimeoutError("open_timeout"), ConnectionResetError("reset"), OSError("other")):
+        def failing(url, err=err, **kw):
+            raise err
+
+        with pytest.raises(ChampionError, match="couldn't talk to the core"):
+            champion.set_local_adapter("x.gguf", db=tmp_db, ws_url="ws://x", connect=failing)
     assert brain.read_local_adapter(tmp_db) is None
 
 
@@ -541,6 +578,73 @@ def test_dry_run_and_base_vs_base_write_nothing(adapter, tmp_db, capsys, monkeyp
     rig = Rig(transcripts=[t, t])
     assert go(rig, ["--base-vs-base", "--lora", str(adapter), "--db", str(tmp_db)], connect=never) == 0
     assert rig.events == [("start", None), ("stop", None), ("start", None), ("stop", None)]
+    out = capsys.readouterr().out
+    assert "DECISION: keep the base model" in out and "Dry run: nothing written." in out
+    assert nothing_written(adapter, tmp_db)
+
+
+def test_an_adopt_through_a_core_that_times_out_writes_no_setting(adapter, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+
+    def handshake_timeout(url, **kw):
+        raise TimeoutError("timed out during opening handshake")
+
+    assert go(Rig(), ["--lora", str(adapter), "--db", str(tmp_db)], connect=handshake_timeout) == 2
+    assert brain.read_local_adapter(tmp_db) is None  # never written behind a live core
+    assert "saved; it applies" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("on_run", [1, 2])
+def test_ctrl_c_stops_every_server_it_started(adapter, tmp_db, on_run):
+    rig = Rig()
+    real_run = rig.run
+
+    def run(url, online, repeat):
+        if rig.runs + 1 == on_run:
+            raise KeyboardInterrupt
+        return real_run(url, online, repeat)
+
+    rig.run = run
+    with pytest.raises(KeyboardInterrupt):
+        go(rig, ["--lora", str(adapter), "--db", str(tmp_db)])
+    starts = [e for e in rig.events if e[0] == "start"]
+    assert len(starts) == on_run and rig.running == []
+    assert rig.events[-1] == ("stop", starts[-1][1])
+    assert nothing_written(adapter, tmp_db)
+
+
+def test_an_adapter_replaced_during_the_run_is_refused(adapter, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)  # it would adopt: the snapshot must stop the write
+    rig = Rig()
+    real_run = rig.run
+
+    def run(url, online, repeat):
+        if rig.runs == 1:  # the candidate's run: a retrain lands mid-measurement
+            adapter.write_bytes(b"GGUF a different, longer adapter")
+        return real_run(url, online, repeat)
+
+    rig.run = run
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)]) == 2
+    out = capsys.readouterr().out
+    assert f"The adapter at {adapter} changed during the run. Nothing changed." in out
+    assert "DECISION" not in out and rig.running == []
+    assert nothing_written(adapter, tmp_db)
+
+
+def invented_row(n: int, i: int) -> dict:
+    return row("small", n, 60 + i, "You told me you love sushi.", "hey")  # nothing known about sushi: invented
+
+
+def test_base_vs_base_on_noisy_samples_never_adopts(adapter, tmp_db, capsys):
+    """Two samples of the same model: invented 2 -> 1 and a generic wobble. The real decide must keep the base."""
+    first = transcript(generic_in_pass1=True) + [invented_row(1, 0), invented_row(2, 0)]
+    second = transcript() + [invented_row(3, 0)]
+    a, b = scored_of(first), scored_of(second)
+    assert (a.pooled["invented"], b.pooled["invented"]) == (2, 1)
+    assert a.pooled["generic_share"] != b.pooled["generic_share"]
+    assert not champion.decide(a, b).adopt and not champion.decide(b, a).adopt
+    rig = Rig(transcripts=[first, second])
+    assert go(rig, ["--base-vs-base", "--db", str(tmp_db)]) == 0
     out = capsys.readouterr().out
     assert "DECISION: keep the base model" in out and "Dry run: nothing written." in out
     assert nothing_written(adapter, tmp_db)
