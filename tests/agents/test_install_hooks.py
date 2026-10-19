@@ -374,3 +374,22 @@ def test_preview_raises_settings_error_and_print_skips_it(env):
     env.settings.write_text("{not json", encoding="utf-8")
     assert run(env, "--print") == 0
     assert "Riya will" not in "\n".join(env.out) and env.settings.read_text(encoding="utf-8") == "{not json"
+
+
+def test_why_names_the_failed_step(env):
+    why = []
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=Runner(rc=1), token_path=env.token,
+                   out=env.out.append, why=why) == 1
+    assert why == [("setx", "setx failed")]
+    why.clear()
+    assert ih.main(["--apply", "--settings", str(env.settings)], runner=env.runner, token_path=env.token,
+                   out=env.out.append, why=why) == 0 and why == []
+    env.settings.write_text("{not json", encoding="utf-8")
+    for flag in ("--apply", "--remove"):
+        why.clear()
+        assert ih.main([flag, "--settings", str(env.settings)], runner=env.runner, token_path=env.token,
+                       out=env.out.append, why=why) == 1
+        assert len(why) == 1 and why[0][0] == "settings" and why[0][1].startswith("settings.json is not valid JSON (")
+        assert str(env.settings.parent) not in why[0][1] and not why[0][1].endswith("nothing was changed")
+    assert set(step for step, _ in why) <= set(ih.FAIL_STEPS)
+    assert run(env, "--apply", runner=Runner(rc=1)) == 1  # the CLI without `why` is unchanged

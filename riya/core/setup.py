@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 from riya.agents import install_hooks
 from riya.core import models
 from riya.core.eyes.see import NOTE_MAX_TOKENS, vision_messages
-from riya.core.health import clip
+from riya.core.health import DETAIL_MAX, clip, clip_left
 from riya.core.models import ONLINE_BASE_URL, VISION_TIMEOUT_S, ChatModel, ModelUnavailable, complete, online_pair
 from riya.core.secrets import InvalidKey, KeyFileError, OnlineKey, mask, scrub
 from riya.core.settings import Settings
@@ -162,13 +162,18 @@ def _daemon(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="riya-setup-watch", daemon=True).start()
 
 
-def _installer_why(lines: list[str]) -> str:
-    """The installer's own reason: its first Error or Warning line, else its last line."""
-    flat = [ln for chunk in lines for ln in str(chunk).splitlines() if ln.strip()]
-    for ln in flat:
-        if ln.startswith(("Error", "Warning")):
-            return ln
-    return flat[-1] if flat else "The installer didn't say what went wrong."
+_SETX_FAILED = f"Hooks added, but setx failed: set {install_hooks.ENV_VAR} yourself to the token in "
+
+
+def _installer_why(why: list[tuple[str, str]], token_path: Path) -> str:
+    """The step the installer itself reported as failed (never a settings warning printed along the way), with the
+    part the user acts on first; a path is clipped from the left so its tail survives."""
+    if not why:
+        return "The installer stopped without saying why; nothing is confirmed."
+    step, reason = why[-1]
+    if step == "setx":
+        return _SETX_FAILED + clip_left(str(token_path), max(DETAIL_MAX - len(_SETX_FAILED), 2))
+    return f"Nothing was changed: {reason}"
 
 
 class Setup:
@@ -181,6 +186,7 @@ class Setup:
         self._running: set[str] = set()
         self._running_lock = threading.Lock()
         self._tests_lock = threading.Lock()
+        self._key_lock = threading.Lock()  # a key save or clear and its model rebuild happen as one
         self._voices: list[str] = []
         self._voices_lock = threading.Lock()
 
@@ -349,29 +355,31 @@ class Setup:
         self.host.swap_online(*online_pair(self._env(), self.deps.make_model))
 
     def _do_online_key_set(self, args) -> Outcome:
-        try:
-            key = self.deps.key.set(args["key"])
-        except InvalidKey as e:
-            return Outcome("online_key_set", False, str(e))
-        except OSError:
-            return Outcome("online_key_set", False, "Couldn't save the key.")
-        self._rebuild()
+        with self._key_lock:  # an overlapping clear can't leave the models on a key the file no longer has
+            try:
+                key = self.deps.key.set(args["key"])
+            except InvalidKey as e:
+                return Outcome("online_key_set", False, str(e))
+            except OSError:
+                return Outcome("online_key_set", False, "Couldn't save the key.")
+            self._rebuild()
         return Outcome("online_key_set", True, f"Saved {mask(key)}. Her online brain uses it now.")
 
     def _do_online_key_clear(self, args) -> Outcome:
         key = self.deps.key
-        source = key.info().source
-        if source != "app":
-            why = {".env": "That key is set via .env; edit that file to remove it.",
-                   "env": "That key comes from the RIYA_ONLINE_API_KEY environment variable."}
-            return Outcome("online_key_clear", False, why.get(source, "There's no saved key."))
-        try:
-            key.clear()
-        except KeyFileError as e:
-            return Outcome("online_key_clear", False, str(e))
-        except OSError:
-            return Outcome("online_key_clear", False, "Couldn't remove the saved key.")
-        self._rebuild()
+        with self._key_lock:  # the check, the removal and the rebuild as one, against an overlapping save
+            source = key.info().source
+            if source != "app":
+                why = {".env": "That key is set via .env; edit that file to remove it.",
+                       "env": "That key comes from the RIYA_ONLINE_API_KEY environment variable."}
+                return Outcome("online_key_clear", False, why.get(source, "There's no saved key."))
+            try:
+                key.clear()
+            except KeyFileError as e:
+                return Outcome("online_key_clear", False, str(e))
+            except OSError:
+                return Outcome("online_key_clear", False, "Couldn't remove the saved key.")
+            self._rebuild()
         detail = "Removed the saved key."
         if key.base:
             if key.base_source == ".env":
@@ -428,23 +436,25 @@ class Setup:
         ok, detail = self.host.probe_mic()
         return Outcome("mic_check", bool(ok), detail)
 
-    def _hooks(self, mode: str) -> tuple[int, list[str]]:
-        lines: list[str] = []
+    def _hooks(self, mode: str) -> tuple[int, list[tuple[str, str]]]:
+        """The installer in-process on deps' paths; (return code, the failed step it reported)."""
+        lines: list[str] = []  # its printed text stays here: the detail comes from `why`, not from parsing lines
+        why: list[tuple[str, str]] = []
         rc = install_hooks.main([mode, "--settings", str(self.deps.claude_settings)], runner=self.deps.runner,
-                                token_path=self.deps.token_path, out=lines.append)
-        return rc, lines
+                                token_path=self.deps.token_path, out=lines.append, why=why)
+        return rc, why
 
     def _do_hooks_connect(self, args) -> Outcome:
-        rc, lines = self._hooks("--apply")
+        rc, why = self._hooks("--apply")
         if rc == 0:
             return Outcome("hooks_connect", True, f"Connected. {_RESTART}")
-        return Outcome("hooks_connect", False, _installer_why(lines))
+        return Outcome("hooks_connect", False, _installer_why(why, self.deps.token_path))
 
     def _do_hooks_disconnect(self, args) -> Outcome:
-        rc, lines = self._hooks("--remove")
+        rc, why = self._hooks("--remove")
         if rc == 0:
             return Outcome("hooks_disconnect", True, f"Disconnected. {_RESTART}")
-        return Outcome("hooks_disconnect", False, _installer_why(lines))
+        return Outcome("hooks_disconnect", False, _installer_why(why, self.deps.token_path))
 
     def _do_autostart(self, args) -> Outcome:
         on = args["on"]

@@ -6,6 +6,7 @@ import base64
 import json
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -299,13 +300,61 @@ def test_hooks_disconnect_on_temp_paths(tmp_path):
     assert len(deps.runner.calls) == 1  # only connect runs setx
 
 
+def deep_token_path(tmp_path):
+    return tmp_path.joinpath(*["a-rather-long-folder-name"] * 6) / "Riya" / "hook_token"
+
+
 def test_hooks_connect_failure_reports_the_installer_line(tmp_path):
     deps = make_deps(tmp_path)
-    deps.runner = Runner(rc=1)
+    deps.runner, deps.token_path = Runner(rc=1), deep_token_path(tmp_path)
     s, host, _, results = make_setup(tmp_path, deps=deps)
     s.answer(s.request("hooks_connect", {}).nonce, True)
-    assert not results[-1].ok and results[-1].detail.startswith("Warning: setx failed.")
-    assert len(results[-1].detail) <= 120 and host.rows[-1] == ("setup", 2, "Connected Claude Code", "failed")
+    detail = results[-1].detail
+    assert not results[-1].ok and detail.startswith("Hooks added, but setx failed: set RIYA_HOOK_TOKEN yourself")
+    assert len(detail) <= 120 and detail.endswith(str(Path("Riya", "hook_token")))  # the path's tail survives the clip
+    assert host.rows[-1] == ("setup", 2, "Connected Claude Code", "failed")
+
+
+def test_a_setx_failure_wins_over_a_settings_warning(tmp_path):
+    """--apply prints the allowedHttpHookUrls warning before setx fails: the detail names setx, the step that failed."""
+    deps = make_deps(tmp_path)
+    deps.token_path = deep_token_path(tmp_path)
+    deps.claude_settings.parent.mkdir(parents=True)
+    deps.claude_settings.write_text(json.dumps({"allowedHttpHookUrls": []}), encoding="utf-8")
+    for runner in (Runner(rc=1), _raising_runner):
+        deps.runner = runner
+        s, host, _, results = make_setup(tmp_path, deps=deps)
+        assert ih.warnings(json.loads(deps.claude_settings.read_text(encoding="utf-8")))  # the warning does occur
+        s.answer(s.request("hooks_connect", {}).nonce, True)
+        detail = results[-1].detail
+        assert not results[-1].ok and "setx failed" in detail and "allowedHttpHookUrls" not in detail
+        assert detail.endswith("hook_token") and len(detail) <= 120
+        assert ih.riya_events(json.loads(deps.claude_settings.read_text(encoding="utf-8")))  # the hooks were written
+
+
+def _raising_runner(cmd, **kw):
+    raise OSError("setx.exe not found")
+
+
+def test_hooks_failures_name_the_failing_step_without_full_paths(tmp_path):
+    deps = make_deps(tmp_path)
+    s, host, _, results = make_setup(tmp_path, deps=deps)
+    deps.claude_settings.parent.mkdir(parents=True)
+    deps.claude_settings.write_text(json.dumps({"hooks": {"Stop": [], "SessionEnd": "junk"}}), encoding="utf-8")
+    assert s.perform("hooks_connect", {}) == Outcome(
+        "hooks_connect", False, "Nothing was changed: 'hooks.SessionEnd' is not a list")
+    deps.claude_settings.write_text("{not json", encoding="utf-8")
+    out = s.perform("hooks_disconnect", {})
+    assert not out.ok and out.detail.startswith("Nothing was changed: settings.json is not valid JSON (")
+    assert str(deps.claude_settings.parent) not in out.detail
+    assert deps.runner.calls == [] and deps.claude_settings.read_text(encoding="utf-8") == "{not json"
+
+    # the write step fails (the token path is a folder): "write", with the OS reason
+    deps.claude_settings.unlink()
+    deps.token_path.mkdir(parents=True)
+    out = s.perform("hooks_connect", {})
+    assert not out.ok and out.detail.startswith("Nothing was changed: couldn't write the settings (")
+    assert deps.runner.calls == [] and not deps.claude_settings.exists()
 
 
 def test_sandboxed_deps_never_run_anything(tmp_path):
@@ -638,3 +687,42 @@ def test_perform_outside_the_allow_list_runs_nothing(tmp_path):
     s, host, deps, _ = make_setup(tmp_path)
     assert s.perform("rm_rf", {}) == Outcome("rm_rf", False, "unknown setup action")
     assert s.perform("_rebuild", {}).ok is False and host.swaps == []
+
+
+@pytest.mark.parametrize("first", ["set", "clear"])
+def test_overlapping_key_set_and_clear_never_leave_a_removed_key_live(tmp_path, first):
+    """One action pauses inside its model rebuild while the other runs: the models must end on the file's key."""
+    other_key = "OTHER-k3y-abcdefghij"
+    deps = make_deps(tmp_path)
+    if first == "clear":
+        deps.key.set(other_key)
+    s, host, _, _ = make_setup(tmp_path, deps=deps)
+    barrier, release = threading.Barrier(2, timeout=5), threading.Event()
+    real = deps.make_model
+    paused = []
+
+    def make_model(env, name, timeout_s):
+        if not paused:  # the first action's first build: meet the test, then wait to be let go
+            paused.append(name)
+            barrier.wait()
+            release.wait(5)
+        return real(env, name, timeout_s)
+
+    deps.make_model = make_model
+    act_first = (lambda: s.perform("online_key_set", {"key": CANARY})) if first == "set" else (
+        lambda: s.perform("online_key_clear", {}))
+    act_second = (lambda: s.perform("online_key_clear", {})) if first == "set" else (
+        lambda: s.perform("online_key_set", {"key": CANARY}))
+    a = threading.Thread(target=act_first, daemon=True)
+    a.start()
+    barrier.wait()  # the first action is now inside its rebuild
+    b = threading.Thread(target=act_second, daemon=True)
+    b.start()
+    b.join(0.5)  # without the key lock the second action finishes here, inside the first one's window
+    release.set()
+    a.join(5)
+    b.join(5)
+    assert not a.is_alive() and not b.is_alive()
+    saved = deps.key.current()[0]
+    final = host.swaps[-1]
+    assert [None if m is None else m.api_key for m in final] == [saved, saved]
