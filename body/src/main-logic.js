@@ -143,9 +143,10 @@ function welcomeWebPreferences(preload) {
 }
 
 /** The events after which Riya is going away, each setting state.quitting: the app's "before-quit", and a window's
- *  "query-session-end" / "session-end" (a Windows shutdown or logoff, where Electron emits no before-quit). So a
- *  welcome closed by the session ending sends no onboarding_done, as when quitting. */
-const QUIT_EVENTS = { app: ["before-quit"], window: ["query-session-end", "session-end"] };
+ *  "session-end" (a Windows shutdown or logoff really happening, where Electron emits no before-quit). So a welcome
+ *  closed by the session ending sends no onboarding_done, as when quitting. Never "query-session-end": that logoff can
+ *  still be cancelled, and quitting would then stay true and stop the reconnects and respawns for the session. */
+const QUIT_EVENTS = { app: ["before-quit"], window: ["session-end"] };
 function isQuitEvent(source, name) {
   return Object.prototype.hasOwnProperty.call(QUIT_EVENTS, source) && QUIT_EVENTS[source].includes(name);
 }

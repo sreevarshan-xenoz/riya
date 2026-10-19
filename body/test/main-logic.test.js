@@ -377,18 +377,31 @@ test("the welcome window's own webPreferences are isolated, sandboxed and withou
 });
 
 test("a Windows shutdown or logoff counts as quitting, so a mid-welcome user is not marked onboarded", () => {
-  assert.deepEqual(M.QUIT_EVENTS, { app: ["before-quit"], window: ["query-session-end", "session-end"] });
-  for (const [source, name] of [["app", "before-quit"], ["window", "query-session-end"], ["window", "session-end"]]) {
+  assert.deepEqual(M.QUIT_EVENTS, { app: ["before-quit"], window: ["session-end"] });
+  for (const [source, name] of [["app", "before-quit"], ["window", "session-end"]]) {
     assert.equal(M.isQuitEvent(source, name), true, `${source} ${name}`);
   }
-  for (const [source, name] of [["window", "close"], ["window", "closed"], ["app", "session-end"], ["x", "before-quit"]]) {
+  for (const [source, name] of [["window", "query-session-end"], ["window", "close"], ["window", "closed"],
+    ["app", "session-end"], ["x", "before-quit"]]) {
     assert.equal(M.isQuitEvent(source, name), false, `${source} ${name}`);
   }
   // a welcome closed by the session ending sends nothing, like quitting
   assert.equal(M.welcomeClosedMessage({ quitting: true, onboarded: false }), null);
   const main = readBody("main.js");
+  assert.doesNotMatch(main, /query-session-end/, "only the real session end counts");
   const welcome = fnSlice(main, "openWelcome");
   assert.match(welcome, /for \(const event of QUIT_EVENTS\.window\) win\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
   assert.ok(welcome.indexOf("QUIT_EVENTS.window") < welcome.indexOf('win.on("closed"'), "wired before the closed handler");
   assert.match(main, /for \(const event of QUIT_EVENTS\.app\) app\.on\(event, \(\) => \{ state\.quitting = true; \}\);/);
+});
+
+test("a logoff query that is then cancelled leaves quitting false: Riya keeps reconnecting and respawning", () => {
+  const state = { quitting: false };
+  const fire = (source, name) => { if (M.isQuitEvent(source, name)) state.quitting = true; };
+  fire("window", "query-session-end"); // Windows asks; another app blocks it, or the user cancels
+  assert.equal(state.quitting, false);
+  assert.notEqual(M.welcomeClosedMessage({ quitting: state.quitting, onboarded: false }), null, "closing the welcome still counts as skipping");
+  fire("window", "session-end"); // the session really ends
+  assert.equal(state.quitting, true);
+  assert.equal(M.welcomeClosedMessage({ quitting: state.quitting, onboarded: false }), null);
 });
