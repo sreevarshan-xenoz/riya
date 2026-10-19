@@ -2,27 +2,36 @@
 through the engine's own builders (build_messages, the local persona and style examples, a Memory on an in-memory
 database holding the scenario's fake facts, a seeded Feelings, the dials and notes, and the engine's situations), plus
 the row's checkable expect rules. Any prompt change in the engine flows into the data, and a golden test holds every
-kind but tool rows equal to what RiyaCore sends. Pure, CPU-only and synthetic: the only database is ":memory:".
+kind but tool rows equal to what RiyaCore sends. Every row also carries the prompt fingerprint ("fp") it was built
+under, so rows built before a prompt change can be told apart from fresh ones. Pure, CPU-only and synthetic: the only
+database is ":memory:".
+
+Engine paths not modelled (each scenario is a plain case): the twin's short greeting (cap 1), a greeting carrying
+agent reports or due reminders, and a bid offering a game.
 
     python -m riya.train.build_sft [--seed 0] [--n 3000] [--kinds small,bid] [--out PATH]
 
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.1, §4 and §4.1.2."""
 import argparse
+import hashlib
+import json
 import random
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+from riya.agents.hub import AgentEvent
 from riya.core import games
 from riya.core.clock import FakeClock
 from riya.core.consolidate import remember_intent, third_person
 from riya.core.embed import HashEmbedder
 from riya.core.engine import REPORT_FACE_S, REPORT_FACES, RiyaCore
 from riya.core.feelings import Feelings, FeelingState
-from riya.core.learn.dials import clamp
+from riya.core.hands.types import ToolResult
+from riya.core.learn.dials import BANDS, DIALS, clamp
 from riya.core.learn.feedback import detect_feedback
-from riya.core.memory import Memory
+from riya.core.memory import Fact, Memory, Retrieved, Thread
 from riya.core.persona import persona_prompt, style_examples
 from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_SITUATION, bid_situation,
                               build_messages, greeting_situation, hands_situation, likes_block, remember_situation,
@@ -38,12 +47,44 @@ REPLY_KINDS = frozenset({"small", "about_me", "unknown", "identity", "remember",
 # the sentence cap the engine enforces where it isn't the turn's own cap: a lead (remember) leaves one, a bid and a game
 # turn are one line, and a tool line and a report have their fixed caps
 FIXED_SENTENCES = {"remember": 1, "bid": 1, "game": 1, "tool": CAPS["tool"], "report": CAPS["report"]}
+FP_NOW = 1_800_000_000.0
+# the fingerprint's canary turns: (turn kind, user text), so every reply-rules line (and the AI clause) is rendered
+FP_TURNS = ((None, None), ("small", "canary small talk"), ("small", "are you an ai?"), ("explain", "explain canaries"),
+            ("about_me", "what do you know about me?"), ("greeting", None), ("game", "canary"), ("report", None))
 
 
-def request_for(s: Scenario) -> dict:
-    """The scenario as a request: {id, kind, messages, facts, expect}. messages are what RiyaCore would send for the
+def prompt_fingerprint() -> str:
+    """The sha256 (hex) of build_messages' output for a fixed canary input: the local persona with both extremes of the
+    style line, the style examples, a feelings tag, a memory block with a fact and a follow-up, the honesty line, a
+    likes block, every situation builder and every reply-rules line. A change to any of them changes it."""
+    fact = Fact(1, "The user's canary is called Pim", None, "user_said", 0.9, FP_NOW, None, "active", None)
+    thread = Thread(1, "how the canary's recital went", FP_NOW, "open", None)
+    retrieved = Retrieved([fact], [], [thread])
+    situation = " ".join([
+        IDENTITY_SITUATION, FEELINGS_SITUATION, FEEDBACK_SITUATION,
+        remember_situation("The user said: their canary is called Pim"), greeting_situation(7200, 0.5, thread),
+        bid_situation("worked 3.0 h straight", thread),
+        report_situation([AgentEvent("finished", "agent-0", "tests-1", "all 4 tests passed")]),
+        hands_situation("work out 2 plus 2", ToolResult(True, "= 4 (2 plus 2)"))])
+    persona, examples = persona_prompt("local"), style_examples()
+    calls = []
+    for i, (turn, text) in enumerate(FP_TURNS):
+        dials = {d: BANDS[d][i % 2] for d in DIALS}  # the lowest, then the highest: every style sentence
+        line = style_line(dials)
+        calls.append(build_messages(
+            persona=persona + (f"\n\n{line}" if line else ""), examples=examples,
+            feelings_tag=Feelings(FakeClock(FP_NOW), dials).prompt_tag(), retrieved=retrieved,
+            turns=[{"role": "user", "content": "canary"}, {"role": "assistant", "content": "Canary~"}],
+            user_text=text, situation=situation, now=FP_NOW, kind=turn, cap=2 if turn == "small" else None,
+            likes=likes_block(["They like it when I sing like a canary."])))
+    blob = json.dumps(calls, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def request_for(s: Scenario, fp: str | None = None) -> dict:
+    """The scenario as a request: {id, kind, messages, facts, expect, fp}. messages are what RiyaCore would send for the
     same inputs, composed step for step as the engine does; facts are the memory block's (the facts, and a greeting's
-    or bid's follow-up thread)."""
+    or bid's follow-up thread). fp: the prompt fingerprint to stamp (computed when not given)."""
     t, kind = s.user_text, s.kind
     # 1. the dials and notes; feedback is read before the reply, as RiyaCore._feedback does
     dials, notes, feedback = dict(s.dials), list(s.notes), False
@@ -127,7 +168,8 @@ def request_for(s: Scenario) -> dict:
               "max_emoji": emoji_limit(dials["emoji"])}
     # a follow-up thread sits in the memory block too ("- Follow up: ..."), so mentioning it isn't invented
     facts = fact_texts + [th.text for th in retrieved.threads]
-    return {"id": s.id, "kind": kind, "messages": messages, "facts": facts, "expect": expect}
+    return {"id": s.id, "kind": kind, "messages": messages, "facts": facts, "expect": expect,
+            "fp": prompt_fingerprint() if fp is None else fp}
 
 
 def messages_for(s: Scenario) -> list[dict]:
@@ -149,7 +191,8 @@ def holdout_violations(rows: list[dict], probes: list[str], facts: list[str]) ->
 
 def build(seed: int = DEFAULT_SEED, n: int = DEFAULT_N, kinds: Sequence[str] = KINDS) -> list[dict]:
     """Every request for the seed, n and kinds, each validated; ValueError when any overlaps a persona probe."""
-    rows = [request_for(s) for s in scenarios(seed, n, kinds)]
+    fp = prompt_fingerprint()
+    rows = [request_for(s, fp) for s in scenarios(seed, n, kinds)]
     for row in rows:
         validate_request(row)
     if ids := holdout_violations(rows, probe_texts(), probe_facts()):
