@@ -6,6 +6,7 @@ until their task fills them in. `Settings` is named only under TYPE_CHECKING: se
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
@@ -70,8 +71,19 @@ def _calc(args: dict, ctx: ToolCtx) -> ToolResult:
     return ToolResult(True, f"= {format_number(v)} ({args['expr']})", {"value": v})  # the answer survives the cut
 
 
+_MARK = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _ctl(s) -> str:
+    """s with control, format (bidi) and line/paragraph separator characters shown as visible markers."""
+    return "".join((_MARK.get(ch) or f"\\u{ord(ch):04x}") if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch
+                   for ch in str(s))
+
+
 def _q(s: str, n: int = 60) -> str:
-    return '"' + (s if len(s) <= n else s[:n] + "...") + '"'
+    """A one-line quoted value: cut to n chars, backslashes and quotes escaped, control characters made visible."""
+    s = s if len(s) <= n else s[:n] + "..."
+    return '"' + _ctl(s.replace("\\", "\\\\").replace('"', '\\"')) + '"'
 
 
 def _P(type, **kw) -> ParamSpec:
@@ -105,12 +117,12 @@ REGISTRY: dict[str, Tool] = dict([
     _tool("weather", {"place": _P("str", required=False, max_len=80)},
           lambda a: f"check the weather in {a['place']}" if "place" in a else "check the weather"),
     _tool("lookup", {"query": _P("str")}, lambda a: f"look up {_q(a['query'])}"),
-    _tool("open_url", {"url": _P("str", max_len=2000)}, lambda a: f"open {a['url']}"),
+    _tool("open_url", {"url": _P("str", max_len=2000)}, lambda a: f"open {_ctl(a['url'])}"),
     _tool("open_app", _NAME, lambda a: f"open {_q(a['name'])}"),
     _tool("media", _action("play_pause", "next", "previous"), lambda a: f"media: {a['action'].replace('_', '/')}"),
     _tool("volume", _action("up", "down", "mute"), lambda a: f"volume {a['action']}"),
     _tool("clipboard_copy", {"text": _P("str", max_len=4000)}, lambda a: f"copy {_q(a['text'])} to the clipboard"),
-    _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({' '.join(a['argv'])})"),
+    _tool("run_command", _NAME, lambda a: f"run {_q(a['name'])} ({_ctl(' '.join(map(str, a['argv'])))})"),
     _tool("write_file", {"filename": _P("str"), "text": _P("str", max_len=WRITE_MAX_CHARS)},
           lambda a: f"write {_q(a['filename'])} ({len(a['text'].encode('utf-8', 'replace'))} bytes): {_q(a['text'], 80)}"),
 ])
