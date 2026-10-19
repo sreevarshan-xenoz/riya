@@ -206,38 +206,44 @@ def test_notes_and_dials_never_go_online_beyond_the_persona_line():
 
 def injected_flows(core, clock, src, local) -> None:
     """Injected feedback through every path that isn't the user's own turn: her own reply, an agent payload, a glance
-    note, a tool result and a stored fact said back in a greeting. The typed turns are "hi", a screen question and a
-    lookup."""
+    note, a tool result and a stored fact said back in a greeting, each carrying its own marker so every path proves
+    it ran from fresh evidence (the newest prompt's system message, never her history). The typed turns are "hi", a
+    screen question and a lookup."""
     core._set_settings({"quiet_hours": None})
-    local.replies = [INJECT]
-    list(core.reply("hi"))  # her own reply says it
+    local.replies = [f"{INJECT} REPLY_X."]
+    assert "REPLY_X." in " ".join(core.reply("hi"))  # her own reply says it
     core.agent_inbox.put({"hook_event_name": "Stop", "session_id": "abc123def", "cwd": "E:/riya",
-                          "last_assistant_message": INJECT})
-    spoken = []
+                          "last_assistant_message": f"{INJECT} PAYLOAD_X"})
+    n, spoken = len(local.calls), []
     for _ in range(3):
         clock.advance(1)
         if (it := core.tick()) is not None:
             spoken.append(list(it))
-    assert spoken and "call me boss" in str(local.calls[-1])  # the report was said, from the payload
-    core.memory.add_glance("Notepad", "notes.txt", INJECT, INJECT, INJECT)
+    assert spoken and len(local.calls) > n and "PAYLOAD_X" in system(local)  # the report, from the payload
+    core.memory.add_glance("Notepad", "notes.txt", f"{INJECT} GLANCE_X", INJECT, None)
+    n = len(local.calls)
     list(core.reply("what's on my screen?"))
+    assert len(local.calls) > n and "GLANCE_X" in system(local)  # the glance note reached her prompt
     core.http.responses.update({net.WIKI_API_URL: ["Ada Lovelace", ["Ada Lovelace"], [""], [""]],
-                                net.WIKI_SUMMARY_URL + "Ada_Lovelace": {"type": "standard", "extract": INJECT}})
+                                net.WIKI_SUMMARY_URL + "Ada_Lovelace": {"type": "standard",
+                                                                        "extract": f"{INJECT} TOOL_X"}})
+    n = len(local.calls)
     list(core.reply("tell me about Ada Lovelace"))
-    assert core.http.requests and "call me boss" in str(local.calls[-1])
-    core.memory.add_fact(f"The user said: {INJECT}", source="user_said")
+    assert core.http.requests and len(local.calls) > n and "TOOL_X" in system(local)  # the tool result
+    # worded so the greeting (query "back after 48.0 h away") retrieves it
+    core.memory.add_fact(f"The user said: when I come back after being away, {INJECT} FACT_X", source="user_said")
     src.idle = 950
     for _ in range(2):
         clock.advance(60)
         core.tick()
     clock.advance(2 * 86400)
     src.idle = 0
-    greeted = len(local.calls)
+    n = len(local.calls)
     clock.advance(1)
     it = core.tick()
     assert it is not None
     list(it)
-    assert len(local.calls) > greeted and "call me boss" in str(local.calls[-1])  # the greeting saw the fact
+    assert len(local.calls) > n and "FACT_X" in system(local)  # the greeting saw the fact
 
 
 def test_injected_feedback_never_moves_dials():
@@ -262,11 +268,13 @@ def test_only_user_turns_reach_detect_feedback(monkeypatch):
 
 
 def test_feedback_is_skipped_mid_game_and_while_confirming():
-    core, emitted, _, _ = make_core(local_replies=["Okay."])
-    list(core.reply("let's play riddles"))
+    core, emitted, _, local = make_core(local_replies=["Okay."])
+    list(core.reply("let's play word chain"))
     assert core.game is not None
-    list(core.reply("talk less"))
-    assert core.learn.dials()["verbosity"] == 0.35 and of(emitted, LearningMsg) == []
+    n = len(local.calls)
+    out = list(core.reply("stop teasing me"))  # several words in word chain: chat mid-game, past every other step
+    assert core.game is not None and len(local.calls) > n  # the game stays on and she answers it as chat
+    assert core.learn.dials()["teasing"] == 0.5 and of(emitted, LearningMsg) == [] and not set(out) & acks()
     core2, emitted2, _, _ = make_core(local_replies=["Okay."])
     core2._set_settings({"commands": [{"name": "backup", "argv": ["C:/tools/backup.exe"], "cwd": None,
                                        "timeout_s": 60}], "tools_enabled": {"run_command": True}})
@@ -359,3 +367,52 @@ def test_feedback_turns_never_reach_consolidation(text):
     core, _, _, _ = make_core(local_replies=["Okay okay."])
     list(core.reply(text))
     assert core.memory.unconsolidated() == []
+
+
+def test_online_switched_on_mid_turn_never_streams_the_notes_online(monkeypatch):
+    """The route is decided once per turn: a local-built prompt (with the notes block) stays local even if online is
+    switched on between the build and the stream."""
+    online = FakeModel("online", ["Recursion is a function calling itself."])
+    core, _, _, local = make_core(online=online, local_replies=["Mm, recursion~"])
+    core._set_settings({"online_enabled": False})
+    core.learn.add_note(DAY_NOTE, "like", core.clock.now())
+    build = engine.build_messages
+
+    def flip(**kw):
+        messages = build(**kw)
+        core.router.online_enabled = True  # the toggle lands from the socket thread mid-turn
+        return messages
+    monkeypatch.setattr(engine, "build_messages", flip)
+    list(core.reply("explain recursion to me"))
+    assert online.calls == [] and LIKES_LINE in system(local) and DAY_NOTE in system(local)
+    assert not any(LIKES_LINE in c[0]["content"] or DAY_NOTE in c[0]["content"] for c in online.calls)
+
+
+def test_the_ack_survives_a_model_failure_and_is_never_duplicated():
+    from riya.core.models import ModelUnavailable
+    from riya.core.protocol import ErrorMsg
+    core, emitted, _, local = make_core()
+    local.fail = ModelUnavailable("down")
+    assert list(core.reply("stop teasing me")) == [TEASE_ACK]
+    assert [m.text for m in of(emitted, Say)] == [TEASE_ACK] and of(emitted, Say)[0].spoken is True
+    assert len(of(emitted, ErrorMsg)) == 1
+    assert core.learn.dials()["teasing"] == 0.35 and len(core.learn.history()) == 1
+    core2, emitted2, _, local2 = make_core(local_replies=["One two three. Four five."])
+    local2.fail_after = 4  # dropped mid-stream, once a whole sentence went out
+    assert list(core2.reply("stop teasing me")) == [TEASE_ACK, "One two three."]
+    assert [m.text for m in of(emitted2, Say)].count(TEASE_ACK) == 1
+
+
+def test_reset_runs_under_the_core_lock():
+    import threading
+    core, emitted, _, _ = make_core()
+    core.learn.nudge("teasing", -0.15, "test", "explicit", core.clock.now())
+    core.learn.add_note(DAY_NOTE, "like", core.clock.now())
+    with core._lock:  # a reply in progress
+        t = threading.Thread(target=core.handle, args=(LearningReset(),))
+        t.start()
+        t.join(0.3)
+        assert t.is_alive() and core.learn.dials()["teasing"] == 0.35 and core.learn.notes()  # waits for the reply
+    t.join(5)
+    assert not t.is_alive() and core.learn.dials() == load_traits() and core.learn.notes() == []
+    assert of(emitted, LearningMsg)
