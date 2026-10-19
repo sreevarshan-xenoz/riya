@@ -5,12 +5,15 @@ import logging
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Iterator, Protocol
+from typing import Callable, Iterator, Protocol
 
 ONLINE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 ONLINE_MODEL = "gemini-flash-latest"
 READ_TIMEOUT_S = 120.0
+ONLINE_TIMEOUT_S = 8.0  # chat's first-token timeout
+VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 MAX_REPLY_BYTES = 1 << 20  # a tool-call answer is tiny; never read more than this
 LOCAL_STOP = ("\nUser:",)  # she must never write the user's next turn (the style examples' format)
 LOCAL_TEMPERATURE = 0.6  # her voice on the small local model (tuned live in v0.2); online keeps the 0.8 default
@@ -188,3 +191,14 @@ def load_online_from_env(env=os.environ, name: str = "online", **kw) -> OpenAICo
         return None
     return OpenAICompatModel(name, env.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL, key,
                              env.get("RIYA_ONLINE_MODEL") or ONLINE_MODEL, **kw)
+
+
+def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> OpenAICompatModel | None:
+    return load_online_from_env(env, name=name, first_token_timeout_s=timeout_s)
+
+
+def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, float], ChatModel | None] = online_model
+                ) -> tuple[ChatModel | None, ChatModel | None]:
+    """The online chat model and her eyes' own vision instance (a longer first-token timeout), the one place both are
+    built, at start and when the key changes."""
+    return make(env, "online", ONLINE_TIMEOUT_S), make(env, "vision", VISION_TIMEOUT_S)
