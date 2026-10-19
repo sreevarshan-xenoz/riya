@@ -17,6 +17,14 @@ from riya.core.protocol import ExpressionMsg
 from tests.fakes import make_core
 
 
+@pytest.fixture(autouse=True)
+def no_leftover_redaction():
+    """runner.main installs the key redaction for the whole process: take it off again after each test."""
+    from riya.core import secrets as keystore
+    yield
+    keystore.uninstall_redaction()
+
+
 def client(replies=("Hi there.",), speak=None, delay=0.0):
     def factory(emit):
         core, _, _, local = make_core(local_replies=list(replies))
@@ -146,7 +154,7 @@ def test_main_help_lists_options(capsys):
     except SystemExit as e:
         assert e.code == 0
     out = capsys.readouterr().out
-    for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory"):
+    for flag in ("--db", "--local-url", "--port", "--no-voice", "--hash-embed", "--legacy-memory", "--secrets"):
         assert flag in out
 
 
@@ -440,3 +448,63 @@ def test_a_typed_turn_while_she_streams_is_measured_but_still_queued():
     core = cores[0]
     assert len(calls) == 2 and [(e.kind, e.outcome) for e in core.learn.events()] == [("barge", "barged")]
     assert [t["content"] for t in core.turns if t["role"] == "user"] == ["tell me something", "wait"]
+
+
+# --- v0.7: the online key at start, the voice wiring, a bad setup_request over the socket ---------------------------
+
+CANARY = "CANARY-k3y-0123456789abcdef"
+
+
+def test_a_bad_setup_request_over_the_socket_never_echoes_the_key():
+    raw = '{"type":"setup_request","action":"online_key_set","args":{"key":["' + CANARY + '"]}}'
+    with client() as c, c.websocket_connect("/ws") as ws:
+        receive_until(ws, "actions")  # the end of hello
+        ws.send_text(raw)
+        m = ws.receive_json()
+        assert m == {"type": "error", "message": "invalid setup_request"} and CANARY not in str(m)
+
+
+def test_connect_voice_wires_the_sampler_and_the_mic_probe(monkeypatch):
+    import riya.voice
+    from riya.core.protocol import VoicesMsg
+    from tests.fakes import wait_for
+    called = []
+
+    def probe():
+        called.append("probe_mic")
+        raise AssertionError("connect_voice must not open the mic")
+
+    class Loop:
+        def __init__(self):
+            self.gate = ListenGate(FakeClock())
+
+        def sample(self, voice, text):
+            called.append("sample")
+            raise AssertionError("connect_voice must not speak")
+
+    monkeypatch.setattr(riya.voice, "probe_mic", probe)
+    loop = Loop()
+    core, emitted, *_ = make_core()
+    assert runner.connect_voice(core, loop) is loop
+    assert core.voice_sampler == loop.sample and core.mic_prober is probe
+    assert core.on_spoke_first == loop.gate.open
+    assert wait_for(emitted, VoicesMsg).items == ["alba"]   # the sandboxed voices, read on the riya-voices thread
+    assert called == []
+
+
+def test_build_core_reads_secrets_after_dotenv(tmp_path, monkeypatch):
+    from riya.core.secrets import KEY_VAR
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "make_idle_source", FakeIdleSource)
+    (tmp_path / ".env").write_text(f"{KEY_VAR}=DOTENV-1234567890\n", encoding="utf-8")
+    secrets = tmp_path / "app" / "secrets.env"
+    secrets.parent.mkdir()
+    secrets.write_text(f"{KEY_VAR}=APP-1234567890\n", encoding="utf-8")
+    monkeypatch.setenv(KEY_VAR, "x")  # recorded, so teardown removes what load_dotenv exports
+    monkeypatch.delenv(KEY_VAR)
+    core = runner.build_core(core_args(tmp_path, hash_embed=True, secrets=str(secrets)), lambda m: None)
+    assert core.online.api_key == "APP-1234567890" and core.vision.api_key == "APP-1234567890"
+    assert core.online.first_token_timeout_s == 8 and core.vision.first_token_timeout_s == 20
+    key = core.setup.deps.key
+    assert key.info().source == "app" and (key.base, key.base_source) == ("DOTENV-1234567890", ".env")
+    assert key.path == secrets and core.local_url == "http://127.0.0.1:1"

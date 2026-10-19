@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _V1 = """
 create table facts(id integer primary key, text text not null, key text, source text not null
@@ -53,7 +53,20 @@ create table events(id integer primary key, at real not null, kind text not null
 create index events_at on events(at);
 """
 
-_MIGRATIONS = [_V1, _V2, _V3, _V4]
+# v0.7: no new tables; the step marks an existing user as onboarded (see _ONBOARDED)
+_V5 = ""
+
+_MIGRATIONS = [_V1, _V2, _V3, _V4, _V5]
+
+# Appended to the v5 step only for a database that existed before this open (user_version >= 1 before migrating), so
+# returning users skip the welcome. It runs once, in the migration: a new user who quits mid-welcome still gets it
+# on the next open.
+_ONBOARDED = """
+update kv set value = json_set(value, '$.onboarded', json('true'))
+  where key = 'settings' and json_valid(value) and json_type(value) = 'object';
+insert or ignore into kv(key, value) values('settings', '{"onboarded": true}');
+"""
+_ONBOARDED_STEP = 4  # the index in _MIGRATIONS of the step to v5
 
 
 def _backup(conn: sqlite3.Connection, path: Path) -> None:
@@ -95,8 +108,9 @@ def open_db(path: str | Path) -> sqlite3.Connection:
             conn.close()
             raise
     for i in range(version, len(_MIGRATIONS)):
+        script = _MIGRATIONS[i] + (_ONBOARDED if i == _ONBOARDED_STEP and version >= 1 else "")
         try:
-            conn.executescript(f"begin; {_MIGRATIONS[i]} pragma user_version={i + 1}; commit;")
+            conn.executescript(f"begin; {script} pragma user_version={i + 1}; commit;")
         except sqlite3.Error:
             conn.rollback()
             conn.close()

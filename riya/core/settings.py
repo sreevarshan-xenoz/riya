@@ -55,6 +55,7 @@ class Settings:
     weather_place: str | None = None
     hands_online: bool = True
     learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
+    onboarded: bool = False  # the welcome was finished or skipped (true for users from before v0.7)
 
 
 def load_settings(kv: KV) -> Settings:

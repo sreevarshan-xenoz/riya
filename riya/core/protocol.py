@@ -228,6 +228,49 @@ class LearningMsg(BaseModel):
     enabled: bool
 
 
+# v0.7: the Health page and the welcome. The action names are setup.ACTIONS and the gated four setup.CONFIRM_GATED,
+# written out in the same order (no import of setup here)
+SetupActionName = Literal["online_key_set", "online_key_clear", "online_test", "voice_sample", "voice_choose",
+                          "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart", "onboarding_done"]
+
+
+class HealthItemInfo(BaseModel):
+    """One Health row: its status, a one-line explanation (never the key, only its mask) and at most one fix."""
+    key: str
+    status: Literal["ok", "warn", "off"]
+    detail: str = Field(max_length=120)
+    fix: SetupActionName | None = None
+
+
+class HealthMsg(BaseModel):
+    """The Health checklist, sent only in reply to health_get. key_source: where the online key comes from."""
+    type: Literal["health"] = "health"
+    items: list[HealthItemInfo]
+    key_source: Literal["app", ".env", "env"] | None = None
+
+
+class SetupResult(BaseModel):
+    type: Literal["setup_result"] = "setup_result"
+    action: SetupActionName
+    ok: bool
+    detail: str = Field(max_length=120)
+
+
+class SetupConfirm(BaseModel):
+    """Asks the body to confirm an outward-facing action with this exact text; the answer is setup_action{nonce}."""
+    type: Literal["setup_confirm"] = "setup_confirm"
+    nonce: str
+    action: Literal["online_test", "eyes_test", "hooks_connect", "hooks_disconnect"]
+    text: str
+
+
+class VoicesMsg(BaseModel):
+    """Her feminine built-in voices ([] until they are loaded) and the chosen one; sent only in reply to health_get."""
+    type: Literal["voices"] = "voices"
+    items: list[str]
+    current: str
+
+
 # body -> core
 class BodyReady(BaseModel):
     type: Literal["body_ready"] = "body_ready"
@@ -332,23 +375,54 @@ class LearningReset(BaseModel):
     type: Literal["learning_reset"] = "learning_reset"
 
 
+class HealthGet(BaseModel):
+    type: Literal["health_get"] = "health_get"
+
+
+class SetupRequest(BaseModel):
+    """A click on a setup button. The key (online_key_set) is a plain str in args, with no length rule here, so no
+    validation error can quote it."""
+    type: Literal["setup_request"] = "setup_request"
+    action: SetupActionName
+    args: dict[str, str | bool] = Field(default_factory=dict)
+
+
+class SetupAction(BaseModel):
+    """The user's Yes or No to a setup_confirm."""
+    type: Literal["setup_action"] = "setup_action"
+    nonce: str = Field(min_length=1, max_length=64)
+    yes: bool = Field(strict=True)
+
+
+class OnboardingDone(BaseModel):
+    """The welcome was finished or skipped."""
+    type: Literal["onboarding_done"] = "onboarding_done"
+
+
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
                               Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg,
-                              LearningMsg],
+                              LearningMsg, HealthMsg, SetupResult, SetupConfirm, VoicesMsg],
                         Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
                               QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear, StyleNoteDelete, TwinReset,
-                              LearningReset],
+                              LearningReset, HealthGet, SetupRequest, SetupAction, OnboardingDone],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)
 
 
 def parse_body_message(raw: str) -> BodyMessage:
+    """A bad setup_request gets a fixed message: pydantic's text quotes input values, and its args may hold the key."""
     try:
-        return _BODY.validate_python(json.loads(raw))
-    except (ValueError, ValidationError) as e:  # JSONDecodeError and ValidationError are both ValueErrors
+        data = json.loads(raw)
+    except ValueError as e:  # JSONDecodeError: names a position, never the content
+        raise ProtocolError(str(e)) from e
+    try:
+        return _BODY.validate_python(data)
+    except ValidationError as e:
+        if isinstance(data, dict) and data.get("type") == "setup_request":
+            raise ProtocolError("invalid setup_request") from None
         raise ProtocolError(str(e)) from e
 
 
