@@ -136,16 +136,20 @@ def _threads(action: Action) -> list:
     return [action.thread] if action.thread else []
 
 
-def _priority(text: str) -> bool:
-    """The spec's priority intents, which always pre-empt her hands: a screen question, a remember-that, an identity,
-    about-me or feelings question."""
-    return (is_screen_question(text) or remember_intent(text) is not None or is_identity_question(text)
+def _priority(text: str, screen: bool = True) -> bool:
+    """The spec's priority intents, which pre-empt her hands: a screen question (unless screen is False), a
+    remember-that, an identity, about-me or feelings question."""
+    return ((screen and is_screen_question(text)) or remember_intent(text) is not None or is_identity_question(text)
             or about_me(text) or is_feelings_question(text))
 
 
-def _chat_mid_game(text: str) -> bool:
+def _chat_mid_game(text: str, screen: bool = True) -> bool:
     """Never a game move, in any game: a priority intent or a mention of their agents ("how's my agent doing?")."""
-    return _priority(text) or games.about_agents(text)
+    return _priority(text, screen) or games.about_agents(text)
+
+
+SCREEN_LOSES_TO = frozenset({"reminder_set", "timer_set"})  # "remind me to look at my screen at 5" sets the reminder
+GUESS_GAMES = frozenset({"riddles", "twenty_questions"})  # where a lookup-form turn ("what is a candle?") is a guess
 
 
 def _thumb(jpeg: bytes) -> bytes:
@@ -289,10 +293,13 @@ class RiyaCore:
                 log.exception("couldn't take the confirmation turn")
             if taken is not None and not (yield from self._confirm_answer(text, *taken)):
                 return
-            chat, call = (_chat_mid_game if self.game is not None else _priority)(text), None
+            gate = _chat_mid_game if self.game is not None else _priority
+            chat, call = gate(text), None
             try:
-                if not chat:
-                    call = FORBIDDEN if is_forbidden(text) else self._match(text)
+                if not chat or (is_screen_question(text) and not gate(text, screen=False)):
+                    found = FORBIDDEN if is_forbidden(text) else self._match(text)
+                    if not chat or (isinstance(found, Call) and found.tool in SCREEN_LOSES_TO):
+                        chat, call = False, found
                 if (isinstance(call, Call) and call.tool == "lookup" and not self.settings.online_enabled
                         and not is_command_form(text)):
                     call = None  # online off: a question she may answer from what she knows (she can't look it up)
@@ -300,7 +307,9 @@ class RiyaCore:
                 log.exception("couldn't read the turn for a tool")
             move = None
             try:
-                move = self._game_move(text, acting=call is not None)
+                guess = (isinstance(call, Call) and call.tool == "lookup" and self.game is not None
+                         and self.game.kind in GUESS_GAMES)  # a guess, never a lookup (unless the game says it's chat)
+                move = self._game_move(text, acting=call is not None and not guess)
             except Exception:
                 log.exception("couldn't play the game turn")
             if move is not None and move[1].kind != "off":
