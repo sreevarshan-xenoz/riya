@@ -1018,7 +1018,8 @@ class RiyaCore:
         return action
 
     def _maybe_bid(self) -> None:
-        if self.presence.state == "break" and self.game is None:  # no bids while a game is on
+        """No bids while a game is on, or while a confirmation waits (its mic would take the answer)."""
+        if self.presence.state == "break" and self.game is None and not self._asking():
             bid = self.initiative.on_break("break", self.presence.work_stretch_s(), self.memory.due_threads())
             if bid:
                 self._bid(bid)
@@ -1086,6 +1087,12 @@ class RiyaCore:
         if p is not None:
             self._confirm_done(p, "expired")
 
+    def _asking(self) -> bool:
+        """A confirmation waits for its answer: the tick says nothing aloud meanwhile (bubbles only, never the mic),
+        so a yes can only answer the question actually on the table."""
+        with self._hands_lock:
+            return self.confirms.pending is not None
+
     def _release(self, ids) -> None:
         """Ends tick's claim on reminder ids (and drops them from a greeting that never started)."""
         with self._hands_lock:
@@ -1098,7 +1105,8 @@ class RiyaCore:
 
     def _reminder_step(self, now: float) -> "Utterance | bool | None":
         """Due reminders with manners, all merged into one line: spoken (focused, talking, break; at most one line
-        every REMIND_GAP_S), a bubble at once while gaming or restricted (quiet hours, may not start conversations),
+        every REMIND_GAP_S), a bubble at once while gaming, restricted (quiet hours, may not start conversations) or a
+        confirmation waits,
         and while away they wait for the came-back greeting. Never dropped: one is marked fired only once its line
         went out. Ids claimed by an Utterance still to be said are skipped."""
         with self._hands_lock:
@@ -1109,7 +1117,7 @@ class RiyaCore:
         how = delivery(self.presence.state, self._restricted(now))
         if how == "wait":
             return None
-        if how == "bubble":
+        if how == "bubble" or self._asking():
             line, uid = reminder_line(due, now, self.tz), uuid4().hex
             self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="report"))
             self.emit(SayEnd(utterance_id=uid))
@@ -1150,8 +1158,8 @@ class RiyaCore:
 
     def _results_step(self, now: float) -> "Utterance | bool | None":
         """A queued command or button result, one per tick, with the report manners (sharing REPORT_GAP_S with the
-        agent reports): it waits while they're away; while gaming or restricted it's the ToolResult.text bubble (no
-        model); otherwise she says it through the local model (the result text is the fallback)."""
+        agent reports): it waits while they're away; while gaming, restricted or a confirmation waits it's the
+        ToolResult.text bubble (no model); otherwise she says it through the local model (the result text is the fallback)."""
         if self._results.empty():
             return None
         how = delivery(self.presence.state, self._restricted(now))
@@ -1159,7 +1167,7 @@ class RiyaCore:
             return None
         summary, result = self._results.get_nowait()
         self._last_report_at = now
-        if how == "bubble":
+        if how == "bubble" or self._asking():
             uid = uuid4().hex
             self.emit(Say(utterance_id=uid, text=result.text, spoken=False, kind="report"))
             self.emit(SayEnd(utterance_id=uid))
@@ -1236,7 +1244,8 @@ class RiyaCore:
         every 20 s. Never while away (the came-back greeting carries them). An urgent kind goes out now (focused,
         talking, break); a finished one waits for a break or a talking turn. While gaming it's a templated bubble and
         the model is never called. In quiet hours, or when she may not start conversations, it's always the bubble
-        (no voice, no mic): urgent ones now, finished ones only on a talking turn. Returns the spoken Utterance, True
+        (no voice, no mic): urgent ones now, finished ones only on a talking turn. While a confirmation waits it's the
+        bubble too. Returns the spoken Utterance, True
         when a bubble was shown, else None."""
         state = self.presence.state
         if not self._reports or state == "away":
@@ -1251,7 +1260,7 @@ class RiyaCore:
         self._reports, self._last_report_at = {}, now
         self.feelings.show(REPORT_FACES[next(k for k in REPORT_FACES if k in kinds)], REPORT_FACE_S)
         self._sync_expression()
-        if state == "gaming" or restricted:
+        if state == "gaming" or restricted or self._asking():
             self._report_bubble(events)
             return True
         return Utterance(self._report(events), True)
