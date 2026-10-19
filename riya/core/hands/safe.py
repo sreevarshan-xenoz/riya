@@ -110,7 +110,7 @@ def safe_filename(name) -> str | None:
 def unique_path(folder, name) -> Path | None:
     """folder/name, or 'stem (2).ext', 'stem (3).ext' ... for the first that doesn't exist; None when none is free."""
     folder, p = Path(folder), Path(name)
-    if p.name != name:
+    if p.name != name or safe_filename(name) != name:  # re-apply the name rules, don't trust the caller
         return None
     for i in range(1, 1000):
         cand = folder / (name if i == 1 else f"{p.stem} ({i}){p.suffix}")
