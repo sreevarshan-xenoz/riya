@@ -82,6 +82,7 @@ def create_app(core_factory: Callable[[Callable[[BaseModel], None]], RiyaCore],
                 q.put_nowait(ErrorMsg(message=str(e)))
                 continue
             if isinstance(msg, UserText):
+                core.note_typed_turn()  # typed while she streams: timed as a barge-in (it still queues)
                 texts.put_nowait(msg.text)  # answered in order by reply_worker; other messages don't wait behind it
             else:
                 await run_in_threadpool(core.handle, msg)

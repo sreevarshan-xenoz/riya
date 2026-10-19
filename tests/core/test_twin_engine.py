@@ -385,6 +385,52 @@ def test_barge_in_within_2s_is_measured_in_the_core():
     assert len(events(core, "barge")) == 2
 
 
+def test_a_typed_turn_while_she_streams_is_a_barge_in():
+    """Typed turns still queue (the reply runs to its end), but one within 2 s of her first sentence is measured."""
+    core, _, _, _, clock = night_core(replies=("One here. Two here. Three here.",))
+    core.note_typed_turn()                                  # nothing streaming: nothing to barge in on
+    r = core.reply("hello there")
+    core.note_typed_turn()                                  # not started, no first sentence yet
+    assert next(r) == "One here."
+    clock.advance(1)
+    core.note_typed_turn()
+    assert list(r) == ["Two here.", "Three here."]          # queued, not cut off
+    assert [e.context for e in events(core, "barge", "barged")] == [{"kind": "reply"}]
+    assert list(core._barges) == [True] and core._last_barged is True
+    r = core.reply("hello there")
+    next(r)
+    clock.advance(3)
+    core.note_typed_turn()
+    list(r)
+    assert len(events(core, "barge")) == 1 and list(core._barges) == [True, False]
+    list(core.reply("hello there"))                         # no stale flag carries over
+    assert len(events(core, "barge")) == 1 and list(core._barges) == [True, False, False]
+
+
+def test_typed_barge_ins_feed_the_drift():
+    core, _, _, _, clock = night_core(replies=("One here. Two here.",))
+    for i in range(10):
+        r = core.reply("hello there")
+        next(r)
+        clock.advance(0.5)
+        if i >= 5:
+            core.note_typed_turn()
+        list(r)
+    assert core.learn.dials()["verbosity"] == 0.3 and core.learn.history()[0].source == "drift"
+
+
+def test_a_typed_turn_during_a_report_means_it_was_not_heard_out():
+    core, _, _, _, clock = night_core(replies=("One here. Two here.",))
+    seen = []
+    it = core._speak("report", user_text=None, query="", situation=None, spoken=True,
+                     after=lambda outcome: seen.append(core._last_barged))
+    next(it)
+    clock.advance(1)
+    core.note_typed_turn()
+    list(it)
+    assert seen == [True] and [e.context for e in events(core, "barge")] == [{"kind": "report"}]
+
+
 def test_drift_is_daily_and_stops_at_the_floor(tmp_path):
     (tmp_path / "a").mkdir()
     core, _, _, _, clock = night_core(replies=("One here. Two here.",), tmp_path=tmp_path / "a")

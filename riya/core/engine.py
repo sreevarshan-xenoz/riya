@@ -247,6 +247,11 @@ class RiyaCore:
         self._greet_short = False
         self._barges: deque[bool] = deque(maxlen=DRIFT_WINDOW)  # her last replies: barged in on or not
         self._last_barged = False  # the last utterance was barged in on (read by a report's after)
+        # the utterance streaming now (uid, its first sentence's time) and the one a typed turn barged in on; the
+        # socket thread writes them (note_typed_turn), so a tiny lock of their own, never the core lock
+        self._streaming: tuple[str, float] | None = None
+        self._typed_barge: str | None = None
+        self._barge_lock = threading.Lock()
         self.initiative = Initiative(clock, lambda: self.settings, tz)
         self.router = Router(local, online, self.settings.online_enabled)
         self.consolidator = Consolidator(self.memory, self._consolidation_model, clock)
@@ -531,15 +536,19 @@ class RiyaCore:
         reply-rules line. tail (never with game): one engine line after the model's sentences, said like the game's
         (even when the model failed; shown, not spoken, on a barge-in); tail_if_silent: only when the model said
         nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line). short (the twin's
-        short greeting) makes the cap 1. The core times her first sentence: closed within BARGE_S of it is a
-        barge-in (_last_barged, before after runs), and a plain reply feeds the verbosity drift."""
+        short greeting) makes the cap 1. The core times her first sentence: closed within BARGE_S of it, or a typed
+        turn arriving within BARGE_S of it (note_typed_turn), is a barge-in (_last_barged, before after runs), and a
+        plain reply feeds the verbosity drift."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
         tool, first_at = shape == "tool", None
 
         def say(text: str, aloud: bool) -> None:
             nonlocal first_at
-            first_at = self.clock.now() if first_at is None else first_at
+            if first_at is None:
+                first_at = self.clock.now()
+                with self._barge_lock:
+                    self._streaming = (uid, first_at)
             self.emit(Say(utterance_id=uid, text=text, spoken=aloud, kind=kind))
 
         def engine_line() -> str | None:
@@ -641,7 +650,14 @@ class RiyaCore:
                                   quoted=tool)
             except Exception:
                 log.exception("couldn't record the %s", kind)
-            barged = outcome == "closed" and first_at is not None and self.clock.now() - first_at <= BARGE_S
+            with self._barge_lock:
+                typed = self._typed_barge == uid
+                if self._streaming and self._streaming[0] == uid:
+                    self._streaming = None
+                if typed:
+                    self._typed_barge = None
+            barged = typed or (outcome == "closed" and first_at is not None
+                               and self.clock.now() - first_at <= BARGE_S)
             self._last_barged = barged
             if barged:
                 self._event("barge", "barged", {"kind": kind})
@@ -652,6 +668,17 @@ class RiyaCore:
                     after(outcome)
                 except Exception:
                     log.exception("couldn't finish the %s", kind)
+
+    def note_typed_turn(self) -> None:
+        """A typed turn just arrived (the socket thread, before it queues). Within BARGE_S of the streaming
+        utterance's first sentence it counts as a barge-in on it, read when that utterance finishes; how typed turns
+        queue doesn't change. Never raises, never waits on the core lock."""
+        try:
+            with self._barge_lock:
+                if (s := self._streaming) and self.clock.now() - s[1] <= BARGE_S:
+                    self._typed_barge = s[0]
+        except Exception:
+            log.exception("couldn't time a typed turn")
 
     def _persona(self, route: Literal["local", "online"]) -> str:
         """The persona for a route, plus the templated style line when the dials are off her defaults. Only that line
