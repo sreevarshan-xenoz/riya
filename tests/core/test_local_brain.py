@@ -10,7 +10,7 @@ import pytest
 
 from riya import brain
 from riya.core import health
-from riya.core.health import BROKEN, DETAIL_MAX, STILL_V1, UNVETTED, check_local
+from riya.core.health import BROKEN, DETAIL_MAX, IN_USE_UNVETTED, STILL_V1, UNVETTED, check_local
 from riya.core.protocol import HealthGet, HealthMsg, SettingsMsg, SetupRequest, SetupResult
 from riya.core.setup import (NOT_VETTED, PLAIN, SUMMARIES, USING_BASE, USING_V1, Setup, SetupDeps)
 from tests.core.test_health import ctx as health_ctx
@@ -90,13 +90,21 @@ def test_local_row_details(tmp_path):
     path = adapter(tmp_path)  # no record
     on = health.Settings(local_adapter=str(path))
     date = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
-    item = row(tmp_path, settings=on, http_get=http([str(path)]))
-    assert item.detail == f"Riya v1 (adapter {date}, no champion record)" and item.fix == "use_base"
+    item = row(tmp_path, settings=on, http_get=http([str(path)]))  # served, but nothing vetted it (I2)
+    assert (item.status, item.detail, item.fix) == ("warn", IN_USE_UNVETTED, "use_base")
+    assert IN_USE_UNVETTED == "A Riya v1 adapter is in use without a passing champion check."
     brain.write_record(path, {**ADOPT, "targets_candidate": 1})
-    assert row(tmp_path, settings=on, http_get=http([str(path)])).detail.endswith("champion -1 targets)")
-    path.unlink()  # served by a llama-server that hasn't noticed yet
     item = row(tmp_path, settings=on, http_get=http([str(path)]))
-    assert (item.status, item.detail) == ("ok", "Riya v1 (adapter file missing)")
+    assert item.status == "ok" and item.detail == f"Riya v1 (adapter {date}, champion -1 targets)"
+    brain.write_record(path, {**ADOPT, "decision": "reject"})  # a rejected file someone served anyway
+    assert row(tmp_path, settings=on, http_get=http([str(path)])).detail == IN_USE_UNVETTED
+    brain.write_record(path, ADOPT)
+    path.write_bytes(b"GGUF replaced after adoption")  # served from the old launch; the record is stale now
+    item = row(tmp_path, settings=on, http_get=http([str(path)]))
+    assert (item.status, item.detail, item.fix) == ("warn", IN_USE_UNVETTED, "use_base")
+    path.unlink()  # served by a llama-server that hasn't noticed yet: nothing vouches for it
+    item = row(tmp_path, settings=on, http_get=http([str(path)]))
+    assert (item.status, item.detail) == ("warn", IN_USE_UNVETTED)
     # the setting is compared as a path: another spelling of the same file counts
     path = adapter(tmp_path, ADOPT)
     other = str(path).replace("\\", "/").upper() if os.name == "nt" else str(path)
