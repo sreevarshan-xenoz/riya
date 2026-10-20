@@ -6,7 +6,9 @@
 Reads sft.jsonl (riya.train.filter_sft), trains on the assistant tokens only (riya.train.fmt's mask), writes the
 adapter, converts it with llama.cpp's convert_lora_to_gguf.py to riya-v1-lora.gguf, then proves llama-server loads it
 (--lora, /lora-adapters) and that the HF chat template renders the same prompt as llama-server's. train_report.json
-records the base, the config and the loss curve. LoRA weights in fp32 under autocast over fp16 base weights; nothing is quantised for training.
+records the base, the config and the loss curve. LoRA weights in fp32 under autocast over fp16 base weights; nothing is
+quantised for training. A NaN or infinite loss stops the run before anything is exported (TRAIN_ABORTED, and the
+report says "aborted": "non-finite loss").
 
 torch, transformers, peft and huggingface_hub are imported inside the functions that need them, so the pure helpers
 (config, target regex, base resolution, command lines, report, batching) import and test on a CPU.
@@ -130,11 +132,50 @@ def smoke_problems(served: list[str], lora: str, server_prompt: str, hf_prompt: 
 
 
 def make_report(*, base_id: str, base_mismatch: bool, rows: int, skipped: int, losses: list[tuple[int, float]],
-                smoke: bool, gpu: str, settings: dict) -> dict:
-    """train_report.json: the base (and whether it is the wrong one), the data, the loss curve and the config."""
+                smoke: bool, gpu: str, settings: dict, aborted: str | None = None) -> dict:
+    """train_report.json: the base (and whether it is the wrong one), the data, the loss curve and the config;
+    aborted names why the run stopped early (NON_FINITE), else None."""
     return {"base_id": base_id, "base_mismatch": base_mismatch, "rows": rows, "skipped_too_long": skipped,
             "loss_curve": [[s, v] for s, v in losses], "smoke": smoke, "gpu": gpu, "lora": peft_config_kwargs(),
-            "train": settings, "adapter": OUT_NAME}
+            "train": settings, "adapter": OUT_NAME, "aborted": aborted}
+
+
+NON_FINITE = "non-finite loss"
+
+
+class NonFiniteLoss(RuntimeError):
+    """A NaN or infinite loss (an fp16 overflow GradScaler can't fix): the run must stop before exporting anything."""
+
+    def __init__(self, step: int, value: float, losses: list[tuple[int, float]]):
+        super().__init__(f"{NON_FINITE} ({value}) at step {step}: fp16 overflowed; nothing was exported")
+        self.step, self.value, self.losses = step, value, list(losses)
+
+
+def train_loop(batches_for: Callable[[int], list[list[int]]], *, epochs: int, accum: int, steps: int,
+               micro: Callable[[list[int]], tuple[float, Callable[[], None]]], opt_step: Callable[[], None],
+               log: Callable[[int, float], None]) -> list[tuple[int, float]]:
+    """The loop without torch: micro(idx) runs one micro-batch's forward and returns (its loss, backward); every
+    `accum` micro-batches (or at an epoch's last one) opt_step() steps the optimizer and the mean loss is logged,
+    until `steps` steps. A non-finite loss raises NonFiniteLoss before its backward, with the curve so far."""
+    losses: list[tuple[int, float]] = []
+    step, acc, n = 0, 0.0, 0
+    for epoch in range(epochs):
+        batches = batches_for(epoch)
+        for b_i, idx in enumerate(batches):
+            value, backward = micro(idx)
+            if not math.isfinite(value):
+                raise NonFiniteLoss(step + 1, value, losses)
+            backward()
+            acc, n = acc + value, n + 1
+            if n == accum or b_i == len(batches) - 1:
+                opt_step()
+                step += 1
+                losses.append((step, round(acc / n, 4)))
+                acc, n = 0.0, 0
+                log(step, losses[-1][1])
+                if step >= steps:
+                    return losses
+    return losses
 
 
 def epoch_batches(n: int, batch: int, seed: int, epoch: int) -> list[list[int]]:
@@ -300,41 +341,42 @@ def _run(args: argparse.Namespace) -> int:
     fp16 = settings["dtype"] == "float16"
     scaler = torch.amp.GradScaler("cuda", enabled=fp16)
     model.train()
-    losses: list[tuple[int, float]] = []
-    step, acc_loss, micro = 0, 0.0, 0
     t0 = time.time()
-    for epoch in range(1 if args.smoke else settings["epochs"]):
-        batches = epoch_batches(len(data), settings["batch"], settings["seed"], epoch)
-        for b_i, idx in enumerate(batches):
-            ids, labels, mask = pad_batch([data[i] for i in idx], tok.pad_token_id)
-            with torch.autocast("cuda", dtype=dtype):
-                out = model(input_ids=torch.tensor(ids).cuda(), attention_mask=torch.tensor(mask).cuda(),
-                            labels=torch.tensor(labels).cuda())
-            scaler.scale(out.loss / accum).backward()
-            acc_loss += out.loss.item()
-            micro += 1
-            if micro == accum or b_i == len(batches) - 1:
-                scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_([p for _, p in trainable], CLIP_NORM)
-                scaler.step(opt)
-                scaler.update()
-                opt.zero_grad(set_to_none=True)
-                sched.step()
-                step += 1
-                losses.append((step, round(acc_loss / micro, 4)))
-                acc_loss, micro = 0.0, 0
-                if step % 10 == 0 or step == steps:
-                    print(f"step {step}/{steps} loss {losses[-1][1]} ({time.time() - t0:.0f}s)", flush=True)
-                if step >= steps:
-                    break
-        if step >= steps:
-            break
+    gpu = torch.cuda.get_device_name(0)
+
+    def micro(idx: list[int]):
+        ids, labels, mask = pad_batch([data[i] for i in idx], tok.pad_token_id)
+        with torch.autocast("cuda", dtype=dtype):
+            out = model(input_ids=torch.tensor(ids).cuda(), attention_mask=torch.tensor(mask).cuda(),
+                        labels=torch.tensor(labels).cuda())
+        return out.loss.item(), lambda: scaler.scale(out.loss / accum).backward()
+
+    def opt_step():
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_([p for _, p in trainable], CLIP_NORM)
+        scaler.step(opt)
+        scaler.update()
+        opt.zero_grad(set_to_none=True)
+        sched.step()
+
+    def log(step: int, loss: float):
+        if step % 10 == 0 or step == steps:
+            print(f"step {step}/{steps} loss {loss} ({time.time() - t0:.0f}s)", flush=True)
+
+    try:
+        losses = train_loop(lambda epoch: epoch_batches(len(data), settings["batch"], settings["seed"], epoch),
+                            epochs=1 if args.smoke else settings["epochs"], accum=accum, steps=steps, micro=micro,
+                            opt_step=opt_step, log=log)
+    except NonFiniteLoss as e:  # an fp16 overflow: a near-zero adapter would still pass the smoke step, so stop here
+        write_json(make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped,
+                               losses=e.losses, smoke=args.smoke, gpu=gpu, settings=settings, aborted=NON_FINITE),
+                   out_dir / REPORT_NAME)
+        raise SystemExit(f"TRAIN_ABORTED: {e}. See {out_dir / REPORT_NAME}.") from None
 
     # 5. export: the PEFT adapter, then llama.cpp's LoRA GGUF against the same base
     adapter_dir = str(out_dir / "adapter")
     model.save_pretrained(adapter_dir)
-    gpu = torch.cuda.get_device_name(0)
-    del model, opt, sched, scaler, trainable, out
+    del model, opt, sched, scaler, trainable
     gc.collect()
     torch.cuda.empty_cache()  # llama-server needs the memory next
     out_gguf = str(out_dir / OUT_NAME)

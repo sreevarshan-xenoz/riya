@@ -109,7 +109,9 @@ start the full run.
 ```
 
 About 2 epochs at lr 2e-4, fp16 on a T4. It prints `TRAIN_DONE` and writes `riya-v1-lora.gguf` and
-`train_report.json` to `riya_v1/`. Look at the loss curve in the report: it should fall and flatten.
+`train_report.json` to `riya_v1/`. Look at the loss curve in the report: it should fall and flatten. If it prints
+`TRAIN_ABORTED` instead, a loss went NaN or infinite (an fp16 overflow): no adapter was exported, and
+`train_report.json` says `"aborted": "non-finite loss"` with the curve up to that step.
 
 > **Warning: check `"base_mismatch"` in `train_report.json`.** If it is `true`, the trainer could not find the
 > abliterated safetensors weights that match the GGUF she serves, and trained on the official
