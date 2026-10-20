@@ -69,8 +69,10 @@ Then the training libraries (llama.cpp's LoRA converter needs `gguf`; nothing is
 ```
 
 It serves the teacher (`TEACHER` env, default Huihui-Qwen3.5-9B-abliterated) with 8 slots, reads
-`/content/drive/MyDrive/riya_v1/requests.jsonl` and appends to `teacher.jsonl` in the same folder. It is resumable:
-run the cell again after a disconnect. It prints `GEN_DONE` at the end. The online fallback is off; to allow it for
+`/content/drive/MyDrive/riya_v1/requests.jsonl` and appends to `teacher.jsonl` in the same folder. Each answer carries
+its request's content hash `h`. It is resumable: run the cell again after a disconnect. After a rebuild in step 1,
+only answers whose `h` still matches count as done, so changed requests are answered again (the filter ignores the old
+answers as `stale_answer`). It prints `GEN_DONE` at the end. The online fallback is off; to allow it for
 rows the teacher failed on (10 requests a minute), run `%env TEACHER_ONLINE=1` and `%env RIYA_ONLINE_API_KEY=...` first.
 
 ## 4. Local: filter the teacher's answers

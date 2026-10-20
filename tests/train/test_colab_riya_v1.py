@@ -103,8 +103,9 @@ def test_teacher_helpers():
     assert gen.clean_response("<think>a</think>x<think>b</think> ok ") == "ok"
     assert gen.clean_response('"quoted" and "more"') == 'quoted" and "more'  # one pair only
     assert gen.clean_response("Riya: hi") == "Riya: hi"  # labels are the filter's business
-    reqs = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
-    assert gen.todo(reqs, {"b"}) == [{"id": "a"}, {"id": "c"}]
+    reqs = [{"id": "a", "h": "1" * 64}, {"id": "b", "h": "2" * 64}, {"id": "c", "h": "3" * 64}]
+    assert gen.todo(reqs, {("b", "2" * 64)}) == [reqs[0], reqs[2]]
+    assert gen.todo(reqs, {("b", "9" * 64), ("c", "3" * 64)}) == reqs[:2]  # an answer to another b isn't b's
     assert gen.todo(reqs, set()) == reqs
     assert gen.online_gap_s() == 6.0 and gen.online_gap_s(30) == 2.0
     assert (gen.PORT, gen.SLOTS, gen.ONLINE_RPM) == (8095, 8, 10)
@@ -113,11 +114,11 @@ def test_teacher_helpers():
 def test_batching_and_resume(tmp_path, monkeypatch):
     from riya.train import fmt
 
-    reqs = [{"id": f"r{i}", "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": f"u{i}"}]}
-            for i in range(5)]
+    reqs = [{"id": f"r{i}", "h": f"{i}" * 64,
+             "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": f"u{i}"}]} for i in range(5)]
     req_path, out = tmp_path / "requests.jsonl", tmp_path / "teacher.jsonl"
     req_path.write_text("".join(json.dumps(r) + "\n" for r in reqs), encoding="utf-8")
-    out.write_text(json.dumps({"id": "r0", "response": "old"}) + "\n", encoding="utf-8")
+    out.write_text(json.dumps({"id": "r0", "h": "0" * 64, "response": "old"}) + "\n", encoding="utf-8")
     calls = []
 
     def fake_post(url, body, timeout=300):
@@ -130,6 +131,7 @@ def test_batching_and_resume(tmp_path, monkeypatch):
     rows = fmt.read_jsonl(out)
     assert [r["id"] for r in rows] == ["r0", "r1", "r2"]  # --limit 3 reads r0..r2; r0 was done, so it isn't redone
     assert rows[0]["response"] == "old" and rows[1]["response"] == "answer u1~"
+    assert [r["h"] for r in rows] == ["0" * 64, "1" * 64, "2" * 64]  # each answer carries its request's h
     assert sorted(c[1]["messages"][-1]["content"] for c in calls) == ["u1", "u2"]
     assert {c[0] for c in calls} == {"http://x:1/v1/chat/completions"}
     assert all(c[1]["max_tokens"] == gen.TEACHER_TOKENS for c in calls)
@@ -140,7 +142,7 @@ def test_batching_and_resume(tmp_path, monkeypatch):
 
 
 def test_online_fallback_is_off_unless_asked_and_throttled(tmp_path):
-    reqs = [{"id": f"r{i}", "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(3)]
+    reqs = [{"id": f"r{i}", "h": f"{i}" * 64, "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(3)]
 
     def down(_body):
         raise OSError("teacher down")
@@ -239,10 +241,11 @@ def test_precision_follows_the_compute_capability_not_bf16_emulation():
 def test_resume_survives_a_broken_trailing_line(tmp_path, monkeypatch, capsys):
     from riya.train import fmt
 
-    reqs = [{"id": f"r{i}", "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(4)]
+    reqs = [{"id": f"r{i}", "h": f"{i}" * 64, "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(4)]
     req_path, out = tmp_path / "requests.jsonl", tmp_path / "teacher.jsonl"
     req_path.write_text("".join(json.dumps(r) + "\n" for r in reqs), encoding="utf-8")
-    out.write_text(json.dumps({"id": "r0", "response": "a"}) + "\n" + json.dumps({"id": "r1", "response": "b"})
+    out.write_text(json.dumps({"id": "r0", "h": "0" * 64, "response": "a"}) + "\n"
+                   + json.dumps({"id": "r1", "h": "1" * 64, "response": "b"})
                    + "\n" + '{"id": "r2", "respo', encoding="utf-8")  # the run was killed mid-write
     rows, dropped = fmt.read_jsonl_checked(out)
     assert [r["id"] for r in rows] == ["r0", "r1"] and dropped == 1
@@ -255,12 +258,13 @@ def test_resume_survives_a_broken_trailing_line(tmp_path, monkeypatch, capsys):
     assert [(r["id"], r["response"]) for r in rows] == [("r0", "a"), ("r1", "b"), ("r2", "fresh"), ("r3", "fresh")]
     assert out.read_text(encoding="utf-8").endswith("\n") and len(out.read_text(encoding="utf-8").splitlines()) == 4
     # a valid last line that merely lacks its newline is fixed too, and a broken middle line still raises
-    out.write_text('{"id": "r0", "response": "a"}', encoding="utf-8")
-    assert gen.resume_ids(out) == {"r0"} and out.read_text(encoding="utf-8") == '{"id": "r0", "response": "a"}\n'
+    line = json.dumps({"id": "r0", "h": "0" * 64, "response": "a"})
+    out.write_text(line, encoding="utf-8")
+    assert gen.resume_keys(out) == {("r0", "0" * 64)} and out.read_text(encoding="utf-8") == line + "\n"
     out.write_text('{"id": "r0"\n{"id": "r1", "response": "b"}\n', encoding="utf-8")
     with __import__("pytest").raises(json.JSONDecodeError):
         fmt.read_jsonl(out)
-    assert gen.resume_ids(tmp_path / "missing.jsonl") == set()
+    assert gen.resume_keys(tmp_path / "missing.jsonl") == set()
 
 
 def test_an_interrupt_drops_the_queue_and_keeps_the_flushed_rows(tmp_path, monkeypatch):
@@ -275,7 +279,7 @@ def test_an_interrupt_drops_the_queue_and_keeps_the_flushed_rows(tmp_path, monke
 
     monkeypatch.setattr(gen, "ThreadPoolExecutor", Spy)
     out = tmp_path / "t.jsonl"
-    reqs = [{"id": f"r{i}", "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(6)]
+    reqs = [{"id": f"r{i}", "h": f"{i}" * 64, "messages": [{"role": "user", "content": f"u{i}"}]} for i in range(6)]
     calls = []
 
     def chat(body):
@@ -301,3 +305,35 @@ def test_filter_sft_reads_the_teacher_file_tolerantly():
     from riya.train import filter_sft, fmt
 
     assert filter_sft.read_jsonl is fmt.read_jsonl  # the one loader that skips a cut-off last line
+
+
+def test_the_teacher_regenerates_after_a_rebuild(tmp_path, monkeypatch, capsys):
+    """I1: requests rebuilt under another seed keep their ids but not their content. The teacher resumes only an
+    answer whose h matches the request as it is now, so every changed request is answered again."""
+    from riya.train import fmt
+    from riya.train.build_sft import build
+
+    old, new = build(0, 24, ("small",)), build(1, 24, ("small",))
+    old_h = {r["id"]: r["h"] for r in old}
+    changed = [r["id"] for r in new if r["h"] != old_h[r["id"]]]
+    assert changed and [r["id"] for r in old] == [r["id"] for r in new]
+    req_path, out = tmp_path / "requests.jsonl", tmp_path / "teacher.jsonl"
+    fmt.write_jsonl(old, req_path)
+    asked = []
+    monkeypatch.setattr(gen, "_post_chat", lambda url, body, timeout=300: asked.append(body) or "Hmph, hi~")
+    assert gen.main(["--requests", str(req_path), "--out", str(out), "--url", "http://x:1"]) == 0
+    rows = fmt.read_jsonl(out)
+    assert len(asked) == len(old) and all(r["h"] == old_h[r["id"]] for r in rows)
+    for r in rows:
+        fmt.validate_teacher(r)
+    with out.open("a", encoding="utf-8") as f:  # an answer from before h existed is never taken as done
+        f.write(json.dumps({"id": new[0]["id"], "response": "legacy"}) + "\n")
+    fmt.write_jsonl(new, req_path)
+    asked.clear()
+    capsys.readouterr()
+    assert gen.main(["--requests", str(req_path), "--out", str(out), "--url", "http://x:1"]) == 0
+    assert sorted(b["messages"][-1]["content"] for b in asked) == sorted(
+        r["messages"][-1]["content"] for r in new if r["id"] in changed)
+    assert f"{len(new) - len(changed)} done, {len(changed)} to generate" in capsys.readouterr().out
+    fresh = [r for r in fmt.read_jsonl(out) if r.get("h") in {x["h"] for x in new}]
+    assert {r["id"] for r in fresh} == {r["id"] for r in new}

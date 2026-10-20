@@ -25,7 +25,7 @@ from riya.core.store import open_db
 from riya.train import build_sft
 from riya.train.build_sft import (DEFAULT_OUT, build, holdout_violations, main, messages_for, prompt_fingerprint,
                                   request_for)
-from riya.train.fmt import EXPECT_KEYS, REQUEST_KEYS, read_jsonl, validate_request, write_jsonl
+from riya.train.fmt import EXPECT_KEYS, REQUEST_KEYS, read_jsonl, request_hash, validate_request, write_jsonl
 from riya.train.scenarios import (KINDS, events_of, fact_attr, normalize, probe_facts, probe_texts, scenario, thread_of,
                                   tool_result)
 from tests.fakes import make_core
@@ -313,3 +313,15 @@ def test_no_real_user_data_is_read(tmp_path, monkeypatch):
         text = f.read_text(encoding="utf-8")
         for word in ("LOCALAPPDATA", "riya.db", "riya_memory", "DEFAULT_DB"):
             assert word not in text, (f.name, word)
+
+
+def test_every_request_carries_its_content_hash():
+    """I1: h binds an answer to the request it answered. The ids are kind-index, so another seed reuses them for other
+    content: their h differs."""
+    a, b = built(0, 120), built(1, 120)
+    assert all(r["h"] == request_hash(r) for r in a + b)
+    assert [r["id"] for r in a] == [r["id"] for r in b]
+    differs = [x["id"] for x, y in zip(a, b) if x["messages"] != y["messages"]]
+    assert differs and all(x["h"] != y["h"] for x, y in zip(a, b) if x["id"] in differs)
+    assert len({r["h"] for r in a}) == len(a)
+    assert request_for(scenario("small", 3, 0))["h"] == next(r["h"] for r in a if r["id"] == "small-00003")

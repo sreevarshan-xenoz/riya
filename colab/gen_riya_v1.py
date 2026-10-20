@@ -1,8 +1,10 @@
 """On Colab: a larger uncensored teacher writes the replies Riya v1 is fine-tuned on.
 
 Reads requests.jsonl (riya.train.build_sft: her exact local-model prompts, synthetic only), serves the teacher with
-llama-server (8 parallel slots, the colab/gen_riya_data.py pattern) and appends {"id", "response"} rows to
-teacher.jsonl. Resumable: ids already in --out are skipped. The filter (riya.train.filter_sft) runs afterwards, locally.
+llama-server (8 parallel slots, the colab/gen_riya_data.py pattern) and appends {"id", "h", "response"} rows to
+teacher.jsonl, h being the answered request's content hash. Resumable: a request is skipped only when --out already
+holds an answer with its id and its h, so requests rebuilt under another seed, pool or prompt are answered again. The
+filter (riya.train.filter_sft) runs afterwards, locally, and pairs answers on id and h.
 
     python -m colab.gen_riya_v1                       # starts the teacher itself
     python -m colab.gen_riya_v1 --url http://127.0.0.1:8090 --limit 24   # an already-running server, a few rows
@@ -51,9 +53,10 @@ def clean_response(text: str) -> str:
     return text
 
 
-def todo(requests: list[dict], done: set[str]) -> list[dict]:
-    """The requests whose id has no answer yet, in order."""
-    return [r for r in requests if r["id"] not in done]
+def todo(requests: list[dict], done: set[tuple[str, str]]) -> list[dict]:
+    """The requests with no answer for their (id, h) yet, in order: an answer written for another request under the
+    same id doesn't count."""
+    return [r for r in requests if (r["id"], r["h"]) not in done]
 
 
 def online_gap_s(rpm: int = ONLINE_RPM) -> float:
@@ -109,7 +112,7 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
              online_chat: Callable[[dict], str] | None = None, *, gap_s: float | None = None,
              clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
              workers: int = SLOTS) -> tuple[int, int]:
-    """Appends {"id", "response"} to out for each request, answered by teacher_chat(body) and, when it fails or
+    """Appends {"id", "h", "response"} to out for each request, answered by teacher_chat(body) and, when it fails or
     answers blank, by online_chat (throttled to one call per gap_s). Returns (answered, failed); a failed row is
     written nowhere, so the next run retries it."""
     throttle = _Throttle(online_gap_s() if gap_s is None else gap_s, clock, sleep)
@@ -128,7 +131,7 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
                 text = clean_response(online_chat(body))
             except Exception as e:
                 print(f"{r['id']}: online fallback failed ({e})", flush=True)
-        return {"id": r["id"], "response": text} if text else None
+        return {"id": r["id"], "h": r["h"], "response": text} if text else None
 
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -152,9 +155,10 @@ def generate(requests: list[dict], out: Path, teacher_chat: Callable[[dict], str
     return done, failed
 
 
-def resume_ids(out: Path) -> set[str]:
-    """The ids already answered in out (empty when it doesn't exist). A last line cut off by an interrupted write is
-    reported and removed (the file is rewritten without it), so the rows appended next start on a clean line."""
+def resume_keys(out: Path) -> set[tuple[str, str]]:
+    """The (id, h) pairs already answered in out (empty when it doesn't exist); a row without an h (written before h
+    existed) answers nothing. A last line cut off by an interrupted write is reported and removed (the file is rewritten
+    without it), so the rows appended next start on a clean line."""
     out = Path(out)
     if not out.exists():
         return set()
@@ -162,7 +166,7 @@ def resume_ids(out: Path) -> set[str]:
     text = out.read_text(encoding="utf-8")
     if dropped or (text and not text.endswith("\n")):
         write_jsonl(rows, out)
-    return {r["id"] for r in rows}
+    return {(r["id"], r["h"]) for r in rows if isinstance(r.get("h"), str)}
 
 
 def _wait_healthy(base: str, proc: subprocess.Popen | None) -> None:
@@ -191,9 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     for r in requests:
         validate_request(r)
     out = Path(args.out)
-    done_ids = resume_ids(out)
-    pending = todo(requests, done_ids)
-    print(f"{len(done_ids)} done, {len(pending)} to generate", flush=True)
+    done = resume_keys(out)
+    pending = todo(requests, done)
+    print(f"{len(requests) - len(pending)} done, {len(pending)} to generate", flush=True)
 
     online = _online_chat(os.environ) if online_enabled(os.environ) else None
     print("online fallback:", f"on, {ONLINE_RPM} requests/min" if online else "off", flush=True)
