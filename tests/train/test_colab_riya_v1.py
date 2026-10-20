@@ -198,11 +198,15 @@ def test_runbook_cells():
     pos = -1
     for needle in ("riya.train.build_sft", "sync_to_drive.py", "colab.gen_riya_v1", "riya.train.filter_sft",
                    "colab.train_riya_v1 --smoke", "SMOKE_OK", "colab.train_riya_v1", "base_mismatch",
-                   "C:/Users/sreev/models/riya/", "evaluation.champion"):
+                   "C:/Users/sreev/models/riya/riya-v1-candidate-lora.gguf", "evaluation.champion"):
         nxt = text.find(needle, pos + 1)
         assert nxt > pos, f"{needle!r} is missing or out of order"
         pos = nxt
     assert "drive.mount" in text and "pip install" in text and "peft" in text
+    # a new adapter goes to the candidate path; only the gate installs it as the adopted file (C1)
+    copies = [line for line in text.splitlines() if line.lstrip().startswith("Copy-Item")]
+    to_models = [line for line in copies if "models/riya" in line]
+    assert to_models and all(line.rstrip().endswith('riya-v1-candidate-lora.gguf"') for line in to_models)
 
 
 def test_batching_helpers():

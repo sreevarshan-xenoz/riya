@@ -11,12 +11,18 @@ from pathlib import Path
 
 DEFAULT_MODEL = "C:/Users/sreev/models/riya/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
 ADAPTER_DIR = Path("C:/Users/sreev/models/riya")
-ADAPTER_NAME = "riya-v1-lora.gguf"
+ADAPTER_NAME = "riya-v1-lora.gguf"  # the adopted adapter: only the champion gate installs a file here
+CANDIDATE_NAME = "riya-v1-candidate-lora.gguf"  # a new adapter waiting for the gate (the runbook copies it here)
 RECORD_SUFFIX = ".champion.json"
 
 
 def default_adapter() -> Path:
     return ADAPTER_DIR / ADAPTER_NAME
+
+
+def candidate_adapter() -> Path:
+    """Where a retrained adapter waits for the champion gate, next to the adopted one (never over it)."""
+    return default_adapter().with_name(CANDIDATE_NAME)
 
 
 def default_db() -> Path:
@@ -26,6 +32,13 @@ def default_db() -> Path:
 def usable_adapter(path: str | None) -> str | None:
     """The absolute path when it names an existing file, else None."""
     return os.path.abspath(path) if path and os.path.isfile(path) else None
+
+
+def vetted_adapter(path: str | None) -> str | None:
+    """The absolute path when it names an existing file that has a matching champion adopt record (read_record: the
+    same size and mtime), else None. The only adapters the wrapper serves."""
+    usable = usable_adapter(path)
+    return usable if usable and read_record(Path(usable)) is not None else None
 
 
 def same_path(a: str, b: str) -> bool:

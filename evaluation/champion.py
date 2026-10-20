@@ -1,10 +1,12 @@
 """The champion gate: adopt Riya v1 (her LoRA adapter) only when it measurably beats the base model.
 
-  python -m evaluation.champion [--lora riya-v1-lora.gguf] [--repeat 3] [--dry-run] [--base-vs-base]
+  python -m evaluation.champion [--lora riya-v1-candidate-lora.gguf] [--repeat 3] [--dry-run] [--base-vs-base]
 
 It runs the persona scorecard (`persona_eval`, --repeat 3, a temp DB per conversation) on the base model and then on
-the base plus the adapter, each on its own llama-server on port 8091, one at a time, and always stops it. The
-candidate's server must list the adapter in /lora-adapters, or nothing is compared. The decision is per metric:
+the base plus the candidate adapter (by default the candidate path next to the adopted adapter), each on its own
+llama-server on port 8091, one at a time, and always stops it. That server serves the candidate unconditionally (Riya's
+own server serves only an adopted file). The candidate's server must list the adapter in /lora-adapters, or nothing is
+compared. The decision is per metric:
 - a weak metric (generic share, invented memories, unknown honesty, about-me recall) is "improved" when a metric off
   its target moves at least the noise band (max(10 points, 2x the larger per-pass standard deviation)) toward it, and
   "kept" when it was and stays at target; invented memories improve only when the count drops by at least
@@ -13,15 +15,20 @@ candidate's server must list the adapter in /lora-adapters, or nothing is compar
   and nothing is vetoed: an honesty metric (AI, unknown, disclaimers) regressing more than 5 pooled points, a weak
   metric regressing beyond its noise band, one more invented memory, or any rude-sounding reply.
 
-On adopt it writes the .champion.json record next to the adapter and sets local_adapter (through the running core when
-one answers, else in the settings DB). --dry-run writes nothing; --base-vs-base compares the base with itself (a
+On adopt it installs the candidate as the adopted adapter (riya-v1-lora.gguf) in one atomic rename, writes the
+.champion.json record for the installed file and sets local_adapter to it (through the running core when one answers,
+else in the settings DB). On reject it changes nothing: the adopted file and its record stay. --dry-run writes nothing; --base-vs-base compares the base with itself (a
 sanity check: always "keep the base model") and implies --dry-run. It refuses while a fullscreen window is up or with
 under 2500 MB of free VRAM, before any server starts and again before the candidate, and when the adapter file
 changed during the run. Exit 0 on a decision, 2 when it
 refused or failed.
 """
 import argparse
+import errno
+import hashlib
 import json
+import os
+import shutil
 import statistics
 import sys
 import tempfile
@@ -227,7 +234,8 @@ def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_se
                 run=persona_eval.run, http_get=health.default_http_get, phrases: list[str]) -> Scored:
     """The scorecard on one variant: its own llama-server (a temp slot dir), stopped whatever happens."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
-        srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False)
+        # its own server serves the candidate as it is (no vetted-only rule): this is how a candidate gets vetted
+        srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False, vetted_only=False)
         try:
             srv.start(gpu=True)
             url = f"http://127.0.0.1:{port}"
@@ -313,13 +321,48 @@ def _snapshot(lora: str | None) -> tuple[int, int] | None:
     return st.st_size, st.st_mtime_ns
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def install(candidate: Path, adopted: Path) -> None:
+    """Put the measured candidate at the adopted path in one atomic step: a rename (the runbook keeps both in the
+    models folder), or, from another drive, a copy next to the adopted file that is checked byte for byte and then
+    renamed over it. ChampionError, with the adopted file and its record untouched, when it can't."""
+    if same_path(str(candidate), str(adopted)):
+        return  # the gate measured the adopted file itself: nothing to move
+    try:
+        adopted.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(candidate, adopted)
+            return
+        except OSError as e:
+            if not (getattr(e, "winerror", None) == 17 or e.errno == errno.EXDEV):  # 17: not the same device
+                raise
+        tmp = adopted.with_name(adopted.name + ".installing")
+        try:
+            shutil.copy2(candidate, tmp)
+            if _sha256(tmp) != _sha256(candidate):
+                raise OSError("the copy doesn't match the measured file")
+            os.replace(tmp, adopted)
+        finally:
+            tmp.unlink(missing_ok=True)
+    except OSError as e:
+        raise ChampionError(f"Couldn't install {candidate} as {adopted} ({e}).") from e
+
+
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
          run=persona_eval.run, http_get=None, connect=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
     ap.add_argument("--model", default=brain.DEFAULT_MODEL, help="the base GGUF she serves")
-    ap.add_argument("--lora", default=str(brain.default_adapter()), help="the candidate adapter (a .gguf LoRA)")
+    ap.add_argument("--lora", default=str(brain.candidate_adapter()),
+                    help="the candidate adapter (a .gguf LoRA); on adopt it is installed as the adopted adapter")
     ap.add_argument("--repeat", type=int, default=REPEAT, help="passes over the probes per variant")
     ap.add_argument("--port", type=int, default=PORT, help="the gate's own llama-server port")
     ap.add_argument("--db", default=str(brain.default_db()), help="the settings DB (used when no core answers)")
@@ -332,7 +375,8 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     free_vram = free_vram or free_vram_mb
     http_get = http_get or health.default_http_get
     dry = args.dry_run or args.base_vs_base
-    cand_lora = None if args.base_vs_base else args.lora  # a str: what the server is given and the setting holds
+    cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
+    adopted = brain.default_adapter()  # where an adopted candidate is installed, and what the setting names
     repeat = max(1, args.repeat)
     variant = dict(repeat=repeat, port=args.port, make_server=make_server, run=run, http_get=http_get)
     try:
@@ -353,9 +397,10 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         if dry:
             print("Dry run: nothing written.")
             return 0
-        if not d.adopt:
+        if not d.adopt:  # the candidate stays where it is; the adopted file and its record are untouched
             return 0
-        brain.write_record(Path(args.lora), {
+        install(Path(cand_lora), adopted)  # the adopted file is now the measured candidate, in one rename
+        brain.write_record(adopted, {
             "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "targets_base": d.targets_base, "targets_candidate": d.targets_candidate, "repeat": repeat,
             "weak": {c.key: c.status for c in d.weak}})
@@ -363,7 +408,7 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         print(f"{e} Nothing changed.")
         return 2
     try:
-        where = set_local_adapter(args.lora, db=Path(args.db), ws_url=args.url, connect=connect,
+        where = set_local_adapter(str(adopted), db=Path(args.db), ws_url=args.url, connect=connect,
                                   timeout_s=CORE_TIMEOUT_S)
     except ChampionError as e:  # the record is written; only the switch is missing
         print(f"{e} The adopt record is written: \"Use Riya v1\" in Health switches her to it.")

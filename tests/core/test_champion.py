@@ -307,8 +307,9 @@ class Rig:
         rig = self
 
         class FakeServer:
-            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base):
-                assert port == champion.PORT and fallback_to_base is False
+            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base, vetted_only):
+                # the gate's own server measures the candidate as it is: no fallback, no vetted-only rule
+                assert port == champion.PORT and fallback_to_base is False and vetted_only is False
                 self.lora = lora
                 rig.made.append((model, lora, slot_dir))
 
@@ -648,3 +649,101 @@ def test_base_vs_base_on_noisy_samples_never_adopts(adapter, tmp_db, capsys):
     out = capsys.readouterr().out
     assert "DECISION: keep the base model" in out and "Dry run: nothing written." in out
     assert nothing_written(adapter, tmp_db)
+
+
+# ---- final fix wave C1: a candidate path, an atomic install on adopt, nothing touched on reject ----
+
+@pytest.fixture
+def adopted(tmp_path):
+    """The adapter the gate adopted earlier: the file at the adopted path and its matching record."""
+    p = brain.default_adapter()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"GGUF the adopted adapter")
+    brain.write_record(p, {"decision": "adopt", "targets_base": 8, "targets_candidate": 9})
+    return p
+
+
+@pytest.fixture
+def candidate(tmp_path):
+    p = brain.candidate_adapter()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"GGUF a retrained candidate, never measured")
+    return p
+
+
+def test_the_candidate_path_is_the_default_and_never_the_adopted_one():
+    assert brain.candidate_adapter() == brain.default_adapter().with_name("riya-v1-candidate-lora.gguf")
+    assert brain.CANDIDATE_NAME == "riya-v1-candidate-lora.gguf" != brain.ADAPTER_NAME
+
+
+def test_the_gate_measures_the_candidate_by_default(adopted, candidate, tmp_db, capsys):
+    rig = Rig()
+    assert go(rig, ["--dry-run", "--db", str(tmp_db)]) == 0
+    assert rig.events == [("start", None), ("stop", None), ("start", str(candidate)), ("stop", str(candidate))]
+
+
+def test_adopt_installs_the_candidate_atomically(adopted, candidate, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+    new_bytes = candidate.read_bytes()
+    replaced = []
+    real_replace = champion.os.replace
+    monkeypatch.setattr(champion.os, "replace", lambda a, b: replaced.append((str(a), str(b))) or real_replace(a, b))
+    assert go(Rig(), ["--db", str(tmp_db)]) == 0
+    assert adopted.read_bytes() == new_bytes and not candidate.exists()  # moved into place in one rename
+    assert replaced[0] == (str(candidate), str(adopted))  # then the record's own tmp -> .champion.json
+    assert [b for _, b in replaced[1:]] == [str(brain.record_path(adopted))]
+    rec = brain.read_record(adopted)  # the record belongs to the installed file
+    assert rec is not None and rec["targets_candidate"] == 10 and rec["adapter"] == str(adopted)
+    assert brain.read_local_adapter(tmp_db) == str(adopted)  # the setting names the adopted path, not the candidate
+    assert brain.vetted_adapter(str(adopted)) == str(adopted)
+    assert not brain.record_path(candidate).exists()
+    assert "Adopted" in capsys.readouterr().out
+
+
+def test_a_rejected_candidate_never_becomes_served(adopted, candidate, tmp_db, capsys, tmp_path):
+    before = (adopted.read_bytes(), brain.record_path(adopted).read_text(encoding="utf-8"))
+    conn = open_db(tmp_db)
+    save_settings(KV(conn), Settings(local_adapter=str(adopted)))
+    conn.close()
+    rig = Rig()  # the real decide: the same transcripts for both, so "keep the base model"
+    assert go(rig, ["--db", str(tmp_db)]) == 0
+    assert "DECISION: keep the base model" in capsys.readouterr().out
+    assert (adopted.read_bytes(), brain.record_path(adopted).read_text(encoding="utf-8")) == before
+    assert candidate.exists() and not brain.record_path(candidate).exists()
+    assert brain.read_local_adapter(tmp_db) == str(adopted)
+    # what Riya's own server would serve: the adopted file, and never the rejected candidate
+    from riya.server import RiyaServer
+    for lora, served in ((str(adopted), str(adopted)), (str(candidate), None)):
+        cmds = []
+        srv = RiyaServer("m.gguf", slot_dir=str(tmp_path / "slots"), lora=lora, healthy=lambda port: True,
+                         ready_timeout_s=0, popen=lambda cmd, **kw: cmds.append(cmd) or _Alive())
+        srv.start()
+        got = cmds[0][cmds[0].index("--lora") + 1] if "--lora" in cmds[0] else None
+        assert got == served
+
+
+class _Alive:
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_an_install_that_fails_writes_nothing(adopted, candidate, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+    before = (adopted.read_bytes(), brain.record_path(adopted).read_text(encoding="utf-8"))
+
+    def locked(a, b):
+        raise PermissionError(13, "the file is in use")
+
+    monkeypatch.setattr(champion.os, "replace", locked)
+    monkeypatch.setattr(champion.shutil, "copy2", lambda a, b: pytest.fail("same folder: a rename, never a copy"))
+    assert go(Rig(), ["--db", str(tmp_db)]) == 2
+    out = capsys.readouterr().out
+    assert "Couldn't install" in out and "Nothing changed." in out
+    assert (adopted.read_bytes(), brain.record_path(adopted).read_text(encoding="utf-8")) == before
+    assert candidate.exists() and brain.read_local_adapter(tmp_db) is None

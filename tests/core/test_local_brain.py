@@ -10,7 +10,7 @@ import pytest
 
 from riya import brain
 from riya.core import health
-from riya.core.health import BROKEN, DETAIL_MAX, STILL_V1, check_local
+from riya.core.health import BROKEN, DETAIL_MAX, STILL_V1, UNVETTED, check_local
 from riya.core.protocol import HealthGet, HealthMsg, SettingsMsg, SetupRequest, SetupResult
 from riya.core.setup import (NOT_VETTED, PLAIN, SUMMARIES, USING_BASE, USING_V1, Setup, SetupDeps)
 from tests.core.test_health import ctx as health_ctx
@@ -208,3 +208,20 @@ def test_engine_withholds_the_switch_without_a_record(tmp_path):
 @pytest.mark.parametrize("fix", ["use_base", "use_riya_v1"])
 def test_the_fixes_are_listed(fix):
     assert fix in health.FIXES
+
+
+def test_local_row_names_an_unvetted_wanted_adapter(tmp_path):
+    """C1: the wrapper serves base for a wanted adapter without a matching adopt record; the row says why."""
+    path = adapter(tmp_path)  # never measured
+    on = health.Settings(local_adapter=str(path))
+    item = row(tmp_path, settings=on, http_get=http([]), adapter_path=path)
+    assert (item.status, item.detail, item.fix) == ("warn", UNVETTED, "use_base") and len(UNVETTED) <= DETAIL_MAX
+    brain.write_record(path, {**ADOPT, "decision": "reject"})
+    assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == UNVETTED
+    brain.write_record(path, ADOPT)
+    path.write_bytes(b"GGUF copied over the adopted file")  # the record is stale
+    assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == UNVETTED
+    brain.write_record(path, ADOPT)  # vetted, but not (yet) served: still loading, or it didn't load
+    assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == BROKEN
+    path.unlink()
+    assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == BROKEN

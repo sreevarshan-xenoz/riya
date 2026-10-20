@@ -58,11 +58,17 @@ def slot_of(cmd):
     return cmd[cmd.index("--slot-save-path") + 1]
 
 
+def vet(path) -> Path:
+    """A champion adopt record for the file as it is now: the wrapper serves only vetted adapters."""
+    brain.write_record(Path(path), {"decision": "adopt", "targets_base": 8, "targets_candidate": 10})
+    return Path(path)
+
+
 @pytest.fixture
 def adapter(tmp_path):
     f = tmp_path / "riya-v1-lora.gguf"
     f.write_bytes(b"GGUF-adapter")
-    return f
+    return vet(f)
 
 
 def make(tmp_path, popen=None, **kw):
@@ -165,6 +171,7 @@ def test_switch_restarts_without_restoring_across_variants(tmp_path, adapter, mo
 def test_step_follows_the_setting_without_retry_loops(tmp_path, adapter):
     broken = tmp_path / "broken.gguf"
     broken.write_bytes(b"junk")
+    vet(broken)  # vetted, but llama-server can't load it
     srv, popen = make(tmp_path, Popen(None, 1, None))  # the base, then the broken adapter dies, then the fallback
     srv.start()
     policy = GameModePolicy()
@@ -549,6 +556,7 @@ def test_switch_while_on_cpu_stays_on_cpu(tmp_path, adapter, monkeypatch):
 def test_switch_to_a_broken_adapter_after_a_working_one_ends_on_base(tmp_path, adapter, capsys):
     broken = tmp_path / "broken.gguf"
     broken.write_bytes(b"junk")
+    vet(broken)
     srv, popen = make(tmp_path, Popen(None, 1, None), lora=str(adapter))
     srv.start()
     assert srv.lora == os.path.abspath(adapter)
@@ -596,3 +604,103 @@ def test_main_watches_the_setting_through_real_ticks(tmp_path, adapter, monkeypa
     assert server.main(["--model", "m.gguf", "--follow-settings", "--db", str(db)]) == 0
     assert ticks == [3.0, 3.0]
     assert len(popen.cmds) == 2 and lora_of(popen.cmds[0]) is None and lora_of(popen.cmds[1]) == os.path.abspath(adapter)
+
+
+# ---- final fix wave C1: the wrapper serves only an adapter the champion gate adopted ----
+
+def test_an_unvetted_adapter_is_never_served(tmp_path, monkeypatch, capsys):
+    new = tmp_path / "new-lora.gguf"
+    new.write_bytes(b"GGUF never measured")  # no champion record
+    srv, popen = make(tmp_path, lora=str(new))
+    monkeypatch.setattr(srv, "_post", lambda path, body: {})
+    srv.start()
+    srv.move(False)
+    srv.move(True)
+    assert len(popen.cmds) == 3 and all(lora_of(c) is None for c in popen.cmds)
+    assert all(slot_of(c).endswith("base") for c in popen.cmds)
+    assert srv.serving is None and srv.unvetted == os.path.abspath(new) and srv.lora_failed is None
+    brain.write_record(new, {"decision": "reject"})  # a rejected adapter is no better
+    srv.move(False)
+    assert lora_of(popen.cmds[-1]) is None and srv.unvetted == os.path.abspath(new)
+    vet(new)  # the gate adopts it: the next relaunch serves it
+    srv.move(True)
+    assert lora_of(popen.cmds[-1]) == os.path.abspath(new) and srv.serving == os.path.abspath(new)
+    assert srv.unvetted is None
+
+
+def test_a_replaced_file_with_a_stale_record_serves_base(tmp_path, adapter, monkeypatch):
+    srv, popen = make(tmp_path, lora=str(adapter))
+    monkeypatch.setattr(srv, "_post", lambda path, body: {})
+    srv.start()
+    assert lora_of(popen.cmds[0]) == os.path.abspath(adapter)
+    adapter.write_bytes(b"GGUF retrained and copied over the adopted file")  # the old record no longer matches
+    srv.move(False)  # game mode's relaunch
+    assert lora_of(popen.cmds[1]) is None and srv.serving is None and srv.unvetted == os.path.abspath(adapter)
+
+
+def test_a_followed_setting_notices_its_file_changed(tmp_path, adapter, capsys):
+    srv, popen = make(tmp_path, lora=str(adapter))
+    srv.start()
+    policy = GameModePolicy()
+    tick = lambda: srv.step(policy, lambda: str(adapter), free_mb=lambda: 4000, now=lambda: 0.0)  # noqa: E731
+    tick()
+    assert len(popen.cmds) == 1  # nothing changed: no relaunch
+    adapter.write_bytes(b"GGUF replaced in place, never measured")
+    tick()  # the same setting, but its file isn't the one the gate adopted: back to base without a game-mode move
+    assert len(popen.cmds) == 2 and lora_of(popen.cmds[1]) is None and srv.unvetted == os.path.abspath(adapter)
+    tick()
+    assert len(popen.cmds) == 2  # decided once, not every tick
+    vet(adapter)  # the gate adopts the new file
+    tick()
+    assert len(popen.cmds) == 3 and lora_of(popen.cmds[2]) == os.path.abspath(adapter)
+    tick()
+    assert len(popen.cmds) == 3
+
+
+def test_switch_to_an_unvetted_adapter_serves_base(tmp_path, capsys):
+    new = tmp_path / "new-lora.gguf"
+    new.write_bytes(b"GGUF never measured")
+    srv, popen = make(tmp_path)
+    srv.start()
+    srv.switch(str(new))
+    assert all(lora_of(c) is None for c in popen.cmds) and srv.unvetted == os.path.abspath(new)
+    assert "no passing champion check" in capsys.readouterr().out
+
+
+def test_the_gates_own_server_measures_an_unvetted_candidate(tmp_path):
+    new = tmp_path / "candidate.gguf"
+    new.write_bytes(b"GGUF candidate")
+    srv, popen = make(tmp_path, lora=str(new), vetted_only=False, fallback_to_base=False)
+    srv.start()
+    assert lora_of(popen.cmds[0]) == os.path.abspath(new) and srv.serving == os.path.abspath(new)
+
+
+def test_print_lora_prints_nothing_for_an_unvetted_file(tmp_path, adapter, capsys, monkeypatch):
+    monkeypatch.setattr(server, "RiyaServer", lambda *a, **k: pytest.fail("--print-lora builds no server"))
+
+    def run(db):
+        assert server.main(["--print-lora", "--db", str(db)]) == 0
+        return capsys.readouterr().out.strip()
+
+    db = settings_db(tmp_path / "p.db", local_adapter=str(adapter))
+    assert run(db) == str(adapter)
+    adapter.write_bytes(b"GGUF replaced: the record is stale")
+    assert run(db) == ""
+    new = tmp_path / "never.gguf"
+    new.write_bytes(b"GGUF no record at all")
+    assert run(settings_db(tmp_path / "q.db", local_adapter=str(new))) == ""
+
+
+@pytest.mark.parametrize("how", ["follow", "lora"])
+def test_main_serves_base_for_an_unvetted_adapter(tmp_path, monkeypatch, capsys, how):
+    new = tmp_path / "new-lora.gguf"
+    new.write_bytes(b"GGUF never measured")
+    db = settings_db(tmp_path / "u.db", local_adapter=str(new))
+    popen = Popen(None)
+    patched_main(monkeypatch, popen, healthy=lambda port: True)
+    monkeypatch.setattr(server.RiyaServer, "watch", lambda self, policy, every_s=3.0, desired=None: None)
+    argv = ["--model", "m.gguf", "--db", str(db)] + (["--follow-settings"] if how == "follow" else ["--lora", str(new)])
+    assert server.main(argv) == 0
+    assert len(popen.cmds) == 1 and lora_of(popen.cmds[0]) is None
+    out = capsys.readouterr().out
+    assert "no passing champion check" in out and "base model" in out

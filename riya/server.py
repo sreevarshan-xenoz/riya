@@ -6,9 +6,11 @@ conversation continues. When enough VRAM has stayed free for a while, she moves 
 
   python -m riya.server --model path/to/riya.gguf [--lora riya-v1-lora.gguf] [--follow-settings]
 
-Her fine-tuned adapter goes to llama-server as --lora. A missing adapter, or one llama-server can't load, never stops
-her from starting: she serves the base model (and `lora_failed` says so). Slot caches are kept per variant, so a
-conversation slot saved by one variant is never restored into another.
+Her fine-tuned adapter goes to llama-server as --lora, but only when the champion gate adopted that exact file (a
+matching .champion.json record, brain.read_record): every launch checks it, so a file copied over the adopted one, or
+one the gate rejected or never measured, means the base model (and `unvetted` says so). A missing adapter, or one
+llama-server can't load, never stops her from starting: she serves the base model (and `lora_failed` says so). Slot
+caches are kept per variant, so a conversation slot saved by one variant is never restored into another.
 """
 import argparse
 import json
@@ -21,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from riya import brain
-from riya.brain import slot_key, usable_adapter
+from riya.brain import slot_key, usable_adapter, vetted_adapter
 
 LLAMA_SERVER = os.environ.get("LLAMA_SERVER", r"C:\Users\sreev\llama.cpp\llama-server.exe")
 
@@ -57,47 +59,82 @@ class GameModePolicy:
 
 class RiyaServer:
     def __init__(self, model, port=8090, ctx=16384, threads=6, gpu_layers=99, slot_dir="riya_slots", extra=(), *,
-                 lora: str | None = None, fallback_to_base: bool = True, popen=subprocess.Popen,
-                 healthy: Callable[[int], bool] | None = None, ready_timeout_s: float = 120.0):
+                 lora: str | None = None, fallback_to_base: bool = True, vetted_only: bool = True,
+                 popen=subprocess.Popen, healthy: Callable[[int], bool] | None = None,
+                 ready_timeout_s: float = 120.0):
+        """vetted_only (the default, and the only mode Riya's own server runs in): an adapter is served only while it
+        has a matching champion adopt record. The champion gate turns it off for its own server, which is how a
+        candidate gets measured at all."""
         self.model, self.port, self.ctx, self.threads, self.gpu_layers = model, port, ctx, threads, gpu_layers
         self.slot_root, self.extra = os.path.abspath(slot_dir), list(extra)
         self.wanted = lora  # the raw value asked for
         self.lora, self.lora_failed = usable_adapter(lora), None  # lora_failed: an adapter that didn't load
-        self.fallback_to_base, self.popen, self.ready_timeout_s = fallback_to_base, popen, ready_timeout_s
+        self.unvetted: str | None = None  # an adapter the last launch skipped: no matching champion adopt record
+        self.fallback_to_base, self.vetted_only = fallback_to_base, vetted_only
+        self.popen, self.ready_timeout_s = popen, ready_timeout_s
         self.healthy = healthy or self._health_ok
         self.proc, self.on_gpu, self.lock = None, True, threading.Lock()
         self._pinned: str | None = None  # the slot dir of the variant launched last
         self._key = "base"
+        self._serve: str | None = None  # the adapter the variant launched last serves (None: the base model)
+        self._decided = self._identity()  # what the last launch decided from (see _identity)
+
+    @property
+    def serving(self) -> str | None:
+        """The adapter llama-server was launched with last, or None for the base model."""
+        return self._serve
 
     @property
     def slot_dir(self) -> str:
         """One slot-cache directory per variant (the base model, or one adapter file as it was when launched)."""
-        if self._pinned:
-            return self._pinned
-        try:
-            return os.path.join(self.slot_root, slot_key(self.lora))
-        except OSError:  # the adapter vanished: _pin will serve base
-            return os.path.join(self.slot_root, slot_key(None))
+        if self._pinned is None:
+            self._pin()
+        return self._pinned
 
-    def _pin(self):
+    def _vetted(self, lora: str, key: str) -> bool:
+        """The champion adopted this exact file: its record matches, and it is still the file the key was taken from."""
+        return not self.vetted_only or (vetted_adapter(lora) is not None and slot_key(lora) == key)
+
+    def _identity(self) -> tuple:
+        """(the adapter, its slot key, vetted): what a launch would decide on now. A None key: the file is gone."""
+        if not self.lora:
+            return None, None, False
+        try:
+            key = slot_key(self.lora)
+            return self.lora, key, self._vetted(self.lora, key)
+        except OSError:
+            return self.lora, None, False
+
+    def _pin(self, base: bool = False):
         """Fix this launch's variant and slot dir once, so nothing stats the adapter again while it launches. An
-        adapter that vanished since we looked means the base model, never an exception."""
-        key = "base"
-        if self.lora:
-            try:
-                if not os.path.isfile(self.lora):
-                    raise FileNotFoundError(self.lora)
-                key = slot_key(self.lora)
-            except OSError:
-                self.lora_failed, self.lora = self.lora, None
-        self._pinned, self._key = os.path.join(self.slot_root, key), key
+        adapter that vanished since we looked means the base model, never an exception; so does one without a
+        matching champion adopt record (unvetted). base: this launch serves the base model, whatever is wanted (a
+        fallback)."""
+        serve, key = None, "base"
+        if not base:
+            self.unvetted = None
+            if self.lora:
+                try:
+                    if not os.path.isfile(self.lora):
+                        raise FileNotFoundError(self.lora)
+                    k = slot_key(self.lora)
+                    if self._vetted(self.lora, k):
+                        serve, key = self.lora, k
+                    else:
+                        self.unvetted = self.lora
+                except OSError:
+                    self.lora_failed, self.lora = self.lora, None
+            self._decided = self._identity()
+        self._serve, self._key = serve, key
+        self._pinned = os.path.join(self.slot_root, key)
 
     def _cmd(self, gpu):
         # -np 1: one conversation slot; KV cache quantised; prompt cache keeps follow-up turns fast.
+        slot_dir = self.slot_dir  # pins the variant when nothing was launched yet
         return [LLAMA_SERVER, "-m", self.model, "--port", str(self.port), "-c", str(self.ctx), "-np", "1",
                 "-ngl", str(self.gpu_layers if gpu else 0), "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
-                "-t", str(self.threads), "--slot-save-path", self.slot_dir, "--no-webui",
-                *(["--lora", self.lora] if self.lora else []), *self.extra]
+                "-t", str(self.threads), "--slot-save-path", slot_dir, "--no-webui",
+                *(["--lora", self._serve] if self._serve else []), *self.extra]
 
     def _post(self, path, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", json.dumps(body).encode(),
@@ -124,15 +161,15 @@ class RiyaServer:
                 raise RuntimeError("llama-server did not become ready")
             time.sleep(0.25)
 
-    def _launch(self, gpu):
-        self._pin()
+    def _launch(self, gpu, base: bool = False):
+        self._pin(base)
         os.makedirs(self._pinned, exist_ok=True)
         self.proc = self.popen(self._cmd(gpu), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.on_gpu = gpu
         self._wait_ready()
-        if self.lora:  # the file was replaced or removed while the server loaded it: it isn't the pinned variant
+        if self._serve:  # the file was replaced or removed while the server loaded it: it isn't the pinned variant
             try:
-                same = slot_key(self.lora) == self._key
+                same = slot_key(self._serve) == self._key
             except OSError:
                 same = False
             if not same:
@@ -144,17 +181,21 @@ class RiyaServer:
         try:
             self._launch(gpu)
         except RuntimeError:
-            if not (self.lora and self.fallback_to_base):
+            if not (self._serve and self.fallback_to_base):
                 self.stop()
                 raise
-            print(f"[riya] the adapter {self.lora} didn't load; serving the base model", flush=True)
+            print(f"[riya] the adapter {self._serve} didn't load; serving the base model", flush=True)
             self.stop()
-            self.lora_failed, self.lora = self.lora, None
+            self.lora_failed, self.lora = self._serve, None
+            self._decided = self._identity()
             try:
-                self._launch(gpu)
+                self._launch(gpu, base=True)
             except RuntimeError:
                 self.stop()
                 raise
+        if self.unvetted:
+            print(f"[riya] the adapter {self.unvetted} has no passing champion check; serving the base model",
+                  flush=True)
 
     def move(self, gpu):
         """Save the conversation slot, restart on GPU/CPU (same adapter), restore the slot."""
@@ -179,13 +220,25 @@ class RiyaServer:
         with self.lock:
             self.wanted = lora
             usable = usable_adapter(lora)
-            if usable == self.lora:
+            if usable == self.lora and self._identity() == self._decided:
                 self.lora_failed = None
                 return
             self.stop()
             self.lora, self.lora_failed = usable, None
             self.start(self.on_gpu)
-        print("[riya] switched to Riya v1" if self.lora else "[riya] switched to the base model", flush=True)
+        print("[riya] switched to Riya v1" if self._serve else "[riya] switched to the base model", flush=True)
+
+    def refresh(self):
+        """The wanted adapter's file or its champion record changed since the last launch decided (a file copied over
+        the adopted one, the gate adopting a new one): relaunch, so the vetted-only rule decides again. No slot is
+        restored, since the variant may differ."""
+        with self.lock:
+            if self._identity() == self._decided:
+                return
+            self.stop()
+            self.start(self.on_gpu)
+        print("[riya] the adapter changed; now serving " + ("Riya v1" if self._serve else "the base model"),
+              flush=True)
 
     def step(self, policy: GameModePolicy, desired: Callable[[], str | None] | None = None,
              free_mb: Callable[[], int] | None = None, now: Callable[[], float] = time.time) -> None:
@@ -198,6 +251,8 @@ class RiyaServer:
             else:
                 if value != self.wanted:
                     self.switch(value)
+                else:
+                    self.refresh()
         action = policy.update((free_mb or free_vram_mb)(), now())
         if action:
             self.move(gpu=action == "to_gpu")
@@ -231,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
                         "means the base model, even with --lora)")
     p.add_argument("--db", default=str(brain.default_db()), help="the settings database for --follow-settings")
     p.add_argument("--print-lora", action="store_true",
-                   help="print the adapter named in the settings if its file exists, then exit; starts nothing")
+                   help="print the adapter named in the settings if its file exists and the champion gate adopted "
+                        "it (a matching record), then exit; starts nothing")
     a = p.parse_args(argv)
     db = Path(a.db)
 
@@ -243,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             raw = setting()
         except Exception:
             raw = None
-        if usable_adapter(raw):
+        if vetted_adapter(raw):  # only an adapter the champion gate adopted, as the file is now
             print(raw)
         return 0
     if not a.model:
@@ -262,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         policy = GameModePolicy(a.low_mb, a.high_mb)
         policy.on_gpu = srv.on_gpu
         print(f"[riya] serving on :{a.port} ({'GPU' if srv.on_gpu else 'CPU'}, "
-              f"{'Riya v1' if srv.lora else 'base model'})", flush=True)
+              f"{'Riya v1' if srv.serving else 'base model'})", flush=True)
         srv.watch(policy, desired=setting if a.follow_settings else None)
     finally:
         srv.stop()
