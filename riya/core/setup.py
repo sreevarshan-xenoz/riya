@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from riya import brain
 from riya.agents import install_hooks
 from riya.core import models
 from riya.core.eyes.see import NOTE_MAX_TOKENS, vision_messages
@@ -28,7 +29,7 @@ from riya.core.store import KV
 from riya.voice_candidates import TEXT
 
 ACTIONS = ("online_key_set", "online_key_clear", "online_test", "voice_sample", "voice_choose", "mic_check",
-           "eyes_test", "hooks_connect", "hooks_disconnect", "autostart", "onboarding_done")
+           "eyes_test", "hooks_connect", "hooks_disconnect", "autostart", "onboarding_done", "use_base", "use_riya_v1")
 CONFIRM_GATED = ("online_test", "eyes_test", "hooks_connect", "hooks_disconnect")
 PLAIN = tuple(a for a in ACTIONS if a not in CONFIRM_GATED)
 ARGS = {"online_key_set": {"key": str}, "voice_sample": {"voice": str}, "voice_choose": {"voice": str},
@@ -53,8 +54,12 @@ SUMMARIES = {
     "online_test": "Tested the online key", "voice_sample": "Played a voice sample", "voice_choose": "Changed her voice",
     "mic_check": "Checked the mic", "eyes_test": "Ran the eye test", "hooks_connect": "Connected Claude Code",
     "hooks_disconnect": "Disconnected Claude Code", "autostart": "Changed start with Windows",
-    "onboarding_done": "Finished the welcome",
+    "onboarding_done": "Finished the welcome", "use_base": "Switched to the base model",
+    "use_riya_v1": "Switched to Riya v1",
 }
+USING_BASE = "Using the base model now; llama-server restarts with it in a few seconds."
+USING_V1 = "Using Riya v1 now; llama-server restarts with it in a few seconds."
+NOT_VETTED = "Riya v1 hasn't passed the champion gate yet (python -m evaluation.champion)."
 _RESTART = "Restart Claude Code (and open a new terminal)."
 log = logging.getLogger("riya.setup")
 
@@ -153,13 +158,14 @@ class SetupDeps:
     voices: Callable[[], list[str]]  # may import the TTS stack (slow): only Setup.load_voices calls it
     eyes_image: Path = EYES_IMAGE
     make_model: Callable[[Mapping[str, str], str, float], ChatModel | None] = models.online_model
+    adapter_path: Path = field(default_factory=lambda: brain.default_adapter())
 
     @classmethod
     def sandboxed(cls, root: Path) -> SetupDeps:
         """Everything under root, and a runner that runs nothing (setx "fails"): for a core nobody wired up."""
         root = Path(root)
         return cls(OnlineKey(root / "secrets.env", None, None), {}, root / ".claude" / "settings.json",
-                   root / "hook_token", _no_run, lambda: ["alba"])
+                   root / "hook_token", _no_run, lambda: ["alba"], adapter_path=root / "riya-v1-lora.gguf")
 
 
 def _daemon(fn: Callable[[], None]) -> None:
@@ -487,3 +493,17 @@ class Setup:
     def _do_onboarding_done(self, args) -> Outcome:
         self.host.patch_settings({"onboarded": True})
         return Outcome("onboarding_done", True, "Welcome done.")
+
+    def _do_use_base(self, args) -> Outcome:
+        self.host.patch_settings({"local_adapter": None})
+        return Outcome("use_base", True, USING_BASE)
+
+    def _do_use_riya_v1(self, args) -> Outcome:
+        path = Path(self.deps.adapter_path)
+        if not path.is_file():
+            prefix = "There's no Riya v1 adapter at "
+            return Outcome("use_riya_v1", False, prefix + clip_left(str(path), DETAIL_MAX - len(prefix)))
+        if brain.read_record(path) is None:  # never adopt what the champion gate hasn't vetted
+            return Outcome("use_riya_v1", False, NOT_VETTED)
+        self.host.patch_settings({"local_adapter": str(path)})
+        return Outcome("use_riya_v1", True, USING_V1)

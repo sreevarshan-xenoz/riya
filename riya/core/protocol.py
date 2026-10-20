@@ -231,7 +231,8 @@ class LearningMsg(BaseModel):
 # v0.7: the Health page and the welcome. The action names are setup.ACTIONS and the gated four setup.CONFIRM_GATED,
 # written out in the same order (no import of setup here)
 SetupActionName = Literal["online_key_set", "online_key_clear", "online_test", "voice_sample", "voice_choose",
-                          "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart", "onboarding_done"]
+                          "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart", "onboarding_done",
+                          "use_base", "use_riya_v1"]
 
 
 class HealthItemInfo(BaseModel):
