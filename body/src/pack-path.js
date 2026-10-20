@@ -39,7 +39,26 @@ function resolveManifestFrames(manifest, packDir, exists = () => true) {
       if (full && exists(full)) expressions[name][variant] = pathToFileURL(full).href;
     }
   }
-  return { ...manifest, expressions };
+  const out = { ...manifest, expressions };
+  if (manifest.motions && typeof manifest.motions === "object") out.motions = resolveMotions(manifest.motions, packDir, exists);
+  else delete out.motions;
+  return out;
+}
+
+/** `motions` ({walk, sit, sleep}: arrays of frame paths) as arrays of file URLs, resolved like expression frames:
+ *  escaping or missing frames are dropped and an emptied array goes with them. */
+function resolveMotions(motions, packDir, exists) {
+  const out = {};
+  for (const [name, frames] of Object.entries(motions)) {
+    if (!Array.isArray(frames)) continue;
+    const urls = [];
+    for (const rel of frames) {
+      const full = resolveInPack(packDir, rel);
+      if (full && exists(full)) urls.push(pathToFileURL(full).href);
+    }
+    if (urls.length) out[name] = urls;
+  }
+  return out;
 }
 
 /** The first candidate pack whose manifest parses, passes validateManifest and has a neutral.closed file, as

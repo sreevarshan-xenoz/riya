@@ -206,3 +206,36 @@ def test_parse_errors_never_echo_input(raw, expected):
         parse_body_message(raw)
     assert str(e.value) == expected and not leaks(str(e.value))
     assert e.value.__cause__ is None and e.value.__suppress_context__  # no chained pydantic text for a traceback
+
+
+def test_pet_messages():
+    from typing import get_args
+
+    from riya.agents.hub import ACTIVITY_KINDS
+    from riya.core import presence
+    from riya.core.protocol import ActivityKind, AgentWindow, FocusAgent, PresenceMsg
+    assert parse_body_message('{"type":"focus_agent","id":"abc123def"}') == FocusAgent(id="abc123def")
+    for raw in ('{"type":"focus_agent","id":""}', '{"type":"focus_agent","id":"' + "x" * 129 + '"}',
+                '{"type":"focus_agent"}', '{"type":"focus_agent","id":5}'):
+        with pytest.raises(ProtocolError):
+            parse_body_message(raw)
+    assert json.loads(dump(AgentWindow(id="a", hwnd=None)))["hwnd"] is None
+    assert json.loads(dump(AgentWindow(id="a", hwnd=132456)))["hwnd"] == 132456
+    with pytest.raises(ValueError):
+        AgentWindow(id="a", hwnd=0)
+    with pytest.raises(ValueError):
+        PresenceMsg(state="nope")
+    assert get_args(ActivityKind) == ACTIVITY_KINDS
+    assert get_args(PresenceMsg.model_fields["state"].annotation) == get_args(presence.State)
+    test_committed_schema_matches()
+
+
+def test_agent_activity_label_is_capped_at_40():
+    from riya.core.protocol import AgentActivity
+    assert AgentActivity(session="s", label="x" * 40, kind="edit", at=1.0).label == "x" * 40
+    with pytest.raises(ValueError):
+        AgentActivity(session="s", label="x" * 41, kind="edit", at=1.0)
+    with pytest.raises(ValueError):
+        AgentActivity(session="", label="x", kind="edit", at=1.0)
+    with pytest.raises(ValueError):
+        AgentActivity(session="s", label="x", kind="dance", at=1.0)

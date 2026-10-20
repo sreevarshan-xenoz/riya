@@ -98,3 +98,56 @@ Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
   ```
   python -m evaluation.health_check
   ```
+
+### Little Riya
+
+In buddy mode Riya is a small desktop pet. She stands just above your taskbar, breathes and blinks, now and then takes a
+short walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing, but only with a pose and a short bubble
+(never spoken, so she never breaks your focus). What you do:
+
+- **She's on by default.** The toggle is Settings → Little Riya → "Let her walk around and react to your agents"; she
+  shows up when you pick buddy mode from her tray menu. Size (0.4 to 1.0, default 0.6), Motion and "She walks" are in the
+  same section. Untick the box and buddy mode is exactly the plain buddy of v0.8: no walking, no bubbles, no
+  click-to-jump.
+- **Connect Claude Code from Health.** Settings → Health → Connect Claude Code. It's your click: Riya never applies the
+  hooks installer on her own. v0.9 adds a `PreToolUse` hook for the activity bubbles, so if you connected before, the
+  row reads "Partly connected: missing PreToolUse" and offers Connect. Press it once (it shows what it will add first;
+  it adds only the missing events and leaves your other hooks alone), then restart Claude Code and open a new terminal.
+- **What she does** (labels come from the tool name and a file name or a command's first word, never the arguments, are
+  at most 40 characters, and anything that looks like a key becomes "a file" or "a command"):
+
+  | Claude Code | Little Riya |
+  |---|---|
+  | `PreToolUse` | a bubble: "editing engine.py", "reading README.md", "running tests", "running ls", "searching the code", "browsing", "asking a helper" |
+  | `UserPromptSubmit` | a "thinking" pose |
+  | `PermissionRequest` | she waves and shows "needs you!" with the tool |
+  | `Stop` | a happy pose; after 30 s without your input (not once she's marked you away) also a small confetti burst (one finish in 50 a spin or a heart) |
+  | tool failure | an "oops" pose with a sweat drop |
+  | `StopFailure` | a sad pose |
+  | `SubagentStop` | a tiny "helper done" sparkle |
+
+- **Click her** to bring the agent's terminal forward: the session that needs you, or else the one that was last active
+  (under 10 minutes ago). It's the terminal app's window, not a tab. If no window is found she opens the agents list
+  instead, and with no agent at all a click is just a happy poke.
+  If a click opens the agents list instead of bringing the terminal forward, Windows refused to hand over the focus
+  (it only does so to a process the foreground app started). That fallback is by design: nothing is lost, the list
+  shows the session, and you can switch to the terminal yourself.
+- **Right-click her** for the menu: display mode, Don't look, Keep her still, Go to sleep, Settings, Quit. Drag her
+  to pick her up; dropped above the floor she falls and lands, then stands.
+- **When she stays put.** She walks only after 30 s without keyboard or mouse ("She walks" → "Any time except while you
+  type" lowers that to 5 s), never while you game or run a full-screen app, and never in quiet hours. Keeping her still
+  (Settings → Motion, the menu, or Windows' own reduced-motion switch) means no walking, falling or confetti; poses and
+  bubbles still show. While gaming nothing shows at all. Walking is limited to the monitor she's on, along the bottom of
+  the work area. With an auto-hide taskbar her floor is the bottom of the screen.
+- **Walk frames (optional).** She walks with a step bob on her idle frames. For real steps make `walk_01.png` and so on
+  and list them under `motions` in the pack's manifest: `colab/sprites/README.md`, step 8.
+- **Two optional checks**, both manual and never part of the tests. `pet_check` posts a scripted Claude Code session
+  straight to a running core and prints the five bubbles it gets back (open the body to watch her react); `pet_cpu`
+  measures the body's CPU against the budget of 1% idle and 3% walking. For the walking run, start the body with
+  `$env:RIYA_PET_FORCE_WALK=1` first (it skips the wait for you to be idle and the unknown-presence check, nothing else:
+  gaming, away, quiet hours and reduced motion still keep her still):
+
+  ```
+  python -m evaluation.pet_check [--spawn]
+  python -m evaluation.pet_cpu --mode idle|walk [--seconds 60]
+  ```

@@ -1,12 +1,13 @@
 "use strict";
 /** Pure decisions used by main.js: hotkey fallback, mode fallback, late saved-position repositioning, send filtering. */
+const path = require("node:path");
 const { boundsFor } = require("./geometry");
 
 const MODES = ["buddy", "panel", "window"];
 const REPLAY_TYPES = ["hello", "settings", "state", "expression", "look", "eyes", "agents", "reminders", "actions", "learning"];
 const DONT_LOOK_HOTKEYS = ["Control+Alt+H", "Control+Alt+F10"]; // first one that registers wins
 const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm", "actions_clear", "reminder_cancel", "note_delete",
-  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done"]; // never queued for replay after a reconnect
+  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done", "focus_agent"]; // never queued for replay after a reconnect
 const QUIT_FLUSH_MS = 300; // the tray's Quit: time for quit_core to reach the core before the body exits
 
 /** First accelerator for which `register` returns true (a throw counts as a failure), or null. */
@@ -26,10 +27,10 @@ function modeToApply(requested, current) {
 }
 
 /** New bounds for an already-shown buddy window when a saved position arrives late, or null to leave her alone. */
-function repositionTarget({ mode, dragging, userDragged, current, savedPos, workArea }) {
-  if (mode !== "buddy" || dragging || userDragged) return null;
+function repositionTarget({ mode, dragging, userDragged, moved, current, savedPos, workArea, size }) {
+  if (mode !== "buddy" || dragging || userDragged || moved === true) return null; // moved: she has walked, fallen or been dropped
   if (!Array.isArray(savedPos) || savedPos.length !== 2 || !savedPos.every(Number.isFinite)) return null;
-  const target = boundsFor("buddy", workArea, savedPos);
+  const target = boundsFor("buddy", workArea, savedPos, size);
   return target.x === current[0] && target.y === current[1] ? null : target;
 }
 
@@ -159,7 +160,135 @@ function ipcAllowed(channel, senderKind) {
   return Object.prototype.hasOwnProperty.call(WELCOME_IPC, channel) && WELCOME_IPC[channel].includes(senderKind);
 }
 
+// ---- Little Riya (v0.9): click versus drag, which agent a click brings forward, the focus helper, her menu ---------------
+
+/** Body-to-core types only main may send: a renderer's `core:send` for one of these is dropped. */
+const MAIN_ONLY = ["focus_agent"];
+
+/** A renderer may ask for anything except a MAIN_ONLY type (and anything that is not a typed message). */
+function rendererMayRequest(msg) {
+  return Boolean(msg) && typeof msg === "object" && typeof msg.type === "string" && !MAIN_ONLY.includes(msg.type);
+}
+
+const CLICK_SLOP_DIP = 4; // a press that moved this far or less, for this long or less, is a click and not a drag
+const CLICK_MS = 500;
+
+function isClick({ dx, dy, ms }) {
+  return Math.abs(dx) <= CLICK_SLOP_DIP && Math.abs(dy) <= CLICK_SLOP_DIP && ms <= CLICK_MS;
+}
+
+const RECENT_ACTIVITY_MS = 600000; // the latest activity names a click target for this long
+
+/** The session a click brings forward: the first Claude session (in the core's order) that needs the user; else the
+ *  session of the latest wave; else the session of the latest activity. The last two count while they are recent and the
+ *  session is not listed as ended, and also while it is not listed at all: the activity reaches the body at once, the
+ *  agents list only with the core's next tick, so a click on a fresh wave must not be lost. The core still checks the id
+ *  (an unknown one answers hwnd null, which opens the agents list). */
+function focusTarget(agents, lastActivity, nowMs, lastWave = null) {
+  const items = Array.isArray(agents) ? agents.filter((a) => a !== null && typeof a === "object") : [];
+  const waiting = items.find((a) => a.kind === "claude" && a.needs_attention === true);
+  if (waiting) return waiting.id;
+  for (const seen of [lastWave, lastActivity]) {
+    if (!seen || typeof seen.session !== "string" || !(nowMs - seen.atMs <= RECENT_ACTIVITY_MS)) continue;
+    const known = items.find((a) => a.id === seen.session);
+    if (!known) return seen.session;
+    if (known.status !== "ended") return known.id;
+  }
+  return null;
+}
+
+/** What a click does. With no target she is poked (nothing is sent). A target while disconnected opens the agents list:
+ *  focus_agent is NOW_ONLY, so it would be dropped and never answered. */
+function clickAction(target, connected) {
+  if (target === null || target === undefined) return { poke: true };
+  return connected ? { focus: target } : { list: true };
+}
+
+const FOCUS_WAIT_MS = 3000; // an agent_window counts as the answer to a click for this long
+
+/** What an agent_window message does: only the answer to the pending click (same id, fresh) acts. A good hwnd is spawned
+ *  for; no window (null, zero, negative, fractional, not a safe integer) opens the agents list. */
+function decideFocus(pending, msg, nowMs) {
+  if (!pending || !msg || msg.id !== pending.id || nowMs - pending.atMs > FOCUS_WAIT_MS) return null;
+  return Number.isSafeInteger(msg.hwnd) && msg.hwnd > 0 ? { spawn: msg.hwnd } : { list: true };
+}
+
+/** The focus helper's command: the venv's python when it exists, else "python"; fixed arguments, run without a shell.
+ *  Null unless hwnd is a positive safe integer. */
+function focusCommand(repoRoot, hwnd, existsSync) {
+  if (!Number.isSafeInteger(hwnd) || hwnd <= 0) return null;
+  const venv = path.join(repoRoot, ".venv", "Scripts", "python.exe");
+  return { file: existsSync(venv) ? venv : "python", args: ["-m", "riya.agents.peer", "focus", String(hwnd)] };
+}
+
+/** Her right-click menu as plain items (main adds the clicks): the display mode, don't look, reduced motion (the effective
+ *  value), sleep, settings and quit. */
+function petMenuItems({ mode, dontLook, reducedMotion }) {
+  const radio = (id, label) => ({ id: `mode:${id}`, label, type: "radio", checked: mode === id });
+  return [
+    radio("buddy", "Buddy"),
+    radio("panel", "Panel"),
+    radio("window", "Window"),
+    { id: "sep", label: "", type: "separator" },
+    { id: "dont_look", label: "Don't look", type: "checkbox", checked: dontLook === true },
+    { id: "reduced_motion", label: "Keep her still", type: "checkbox", checked: reducedMotion === true },
+    { id: "sleep", label: "Go to sleep", type: "normal" },
+    { id: "settings", label: "Settings…", type: "normal" },
+    { id: "quit", label: "Quit", type: "normal" },
+  ];
+}
+
+/** The setting the reduced-motion checkbox writes: `checked` is its new value, read after Electron toggled it. */
+function reducedMotionPatch(checked) {
+  return { reduced_motion: checked ? "on" : "off" };
+}
+
+/** What a window show or hide does to her loop: "pause" when the window hides while she runs, "resume" when it shows while
+ *  she is paused, else null. A paused pet has no timers and saves nothing. */
+function petVisibilityAction(paused, visible) {
+  if (visible && paused) return "resume";
+  if (!visible && !paused) return "pause";
+  return null;
+}
+
+/** A wave that is still current is worth showing when her window shows again: it is as old as her wave pose lasts. */
+const HELD_WAVE_MS = 6000;
+
+/** What is kept of a reaction that arrives while her window is hidden: only a wave (the badge carries the rest). Anything
+ *  else is dropped, so nothing stale replays when she shows again. Returns the new held wave. */
+function holdWhileHidden(held, kind, label, nowMs) {
+  return kind === "wave" ? { label, atMs: nowMs } : held;
+}
+
+/** On show: the held wave as a `{ kind, label }` reaction while it is still current, else null. */
+function heldReactionOnShow(held, nowMs) {
+  if (!held || !(nowMs - held.atMs <= HELD_WAVE_MS)) return null;
+  return { kind: "wave", label: held.label };
+}
+
+/** Start the focus helper through the injected `spawn` (execFile in main) with fixed options. A failure (a non-zero exit, a
+ *  spawn error or a throw) calls onFailed, but only while isCurrent() says this is still the current click's helper, so a
+ *  stale one opens nothing. Returns false, spawning nothing, without a command. */
+function runFocusHelper({ cmd, spawn, cwd, isCurrent, onFailed }) {
+  if (!cmd) return false;
+  const failed = () => { if (isCurrent()) onFailed(); };
+  try {
+    spawn(cmd.file, cmd.args, { cwd, windowsHide: true, timeout: 5000 }, (err) => { if (err) failed(); });
+  } catch (e) {
+    failed();
+  }
+  return true;
+}
+
+/** A walking or falling frame as a setBounds rect: integer position, her fixed size. */
+function moveRect(frame, size) {
+  return { x: Math.round(frame.x), y: Math.round(frame.y), width: size.width, height: size.height };
+}
+
 module.exports = {
+  MAIN_ONLY, rendererMayRequest, CLICK_SLOP_DIP, CLICK_MS, isClick, RECENT_ACTIVITY_MS, focusTarget, clickAction,
+  FOCUS_WAIT_MS, decideFocus, focusCommand, petMenuItems, reducedMotionPatch, moveRect, petVisibilityAction, runFocusHelper,
+  HELD_WAVE_MS, holdWhileHidden, heldReactionOnShow,
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
   quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
   welcomeClosedMessage, ipcAllowed, welcomeWebPreferences, QUIT_EVENTS, isQuitEvent,

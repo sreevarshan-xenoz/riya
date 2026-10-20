@@ -5,7 +5,7 @@
 (() => {
   const {
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
-    DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
+    DeferWhileFocused, petControls, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
   const { dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage } = RiyaLearning;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
@@ -260,7 +260,7 @@
   }
 
   const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-    "eyes_enabled", "hands_online", "learning_enabled"];
+    "eyes_enabled", "hands_online", "learning_enabled", "pet_enabled"];
   for (const key of CHECK_KEYS) $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
   for (const key of ["glance_daily_cap", "glance_min_gap_s"]) $(key).addEventListener("change", (e) => changeSetting(key, e.target.value));
   for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
@@ -292,6 +292,10 @@
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
   $("volume").addEventListener("input", (e) => { $("volume-out").textContent = `${Math.round(e.target.value * 100)}%`; });
   $("volume").addEventListener("change", (e) => changeSetting("volume", e.target.value));
+  $("pet_scale").addEventListener("input", (e) => { $("pet_scale-out").textContent = `${Math.round(e.target.value * 100)}%`; });
+  $("pet_scale").addEventListener("change", (e) => changeSetting("pet_scale", e.target.value));
+  $("reduced_motion").addEventListener("change", (e) => changeSetting("reduced_motion", e.target.value));
+  $("pet_walks_when").addEventListener("change", (e) => changeSetting("pet_walks_when", e.target.value));
   $("quiet-save").addEventListener("click", () => changeSetting("quiet_hours", $("quiet_hours").value));
   $("quiet_hours").addEventListener("keydown", (e) => { if (e.key === "Enter") changeSetting("quiet_hours", e.target.value); });
 
@@ -331,6 +335,13 @@
       $("volume-out").textContent = `${Math.round(s.volume * 100)}%`;
     }
     for (const key of CHECK_KEYS) if (typeof s[key] === "boolean") $(key).checked = s[key];
+    const pet = petControls(s);
+    if (pet.scale !== null) {
+      set("pet_scale", "value", String(pet.scale));
+      $("pet_scale-out").textContent = pet.scaleText;
+    }
+    if (pet.reducedMotion !== null) set("reduced_motion", "value", pet.reducedMotion);
+    if (pet.walksWhen !== null) set("pet_walks_when", "value", pet.walksWhen);
     for (const key of ["glance_daily_cap", "glance_min_gap_s"]) if (Number.isFinite(s[key])) set(key, "value", String(s[key]));
     for (const key of ["eyes_deny_titles", "eyes_deny_processes"]) {
       if (Array.isArray(s[key])) set(key, "value", s[key].filter((p) => typeof p === "string").join("\n"));
@@ -756,6 +767,12 @@
       if (target === "setting:commands") commandsDirty = true;
       showError(target, String(msg.message));
     }
+  });
+
+  /** The main process asks for a section (e.g. her "agents" list after a click she can't answer); an unknown name is ignored. */
+  window.riya.onShowSection((section) => {
+    if (section !== "agents") return;
+    $("h-agents").scrollIntoView({ block: "start" });
   });
 
   errorEls.set("learning", $("learning-reset-err"));

@@ -705,9 +705,9 @@ def test_the_runner_keeps_the_receiver_up_and_hands_it_to_the_core():
     made = []
 
     class Made(FakeReceiver):
-        def __init__(self, enqueue):
+        def __init__(self, enqueue, peers=None):
             super().__init__()
-            self.enqueue, self.started = enqueue, False
+            self.enqueue, self.peers, self.started = enqueue, peers, False
             made.append(self)
 
         def start(self):
@@ -716,8 +716,18 @@ def test_the_runner_keeps_the_receiver_up_and_hands_it_to_the_core():
 
     receiver = runner.start_receiver(core, make=Made)
     assert made == [receiver] and receiver.started and core.receiver is receiver
+    assert receiver.peers is core.peers
     receiver.enqueue({"x": 1})
     assert core.agent_inbox.get_nowait() == {"x": 1}
+
+
+def test_the_runner_builds_a_fake_peer_os_in_tests(tmp_path):
+    import argparse
+    from riya.agents.peer import FakePeerOS
+    assert isinstance(runner.default_peer_os(), FakePeerOS)
+    args = argparse.Namespace(db=str(tmp_path / "d" / "riya.db"), local_url="http://127.0.0.1:1", hash_embed=True,
+                              legacy_memory="riya_memory.json")
+    assert isinstance(runner.build_core(args, lambda m: None).peer_os, FakePeerOS)
 
 
 # --- re-review N1, N4 ------------------------------------------------------------------------------------------------
