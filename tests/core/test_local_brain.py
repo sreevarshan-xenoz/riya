@@ -262,14 +262,10 @@ def test_local_row_names_an_unvetted_wanted_adapter(tmp_path):
     assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == BROKEN
 
 
-def test_the_row_names_the_served_gguf_and_promises_nothing():
-    other = json.dumps({"data": [{"id": "C:\models\Some-Other-Model.Q8_0.gguf"}]}).encode()
-    item = row(tmp_path_factory_free := None) if False else None  # noqa: F841
+def test_the_row_names_the_served_gguf_and_promises_nothing(tmp_path):
+    other = json.dumps({"data": [{"id": r"C:\models\Some-Other-Model.Q8_0.gguf"}]}).encode()
     assert STILL_V1 == "llama-server is serving an adapter that Riya's settings don't name."
     assert "next check" not in STILL_V1 and "switch" not in STILL_V1
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as d:
-        item = row(Path(d), http_get=http([], models=other))
-        assert (item.status, item.detail) == ("ok", "Base model · Some-Other-Model.Q8_0.gguf")
-        assert "LFM2.5" not in item.detail
+    item = row(tmp_path, http_get=http([], models=other))
+    assert (item.status, item.detail) == ("ok", "Base model · Some-Other-Model.Q8_0.gguf")
+    assert "LFM2.5" not in item.detail
