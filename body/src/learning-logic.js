@@ -19,17 +19,17 @@ const TWIN_KINDS = [ // a test keeps the kinds equal to riya/core/learn/twin.py 
 const HISTORY_CAP = 20;
 const MIN_BUCKET_N = 0.5; // thinner buckets are noise
 const BY_DIAL = new Map(DIALS.map((d) => [d.name, d]));
-const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const isRecord = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const pct = (x) => Math.round(x * 100);
-const str = (v) => (typeof v === "string" ? v : "");
+const asText = (v) => (typeof v === "string" ? v : "");
 
 /** The dials in DIALS order for the bars; a dial with no finite value is skipped, a missing band falls back to the core's. */
 function dialRows(msg) {
-  const dials = isObj(msg && msg.dials) ? msg.dials : {};
+  const dials = isRecord(msg && msg.dials) ? msg.dials : {};
   const rows = [];
   for (const d of DIALS) {
     const info = dials[d.name];
-    if (!isObj(info) || typeof info.value !== "number" || !Number.isFinite(info.value)) continue;
+    if (!isRecord(info) || typeof info.value !== "number" || !Number.isFinite(info.value)) continue;
     const lo = Number.isFinite(info.lo) ? info.lo : d.lo;
     const hi = Number.isFinite(info.hi) ? info.hi : d.hi;
     rows.push({ name: d.name, label: d.label, value: info.value, lo, hi, valuePct: pct(info.value), loPct: pct(lo), hiPct: pct(hi) });
@@ -42,9 +42,9 @@ function historyRows(msg) {
   const list = Array.isArray(msg && msg.history) ? msg.history : [];
   const rows = [];
   for (const h of list) {
-    const dial = isObj(h) ? BY_DIAL.get(h.dial) : null;
+    const dial = isRecord(h) ? BY_DIAL.get(h.dial) : null;
     if (!dial || !Number.isFinite(h.old) || !Number.isFinite(h.new)) continue;
-    rows.push({ text: `${dial.label} ${h.old.toFixed(2)} → ${h.new.toFixed(2)}`, at: h.at, source: str(h.source), reason: str(h.reason) });
+    rows.push({ text: `${dial.label} ${h.old.toFixed(2)} → ${h.new.toFixed(2)}`, at: h.at, source: asText(h.source), reason: asText(h.reason) });
     if (rows.length >= HISTORY_CAP) break;
   }
   return rows;
@@ -53,8 +53,8 @@ function historyRows(msg) {
 /** The style notes she keeps: integer ids and string texts only. */
 function noteRows(msg) {
   const list = Array.isArray(msg && msg.notes) ? msg.notes : [];
-  return list.filter((n) => isObj(n) && Number.isInteger(n.id) && typeof n.text === "string")
-    .map((n) => ({ id: n.id, text: n.text, polarity: str(n.polarity) }));
+  return list.filter((n) => isRecord(n) && Number.isInteger(n.id) && typeof n.text === "string")
+    .map((n) => ({ id: n.id, text: n.text, polarity: asText(n.polarity) }));
 }
 
 /** One row per twin kind: the engagement rate (Σp·n / Σn, null with no evidence), the evidence count and the buckets
@@ -62,7 +62,7 @@ function noteRows(msg) {
 function twinRows(msg) {
   const list = Array.isArray(msg && msg.twin) ? msg.twin : [];
   return TWIN_KINDS.map(({ kind, label }) => {
-    const cells = list.filter((c) => isObj(c) && c.kind === kind && typeof c.bucket === "string"
+    const cells = list.filter((c) => isRecord(c) && c.kind === kind && typeof c.bucket === "string"
       && Number.isFinite(c.p) && Number.isFinite(c.n) && c.n > 0);
     const total = cells.reduce((sum, c) => sum + c.n, 0);
     const rate = total > 0 ? Math.round((cells.reduce((sum, c) => sum + c.p * c.n, 0) / total) * 100) / 100 : null;
@@ -80,6 +80,6 @@ const noteDeleteMessage = (id) => ({ type: "note_delete_style", id });
 const twinResetMessage = (kind) => ({ type: "twin_reset", kind });
 const resetMessage = () => ({ type: "learning_reset" });
 
-const api = { DIALS, TWIN_KINDS, dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaLearning = api;
+const learningExports = { DIALS, TWIN_KINDS, dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage };
+if (typeof module !== "undefined" && module.exports) module.exports = learningExports;
+else globalThis.RiyaLearning = learningExports;
