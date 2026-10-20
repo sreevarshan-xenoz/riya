@@ -262,3 +262,55 @@ test("every connection change clears the confirm state, so a gated request from 
   const handler = src.slice(start, src.indexOf("\n  });", start));
   assert.match(handler, /\n {4}if \(flow\.disconnect\(\)\) closeModal\(\); \/\/ on a reconnect too/, "outside the !connected branch");
 });
+
+test("pet settings validate like the core", () => {
+  assert.deepEqual(L.settingPatch("pet_scale", "0.62"), { ok: true, patch: { pet_scale: 0.6 } });
+  assert.deepEqual(L.settingPatch("pet_scale", 0.4), { ok: true, patch: { pet_scale: 0.4 } });
+  assert.deepEqual(L.settingPatch("pet_scale", 1), { ok: true, patch: { pet_scale: 1 } });
+  assert.deepEqual(L.settingPatch("pet_scale", "0.975"), { ok: true, patch: { pet_scale: 1 } });
+  for (const bad of ["0.3", "1.2", "x", "", "  ", NaN, null, undefined, "Infinity"]) {
+    assert.deepEqual(L.settingPatch("pet_scale", bad), { ok: false, error: "Pick a size from 0.4 to 1.0." }, String(bad));
+  }
+  for (const v of ["system", "on", "off"]) assert.deepEqual(L.settingPatch("reduced_motion", v), { ok: true, patch: { reduced_motion: v } });
+  assert.equal(L.settingPatch("reduced_motion", "maybe").ok, false);
+  assert.ok(!JSON.stringify(L.settingPatch("reduced_motion", "maybe")).includes("maybe"), "the value is never echoed");
+  for (const v of ["idle", "always_but_focus"]) assert.deepEqual(L.settingPatch("pet_walks_when", v), { ok: true, patch: { pet_walks_when: v } });
+  assert.equal(L.settingPatch("pet_walks_when", "always").ok, false);
+  assert.equal(L.settingPatch("pet_walks_when", "breaks_only").ok, false);
+  assert.deepEqual(L.settingPatch("pet_enabled", true), { ok: true, patch: { pet_enabled: true } });
+  assert.deepEqual(L.settingPatch("pet_enabled", false), { ok: true, patch: { pet_enabled: false } });
+});
+
+test("a core error about a pet setting reaches that setting's row", () => {
+  for (const key of ["pet_enabled", "pet_scale", "reduced_motion", "pet_walks_when"]) {
+    const router = new L.ErrorRouter();
+    assert.equal(router.route(`invalid value for setting '${key}'`), `setting:${key}`, key);
+  }
+});
+
+test("settings.html has the four Little Riya rows, and settings.js wires them", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "..", "settings.html"), "utf8");
+  for (const key of ["pet_enabled", "pet_scale", "reduced_motion", "pet_walks_when"]) {
+    assert.match(html, new RegExp(`class="row[^"]*" data-key="${key}"`), key);
+  }
+  assert.match(html, /aria-labelledby="h-pet"/);
+  assert.match(html, /<h2 id="h-pet">Little Riya<\/h2>/);
+  assert.ok(html.indexOf('aria-labelledby="h-general"') < html.indexOf('aria-labelledby="h-pet"'), "after General");
+  assert.match(html, /id="pet_scale" type="range" min="0.4" max="1.0" step="0.05"/);
+  assert.match(html, /<output id="pet_scale-out">/);
+  assert.match(html, /value="system">Follow Windows</);
+  assert.match(html, /value="on">Keep her still</);
+  assert.match(html, /value="off">Let her move</);
+  assert.match(html, /value="idle">Only when you're away from the keyboard \(30 s\)</);
+  assert.match(html, /value="always_but_focus">Any time except while you type</);
+  assert.ok(html.includes("Let her walk around and react to your agents (buddy mode)"));
+  assert.ok(html.includes("She never walks while you game or in full screen, and sleeps when you're away."));
+  const js = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
+  assert.match(js, /CHECK_KEYS = \[[^\]]*"pet_enabled"/);
+  for (const key of ["pet_scale", "reduced_motion", "pet_walks_when"]) assert.ok(js.includes(`changeSetting("${key}"`), key);
+  assert.match(js, /onShowSection\(/);
+  assert.match(js, /\$\("h-agents"\)\.scrollIntoView/);
+  assert.ok(html.includes('id="h-agents"'));
+});

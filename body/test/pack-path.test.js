@@ -134,3 +134,21 @@ test("loadFirstPack returns null when no candidate is usable", () => {
   assert.equal(loadFirstPack({ ...ARGS, ...disk, log: () => {} }), null);
   assert.equal(loadFirstPack({ ...ARGS, ...fakeDisk({}), log: () => {} }), null);
 });
+
+test("motions resolve inside the pack like frames", () => {
+  const manifest = {
+    name: "x", version: 1, canvas: { width: 1, height: 1 }, crops: { upper: [0, 0, 1, 1] },
+    expressions: { neutral: { closed: "n.svg" } },
+    motions: { walk: ["w1.png", "../x.png", "missing.png"], sit: ["gone.png"], sleep: ["/abs.png", "z.png"] },
+  };
+  const exists = (p) => !/missing|gone/.test(p);
+  const out = resolveManifestFrames(manifest, PACK, exists);
+  assert.deepEqual(out.motions.walk, [pathToFileURL(path.join(PACK, "w1.png")).href]);
+  assert.equal(out.motions.sit, undefined, "an emptied array is dropped");
+  assert.deepEqual(out.motions.sleep, [pathToFileURL(path.join(PACK, "z.png")).href]);
+  assert.deepEqual(manifest.motions.walk, ["w1.png", "../x.png", "missing.png"], "input untouched");
+  const none = resolveManifestFrames({ ...manifest, motions: { walk: ["missing.png"] } }, PACK, exists);
+  assert.equal(none.motions.walk, undefined, "an all-missing walk is dropped");
+  assert.ok(!("motions" in resolveManifestFrames({ name: "x", expressions: {} }, PACK)), "no motions stays absent");
+  assert.deepEqual(resolveManifestFrames({ name: "x", motions: { walk: "w.png" } }, PACK).motions, {}, "junk is ignored");
+});

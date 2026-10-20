@@ -209,3 +209,23 @@ test('leanFor ignores a look that is not watching and falls back to the curious 
 test('leanFor stays still while gaming, whatever she is looking at', () => {
   assert.deepEqual(leanFor({ presence: 'gaming', curiosity: 0.9, look: { side: 'left', watching: true } }), { rotateDeg: 0, dx: 0 });
 });
+
+test('manifest schema accepts optional motions', () => {
+  const validate = new Ajv({ strict: true }).compile(SCHEMA);
+  const withMotions = (motions) => ({ ...base(), motions });
+  assert.ok(validate(withMotions({ walk: ['w1.png'] })), JSON.stringify(validate.errors));
+  assert.ok(validate(withMotions({ walk: ['w1.png', 'w2.png'], sit: ['s.png'], sleep: ['z.png'] })));
+  assert.ok(validate(withMotions({})), 'an empty motions object is fine');
+  assert.equal(validate(withMotions({ walk: [] })), false, 'a cycle needs a frame');
+  assert.equal(validate(withMotions({ run: ['x'] })), false, 'only walk, sit and sleep');
+  assert.equal(validate(withMotions({ walk: Array.from({ length: 17 }, (_, i) => `w${i}.png`) })), false, 'at most 16 frames');
+  assert.ok(validate(withMotions({ walk: Array.from({ length: 16 }, (_, i) => `w${i}.png`) })));
+  assert.equal(validate(withMotions({ walk: [''] })), false, 'a frame is a non-empty path');
+  assert.equal(validate(withMotions({ walk: [3] })), false);
+  assert.ok(validate(base()), 'motions stay optional');
+});
+
+test('a pack without motions still validates and its walk falls back to nothing', () => {
+  assert.deepEqual(validateManifest(base(), EXPRESSIONS).filter((w) => w.includes('motion')), []);
+  assert.equal(PLACEHOLDER.motions, undefined);
+});
