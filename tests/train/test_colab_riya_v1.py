@@ -38,7 +38,10 @@ def test_resolve_base_order():
     def boom(_q):
         raise AssertionError("the search must not run when BASE_ID is set")
 
-    assert tr.resolve_base({"BASE_ID": " x/y "}, boom) == ("x/y", False)
+    assert tr.resolve_base({"BASE_ID": " x/y "}, boom) == ("x/y", True)  # pinned, but not the weights she serves
+    assert tr.resolve_base({"BASE_ID": tr.DEFAULT_BASE}, boom) == (tr.DEFAULT_BASE, False)
+    fork = "someone/huihui-lfm2.5-1.2b-instruct-abliterated"  # the same family name, another uploader
+    assert tr.resolve_base({"BASE_ID": fork}, boom) == (fork, False)
     seen = []
 
     def hits(h):
@@ -49,7 +52,11 @@ def test_resolve_base_order():
 
     assert tr.resolve_base({}, hits(["a/b", tr.DEFAULT_BASE])) == (tr.DEFAULT_BASE, False)
     assert seen == [tr.BASE_SEARCH]
-    assert tr.resolve_base({"BASE_ID": "  "}, hits(["a/b"])) == ("a/b", False)
+    assert tr.resolve_base({"BASE_ID": "  "}, hits(["a/b"])) == ("a/b", True)  # any other hit is a mismatch
+    assert tr.resolve_base({}, hits(["a/b", fork])) == (fork, False)  # a family match beats a first hit
+    assert tr.resolve_base({}, hits(["x/Huihui-LFM2.5-1.2B-Instruct-abliterated-v2"])) == (
+        "x/Huihui-LFM2.5-1.2B-Instruct-abliterated-v2", True)
+    assert tr.mismatch_banner("a/b").startswith("BASE MISMATCH: training on a/b,")
     assert tr.resolve_base({}, hits([])) == (tr.OFFICIAL_BASE, True)
 
     def raises(_q):

@@ -113,10 +113,11 @@ About 2 epochs at lr 2e-4, fp16 on a T4. It prints `TRAIN_DONE` and writes `riya
 `TRAIN_ABORTED` instead, a loss went NaN or infinite (an fp16 overflow): no adapter was exported, and
 `train_report.json` says `"aborted": "non-finite loss"` with the curve up to that step.
 
-> **Warning: check `"base_mismatch"` in `train_report.json`.** If it is `true`, the trainer could not find the
-> abliterated safetensors weights that match the GGUF she serves, and trained on the official
-> `LiquidAI/LFM2.5-1.2B-Instruct` instead. The adapter was then fitted to different weights from the ones it will be
-> applied to. It may still work, but nothing guarantees it; **the champion gate is the only judge**, so don't adopt by
+> **Warning: check `"base_mismatch"` in `train_report.json`.** If it is `true`, the trainer didn't train on the
+> abliterated safetensors weights that match the GGUF she serves (`base_id` names the repo it used: the official
+> `LiquidAI/LFM2.5-1.2B-Instruct`, a search hit of another name, or a `BASE_ID` you pinned that isn't
+> `…/Huihui-LFM2.5-1.2B-Instruct-abliterated`). The adapter was then fitted to different weights from the ones it will
+> be applied to. It may still work, but nothing guarantees it; **the champion gate is the only judge**, so don't adopt by
 > hand. To train on the right weights, set the repo yourself and rerun: `%env BASE_ID=huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated`.
 
 ## 7. Local: hand the adapter to the gate
