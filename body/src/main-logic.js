@@ -27,8 +27,8 @@ function modeToApply(requested, current) {
 }
 
 /** New bounds for an already-shown buddy window when a saved position arrives late, or null to leave her alone. */
-function repositionTarget({ mode, dragging, userDragged, current, savedPos, workArea, size }) {
-  if (mode !== "buddy" || dragging || userDragged) return null;
+function repositionTarget({ mode, dragging, userDragged, moved, current, savedPos, workArea, size }) {
+  if (mode !== "buddy" || dragging || userDragged || moved === true) return null; // moved: she has walked, fallen or been dropped
   if (!Array.isArray(savedPos) || savedPos.length !== 2 || !savedPos.every(Number.isFinite)) return null;
   const target = boundsFor("buddy", workArea, savedPos, size);
   return target.x === current[0] && target.y === current[1] ? null : target;
@@ -238,6 +238,28 @@ function reducedMotionPatch(checked) {
   return { reduced_motion: checked ? "on" : "off" };
 }
 
+/** What a window show or hide does to her loop: "pause" when the window hides while she runs, "resume" when it shows while
+ *  she is paused, else null. A paused pet has no timers and saves nothing. */
+function petVisibilityAction(paused, visible) {
+  if (visible && paused) return "resume";
+  if (!visible && !paused) return "pause";
+  return null;
+}
+
+/** Start the focus helper through the injected `spawn` (execFile in main) with fixed options. A failure (a non-zero exit, a
+ *  spawn error or a throw) calls onFailed, but only while isCurrent() says this is still the current click's helper, so a
+ *  stale one opens nothing. Returns false, spawning nothing, without a command. */
+function runFocusHelper({ cmd, spawn, cwd, isCurrent, onFailed }) {
+  if (!cmd) return false;
+  const failed = () => { if (isCurrent()) onFailed(); };
+  try {
+    spawn(cmd.file, cmd.args, { cwd, windowsHide: true, timeout: 5000 }, (err) => { if (err) failed(); });
+  } catch (e) {
+    failed();
+  }
+  return true;
+}
+
 /** A walking or falling frame as a setBounds rect: integer position, her fixed size. */
 function moveRect(frame, size) {
   return { x: Math.round(frame.x), y: Math.round(frame.y), width: size.width, height: size.height };
@@ -245,7 +267,7 @@ function moveRect(frame, size) {
 
 module.exports = {
   MAIN_ONLY, rendererMayRequest, CLICK_SLOP_DIP, CLICK_MS, isClick, RECENT_ACTIVITY_MS, focusTarget, clickAction,
-  FOCUS_WAIT_MS, decideFocus, focusCommand, petMenuItems, reducedMotionPatch, moveRect,
+  FOCUS_WAIT_MS, decideFocus, focusCommand, petMenuItems, reducedMotionPatch, moveRect, petVisibilityAction, runFocusHelper,
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
   quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
   welcomeClosedMessage, ipcAllowed, welcomeWebPreferences, QUIT_EVENTS, isQuitEvent,
