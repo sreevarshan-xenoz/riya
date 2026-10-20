@@ -208,7 +208,9 @@ def activity_of(payload, now: float) -> Activity | None:
 
 
 class ActivityGate:
-    """At most one activity per session every gap_s; what arrives in between is held, and the latest one wins."""
+    """At most one activity per session every gap_s; what arrives in between is held, and the latest one wins. A "wave"
+    (a PermissionRequest: the agent needs the user) is never held and never replaced: it goes out at once and starts
+    the session's gap, so a PreToolUse right behind it can't delay or overwrite it."""
 
     def __init__(self, gap_s: float = ACTIVITY_GAP_S):
         self.gap_s = gap_s
@@ -225,7 +227,7 @@ class ActivityGate:
 
     def offer(self, act: Activity, now: float) -> Activity | None:
         last = self._last.get(act.session)
-        if last is None or now - last >= self.gap_s:
+        if last is None or now - last >= self.gap_s or act.kind == "wave":
             if last is None and len(self._last) >= MAX_AGENTS:
                 oldest = next(iter(self._last))
                 del self._last[oldest]

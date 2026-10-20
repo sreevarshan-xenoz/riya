@@ -8,7 +8,7 @@ import socket
 import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PureWindowsPath
 from typing import Protocol
 
@@ -53,6 +53,7 @@ class TopWindow:
 class Peer:
     pid: int
     folder: str
+    created: float | None = None  # the process's creation time when it was noted: a reused pid has another one
 
 
 class PeerOS(Protocol):
@@ -64,13 +65,19 @@ class PeerOS(Protocol):
     def windows(self) -> list[TopWindow]:
         """Visible, unowned, uncloaked top-level windows in z-order, topmost first."""
 
+    def created(self, pid: int) -> float | None:
+        """The process creation time (seconds, any fixed epoch), or None when that pid isn't running."""
+
 
 class FakePeerOS:
     """A PeerOS from plain data: the core's default off Windows and in tests. calls records each method used; names in
-    raises make that method raise OSError."""
+    raises make that method raise OSError. created maps pid -> creation time; a pid in procs without one is alive at
+    0.0, and a pid in neither is not running."""
 
-    def __init__(self, rows: Iterable[TcpRow] = (), procs: Iterable[Proc] = (), wins: Iterable[TopWindow] = ()):
+    def __init__(self, rows: Iterable[TcpRow] = (), procs: Iterable[Proc] = (), wins: Iterable[TopWindow] = (),
+                 created: Mapping[int, float] | None = None):
         self.rows, self.procs, self.wins = list(rows), list(procs), list(wins)
+        self.times: dict[int, float] = dict(created or {})
         self.calls: list[str] = []
         self.raises: set[str] = set()
 
@@ -91,6 +98,12 @@ class FakePeerOS:
         self._use("windows")
         return list(self.wins)
 
+    def created(self, pid: int) -> float | None:
+        self._use("created")
+        if pid in self.times:
+            return self.times[pid]
+        return 0.0 if any(p.pid == pid for p in self.procs) else None
+
 
 class WindowsPeerOS:
     """The real tables (ctypes, private WinDLL handles as in presence.WindowsIdleSource). Read-only."""
@@ -98,6 +111,7 @@ class WindowsPeerOS:
     AF_INET, TCP_TABLE_OWNER_PID_ALL = 2, 5
     LOOPBACK = 0x0100007F  # 127.0.0.1 as a little-endian DWORD
     TH32CS_SNAPPROCESS, GW_OWNER, DWMWA_CLOAKED = 2, 4, 14
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
     def __init__(self):
         import ctypes
@@ -128,6 +142,10 @@ class WindowsPeerOS:
         k.Process32FirstW.restype = k.Process32NextW.restype = wintypes.BOOL
         k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
         k.CloseHandle.argtypes = [ctypes.c_void_p]
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.GetProcessTimes.restype = wintypes.BOOL
+        k.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(wintypes.FILETIME)] * 4
         u.EnumWindows.argtypes = [self._ENUMPROC, wintypes.LPARAM]
         u.IsWindowVisible.restype = wintypes.BOOL
         u.IsWindowVisible.argtypes = [wintypes.HWND]
@@ -210,6 +228,26 @@ class WindowsPeerOS:
         return found
 
 
+    def created(self, pid: int) -> float | None:
+        """The creation time of a running process (FILETIME seconds), None when the pid isn't running or can't be
+        opened. A process that has exited (its exit time is set) isn't running even while a handle keeps it listed."""
+        c, w, k = self._c, self._w, self._kernel32
+        if pid <= 0:
+            return None
+        handle = k.OpenProcess(self.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            made, gone, kern, user = (w.FILETIME() for _ in range(4))
+            if not k.GetProcessTimes(handle, c.byref(made), c.byref(gone), c.byref(kern), c.byref(user)):
+                return None
+            if gone.dwHighDateTime or gone.dwLowDateTime:
+                return None
+            return ((made.dwHighDateTime << 32) | made.dwLowDateTime) / 1e7
+        finally:
+            k.CloseHandle(handle)
+
+
 def default_peer_os() -> PeerOS:
     return WindowsPeerOS() if sys.platform == "win32" else FakePeerOS()
 
@@ -225,14 +263,21 @@ def owner_pid(local_port: int, remote_port: int, os_: PeerOS, own_pid: int | Non
     return None
 
 
-def parent_chain(pid: int, procs: Mapping[int, Proc]) -> list[int]:
+def parent_chain(pid: int, procs: Mapping[int, Proc], created: Callable[[int], float | None] | None = None) -> list[int]:
     """[pid, parent, ...], stopping at a missing pid, a repeat, a pid <= 0, MAX_CHAIN entries, or the first system or
-    shell process (explorer and friends), which is excluded."""
+    shell process (explorer and friends), which is excluded. With created (pid -> creation time), it also stops at a
+    process that is not running or was created after its child: a parent born later than its child is a reused pid."""
     chain: list[int] = []
+    child_at: float | None = None
     while len(chain) < MAX_CHAIN and pid > 0 and pid not in chain:
         p = procs.get(pid)
         if p is None or p.name in STOP_PROCESSES:
             break
+        if created is not None:
+            at = created(pid)
+            if at is None or (child_at is not None and at > child_at):
+                break
+            child_at = at
         chain.append(pid)
         pid = p.ppid
     return chain
@@ -258,7 +303,14 @@ def window_for_pid(pid: int, folder: str, os_: PeerOS) -> int | None:
     if pid <= 0:
         return None
     procs = os_.processes()
-    return pick_window(parent_chain(pid, procs), procs, os_.windows(), folder)
+    return pick_window(parent_chain(pid, procs, os_.created), procs, os_.windows(), folder)
+
+
+def peer_alive(p: Peer, os_: PeerOS) -> bool:
+    """The agent a Peer names is still that process: running, and (when its creation time was noted) created at that
+    same time, so a pid that was reused since the hook fired never counts."""
+    at = os_.created(p.pid)
+    return at is not None and (p.created is None or at == p.created)
 
 
 def _folder_of(cwd: str) -> str:
@@ -269,21 +321,22 @@ class PeerMap:
     """session -> Peer (the agent's pid and its cwd's folder name), thread-safe. The receiver notes every hook; a
     cached session only refreshes its folder, so the table lookup runs once per session (or per SessionStart)."""
 
-    def __init__(self, lookup: Callable[[int], int | None]):
+    def __init__(self, lookup: Callable[[int], int | None], created: Callable[[int], float | None] | None = None):
         self.lookup = lookup
+        self.created = created  # pid -> creation time, stored with the pid (for peer_alive at click time)
         self._lock = threading.Lock()
         self._peers: dict[str, Peer] = {}
 
     @classmethod
     def for_os(cls, os_: PeerOS) -> "PeerMap":
-        return cls(lambda port: owner_pid(port, SERVER_PORT, os_))
+        return cls(lambda port: owner_pid(port, SERVER_PORT, os_), os_.created)
 
     def note(self, session: str, client_port: int, cwd: str | None = None, fresh: bool = False) -> None:
         with self._lock:
             cur = self._peers.get(session)
             if cur is not None and not fresh:
                 if isinstance(cwd, str):
-                    self._peers[session] = Peer(cur.pid, _folder_of(cwd))
+                    self._peers[session] = replace(cur, folder=_folder_of(cwd))
                 return
             folder = _folder_of(cwd) if isinstance(cwd, str) else (cur.folder if cur else "")
         try:
@@ -292,9 +345,13 @@ class PeerMap:
             pid = None
         if not pid:
             return
+        try:
+            born = self.created(pid) if self.created is not None else None
+        except Exception:
+            born = None
         with self._lock:
             self._peers.pop(session, None)  # re-stored last: the oldest is the first key
-            self._peers[session] = Peer(pid, folder)
+            self._peers[session] = Peer(pid, folder, born)
             while len(self._peers) > MAX_PEERS:
                 del self._peers[next(iter(self._peers))]
 

@@ -96,6 +96,28 @@
         "title": "EpisodeDelete",
         "type": "object"
       },
+      "FocusAgent": {
+        "description": "The user clicked Little Riya while an agent needed them: which window is it? Answered with agent_window to the\nasking connection only. The core never focuses anything itself.",
+        "properties": {
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "focus_agent",
+            "default": "focus_agent",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "FocusAgent",
+        "type": "object"
+      },
       "GetMemories": {
         "properties": {
           "type": {
@@ -484,6 +506,7 @@
         "confirm": "#/$defs/Confirm",
         "dont_look": "#/$defs/DontLook",
         "episode_delete": "#/$defs/EpisodeDelete",
+        "focus_agent": "#/$defs/FocusAgent",
         "get_memories": "#/$defs/GetMemories",
         "glance_delete": "#/$defs/GlanceDelete",
         "health_get": "#/$defs/HealthGet",
@@ -578,6 +601,9 @@
       },
       {
         "$ref": "#/$defs/OnboardingDone"
+      },
+      {
+        "$ref": "#/$defs/FocusAgent"
       }
     ]
   },
@@ -644,6 +670,58 @@
         "title": "ActionsMsg",
         "type": "object"
       },
+      "AgentActivity": {
+        "description": "What one agent session is doing, for Little Riya's bubble and pose: never spoken. label: a tool name plus a\nredacted file basename or a command's first word, at most 40 chars. at: the core clock when it was made.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "number"
+          },
+          "kind": {
+            "enum": [
+              "edit",
+              "run",
+              "read",
+              "search",
+              "web",
+              "delegate",
+              "think",
+              "wave",
+              "done",
+              "fail",
+              "oops",
+              "sparkle"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 40,
+            "title": "Label",
+            "type": "string"
+          },
+          "session": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Session",
+            "type": "string"
+          },
+          "type": {
+            "const": "agent_activity",
+            "default": "agent_activity",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "label",
+          "kind",
+          "at"
+        ],
+        "title": "AgentActivity",
+        "type": "object"
+      },
       "AgentInfo": {
         "description": "One of the user's agents (a Claude Code session or a Colab run); detail is a sanitized summary, <= 80 chars.",
         "properties": {
@@ -686,6 +764,41 @@
           "needs_attention"
         ],
         "title": "AgentInfo",
+        "type": "object"
+      },
+      "AgentWindow": {
+        "description": "The answer to focus_agent: the agent's window at click time, or null when none was found.",
+        "properties": {
+          "hwnd": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hwnd"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "agent_window",
+            "default": "agent_window",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AgentWindow",
         "type": "object"
       },
       "AgentsMsg": {
@@ -1288,6 +1401,33 @@
         "title": "NoteInfo",
         "type": "object"
       },
+      "PresenceMsg": {
+        "description": "The user's presence changed (sent only on change, never replayed: hello's state carries it for a new body).",
+        "properties": {
+          "state": {
+            "enum": [
+              "away",
+              "focused",
+              "break",
+              "talking",
+              "gaming"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "const": "presence",
+            "default": "presence",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "PresenceMsg",
+        "type": "object"
+      },
       "ReminderInfo": {
         "properties": {
           "due_at": {
@@ -1696,6 +1836,8 @@
     "discriminator": {
       "mapping": {
         "actions": "#/$defs/ActionsMsg",
+        "agent_activity": "#/$defs/AgentActivity",
+        "agent_window": "#/$defs/AgentWindow",
         "agents": "#/$defs/AgentsMsg",
         "confirm_done": "#/$defs/ConfirmDone",
         "confirm_request": "#/$defs/ConfirmRequest",
@@ -1708,6 +1850,7 @@
         "look": "#/$defs/Look",
         "memories": "#/$defs/MemoriesMsg",
         "mouth": "#/$defs/Mouth",
+        "presence": "#/$defs/PresenceMsg",
         "reminders": "#/$defs/RemindersMsg",
         "say": "#/$defs/Say",
         "say_end": "#/$defs/SayEnd",
@@ -1782,6 +1925,15 @@
       },
       {
         "$ref": "#/$defs/VoicesMsg"
+      },
+      {
+        "$ref": "#/$defs/AgentActivity"
+      },
+      {
+        "$ref": "#/$defs/PresenceMsg"
+      },
+      {
+        "$ref": "#/$defs/AgentWindow"
       }
     ]
   },

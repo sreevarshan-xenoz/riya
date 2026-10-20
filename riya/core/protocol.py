@@ -400,14 +400,49 @@ class OnboardingDone(BaseModel):
     type: Literal["onboarding_done"] = "onboarding_done"
 
 
+ActivityKind = Literal["edit", "run", "read", "search", "web", "delegate", "think", "wave", "done", "fail", "oops",
+                       "sparkle"]  # written out (no hub import); a test keeps it equal to hub.ACTIVITY_KINDS
+
+
+class AgentActivity(BaseModel):
+    """What one agent session is doing, for Little Riya's bubble and pose: never spoken. label: a tool name plus a
+    redacted file basename or a command's first word, at most 40 chars. at: the core clock when it was made."""
+    type: Literal["agent_activity"] = "agent_activity"
+    session: str = Field(min_length=1, max_length=128)
+    label: str = Field(max_length=40)
+    kind: ActivityKind
+    at: float
+
+
+class PresenceMsg(BaseModel):
+    """The user's presence changed (sent only on change, never replayed: hello's state carries it for a new body)."""
+    type: Literal["presence"] = "presence"
+    state: Literal["away", "focused", "break", "talking", "gaming"]
+
+
+class AgentWindow(BaseModel):
+    """The answer to focus_agent: the agent's window at click time, or null when none was found."""
+    type: Literal["agent_window"] = "agent_window"
+    id: str = Field(min_length=1, max_length=128)
+    hwnd: int | None = Field(default=None, ge=1)
+
+
+class FocusAgent(BaseModel):
+    """The user clicked Little Riya while an agent needed them: which window is it? Answered with agent_window to the
+    asking connection only. The core never focuses anything itself."""
+    type: Literal["focus_agent"] = "focus_agent"
+    id: str = Field(min_length=1, max_length=128)
+
+
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
                               Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg,
-                              LearningMsg, HealthMsg, SetupResult, SetupConfirm, VoicesMsg],
+                              LearningMsg, HealthMsg, SetupResult, SetupConfirm, VoicesMsg, AgentActivity, PresenceMsg,
+                              AgentWindow],
                         Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
                               QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear, StyleNoteDelete, TwinReset,
-                              LearningReset, HealthGet, SetupRequest, SetupAction, OnboardingDone],
+                              LearningReset, HealthGet, SetupRequest, SetupAction, OnboardingDone, FocusAgent],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)

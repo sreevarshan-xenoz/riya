@@ -280,6 +280,13 @@ test("health is never replayed and is forgotten on disconnect; setup messages ar
   }
 });
 
+test("agent_activity, presence and agent_window are never replayed; focus_agent is never queued", () => {
+  for (const t of ["agent_activity", "presence", "agent_window"]) assert.ok(!REPLAY_TYPES.includes(t), t);
+  assert.ok(NOW_ONLY.includes("focus_agent"));
+  assert.equal(shouldSendToCore({ type: "focus_agent", id: "a" }, false), false);
+  assert.equal(shouldSendToCore({ type: "focus_agent", id: "a" }, true), true);
+});
+
 const M = require("../src/main-logic");
 const readBody = (f) => require("node:fs").readFileSync(require("node:path").join(__dirname, "..", f), "utf8");
 
