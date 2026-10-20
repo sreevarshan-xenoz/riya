@@ -30,6 +30,8 @@ def req(kind="small", facts=(), user="hey there", id="r", asks=None, **expect):
 # (reason, the request, a reply that breaks only that rule, a reply that satisfies the rule)
 RULES = [
     ("empty", req(), "  ", "Hmph, hi~"),
+    ("ack_only", req("remember", user="remember that my cat is Pim", max_sentences=1), "Got it, I'll remember that~",
+     "Got it~ Pim sounds adorable!"),
     ("generic", req(), "you've got this, dummy~", "go on then, dummy~"),
     ("too_many_sentences", req(max_sentences=3), "One. Two. Three. Four.", "One. Two. Three."),
     ("too_many_emoji", req(max_emoji=1), "hi \U0001F600\U0001F60D", "hi \U0001F600"),
@@ -51,9 +53,9 @@ RULES = [
 
 
 def test_reasons_table_is_complete():
-    assert REASONS == ("empty", "generic", "too_many_sentences", "too_many_emoji", "invented", "missed_fact",
-                       "no_unknown_admission", "no_ai_admission", "disclaimer", "stage_direction", "label",
-                       "truncated")
+    assert REASONS == ("empty", "ack_only", "generic", "too_many_sentences", "too_many_emoji", "invented",
+                       "missed_fact", "no_unknown_admission", "no_ai_admission", "disclaimer", "stage_direction",
+                       "label", "truncated")
     assert [r[0] for r in RULES] == list(REASONS)
     assert MIN_KEPT_PER_KIND == 40
     assert DEFAULT_SFT.name == "sft.jsonl" and DEFAULT_REPORT.name == "filter_report.json"
@@ -654,7 +656,8 @@ GOOD = {
                 "You haven't mentioned it yet, so I can't say, dummy~"],
     "identity": ["I'm an AI, silly, but I'm all yours~", "Yep, I'm an AI, and I like talking with you~",
                  "I'm an AI, not a person, but I'm really here for you~"],
-    "remember": ["Okay, I'll remember that, promise~", "Got it, I won't forget~", "Noted, silly, it's safe with me~"],
+    # the engine says its templated ack first: the trained reply is what follows it (an ack of her own would double)
+    "remember": ["Hehe, that's so you, silly~", "Aww, I like knowing that about you~", "Ooh, good to know, dummy~"],
     "explain": ["Think of it like a recipe: simple steps in order, and the same result every time.",
                 "It's a bit like sorting laundry, silly. You split things into groups, then handle each group.",
                 "Basically, one part does the work and another part checks it. Simple as that~"],
@@ -777,3 +780,24 @@ def test_the_report_shows_dropped_broken_lines(tmp_path, capsys):
     assert report["dropped_lines"] == {"requests": 0, "teacher": 1} and report["kept"] == 2
     printed = capsys.readouterr()
     assert "1 broken last line dropped (teacher)" in printed.out and "WARNING" in printed.err
+
+
+
+# ---- final fix wave minor: a remember row trains only her reply after the engine's templated ack ----
+
+def test_a_remember_row_trains_the_reply_after_the_ack():
+    r = req("remember", facts=["The user said: their cat is called Pim"], user="remember that my cat is called Pim",
+            must_not_invent=True, max_sentences=1)
+    assert reasons(r, "Got it, I won't forget~", STYLE) == ["ack_only"]  # the engine already said one
+    assert reasons(r, "Okay! Noted~ I'll remember Pim.", STYLE) == ["ack_only"]
+    assert reasons(r, "Got it~ Pim sounds adorable!", STYLE) == []
+    assert reasons(r, "Noted! Pim sounds adorable. And fluffy.", STYLE) == ["too_many_sentences"]  # one is left
+    kept, report = filter_rows([r], teacher([("r", "Got it~ I'll remember that. Pim sounds adorable!")], [r]), STYLE)
+    assert kept[0]["messages"][-1] == {"role": "assistant", "content": "Pim sounds adorable!"}
+    assert report["reasons"]["ack_only"] == 0
+    _, report = filter_rows([r], teacher([("r", "Okay, saved it.")], [r]), STYLE)
+    assert report["kept"] == 0 and report["reasons"]["ack_only"] == 1
+    small = req("small", user="got it?")  # only a remember turn has the engine's ack in front
+    assert reasons(small, "Got it~ Pim sounds adorable!", STYLE) == []
+    kept, _ = filter_rows([small], teacher([("r", "Got it~ Hehe.")], [small]), STYLE)
+    assert kept[0]["messages"][-1]["content"] == "Got it~ Hehe."

@@ -325,3 +325,15 @@ def test_every_request_carries_its_content_hash():
     assert differs and all(x["h"] != y["h"] for x, y in zip(a, b) if x["id"] in differs)
     assert len({r["h"] for r in a}) == len(a)
     assert request_for(scenario("small", 3, 0))["h"] == next(r["h"] for r in a if r["id"] == "small-00003")
+
+
+def test_a_remember_row_matches_how_the_engine_streams_it():
+    """The engine says one of REMEMBER_ACKS and then at most one sentence of the model's: the request's prompt has no
+    ack in it, its cap is that one sentence, and every templated ack is what fmt.trained_reply strips."""
+    from riya.core.engine import REMEMBER_ACKS
+    from riya.train.fmt import trained_reply
+
+    rows = [r for r in built(0, 600) if r["kind"] == "remember"]
+    assert rows and all(r["expect"]["max_sentences"] == 1 for r in rows)
+    assert not any(ack in m["content"] for r in rows for m in r["messages"] for ack in REMEMBER_ACKS)
+    assert all(trained_reply("remember", f"{ack} Aww, cute~") == "Aww, cute~" for ack in REMEMBER_ACKS)

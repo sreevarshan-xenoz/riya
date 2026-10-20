@@ -284,3 +284,27 @@ def test_check_template_cli(monkeypatch, capsys):
     monkeypatch.setattr(fmt, "_post_json", down)
     assert fmt.main(["--check-template", "--server", "http://127.0.0.1:8090"]) == 2
     assert "couldn't reach" in capsys.readouterr().out
+
+
+
+def test_trained_reply_drops_the_leading_acknowledgement_on_remember_rows():
+    from riya.core.engine import REMEMBER_ACKS
+    from riya.train.fmt import trained_reply
+
+    for ack in REMEMBER_ACKS:  # every ack the engine itself says is recognised
+        assert trained_reply("remember", ack) == "", ack
+        assert trained_reply("remember", ack + " Ooh, Pim sounds sweet!") == "Ooh, Pim sounds sweet!", ack
+    cases = {
+        "Got it~ Ooh, Pim sounds sweet!": "Ooh, Pim sounds sweet!",
+        "Okay! Noted~ She sounds lovely.": "She sounds lovely.",
+        "Gotcha, I'll keep that in mind! Hehe~": "Hehe~",
+        "Mm-hm, saved~ Cute name.": "Cute name.",
+        "Sure thing, I won't forget it! Aww.": "Aww.",
+        "Ooh, a cat? Got it.": "Ooh, a cat? Got it.",  # only a leading ack goes
+        "Pim sounds sweet~": "Pim sounds sweet~",
+        "Hmph, fine, saved it. You're welcome~": "You're welcome~",
+    }
+    for text, want in cases.items():
+        assert trained_reply("remember", text) == want, text
+    for kind in ("small", "feedback", "greeting"):
+        assert trained_reply(kind, "Got it~ Ooh, Pim sounds sweet!") == "Got it~ Ooh, Pim sounds sweet!"
