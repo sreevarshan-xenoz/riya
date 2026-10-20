@@ -197,3 +197,92 @@ def test_pre_tool_use_keeps_a_session_alive_quietly():
     for _ in range(50):
         assert hub.on_claude_event(pre("Edit", {"file_path": "a.py"})) == []
     assert hub.snapshot() == before
+
+
+@pytest.mark.parametrize("command", [
+    "ghs_abc push", "gho_abc push", "ghu_abc push", "ghr_abc push", "github_pat_abc push", "sk_live_abcd1234 x",
+    "sk_test_abcd1234 x", "pk_live_abcd x", "rk_live_abcd x", "glpat-abcd x", "xoxa-1 x", "XAIzaSyAbc x", "ya29.abc x",
+    "https://user:pw@host/x", "user:pw@host", "AUTH=Basic abcdefgh git", "AUTH=Token abcdefgh git",
+    "\"AUTH=basic abcdefgh\" git", "ftp://host/x",
+])
+def test_more_token_prefixes_and_url_credentials_read_as_a_command(command):
+    assert bash(command) == "running a command"
+
+
+@pytest.mark.parametrize("path", [
+    "C:/x/ghs_ab.txt", "C:/x/gho_ab.txt", "C:/x/ghu_ab.txt", "C:/x/ghr_ab.txt", "C:/x/github_pat_ab.txt",
+    "C:/x/sk_live_ab.txt", "C:/x/sk_test_ab.txt", "C:/x/pk_live_ab.txt", "C:/x/rk_live_ab.txt", "C:/x/glpat-ab.txt",
+    "C:/x/xoxb-1.txt", "C:/x/AIzaSy.txt", "C:/x/ya29.ab.txt", "C:/x/basic abc.txt", "C:/x/token abc.txt",
+    "C:/x/user:pw@host.txt", "C:/x/a:b@c.txt",
+])
+def test_more_token_prefixes_and_url_credentials_read_as_a_file(path):
+    assert edit(path) == "editing a file"
+
+
+def test_an_env_assignment_is_still_skipped_when_it_is_not_a_credential():
+    assert bash("GITHUB_TOKEN=xyz git push") == "running git"
+    assert bash("CI=1 npm run build") == "running npm"
+
+
+@pytest.mark.parametrize("path", [".", "..", "a/..", "a\\..", "C:/", "", "   ", "a/. ", "a/..."])
+def test_unreadable_basenames_read_as_a_file(path):
+    assert edit(path) == "editing a file"
+    assert label("Read", {"file_path": path}) == "reading a file"
+
+
+@pytest.mark.parametrize("ev", [[], {}, 5, None, ("Stop",), 1.5, True])
+def test_activity_of_never_raises_on_a_non_str_event(ev):
+    assert activity_of({"session_id": SID, "hook_event_name": ev}, 1.0) is None
+    assert activity_of({"session_id": SID}, 1.0) is None
+    assert AgentHub(FakeClock()).on_claude_event({"session_id": SID, "hook_event_name": ev}) == []
+
+
+def test_a_huge_payload_is_bounded_before_any_regex_or_split(monkeypatch):
+    import riya.agents.hub as hub
+
+    seen = {"path": 0, "split": 0, "hint": 0, "test": 0, "summarize": 0}
+
+    class SpyPath(hub.PureWindowsPath):
+        def __new__(cls, *args):
+            seen["path"] = max(seen["path"], max(len(a) for a in args))
+            return super().__new__(cls, *args)
+
+    class SpyRe:
+        def __init__(self, key, rx):
+            self.key, self.rx = key, rx
+
+        def search(self, text, *a):
+            seen[self.key] = max(seen[self.key], len(text))
+            return self.rx.search(text, *a)
+
+    real_split, real_summarize = hub.shlex.split, hub.summarize
+
+    def split(text, **kw):
+        seen["split"] = max(seen["split"], len(text))
+        return real_split(text, **kw)
+
+    def summ(text, n=80):
+        seen["summarize"] = max(seen["summarize"], len(text) if isinstance(text, str) else 0)
+        return real_summarize(text, n)
+
+    monkeypatch.setattr(hub, "PureWindowsPath", SpyPath)
+    monkeypatch.setattr(hub, "SECRET_HINT_RE", SpyRe("hint", hub.SECRET_HINT_RE))
+    monkeypatch.setattr(hub, "TEST_RE", SpyRe("test", hub.TEST_RE))
+    monkeypatch.setattr(hub.shlex, "split", split)
+    monkeypatch.setattr(hub, "summarize", summ)
+    huge = 250_000
+    for tool_input in ({"file_path": "C:/x/" + "a-" * huge + ".py"}, {"file_path": "a-" * huge},
+                       {"file_path": "C:/" + " " * huge + "x.py"}, {"command": "x " * huge},
+                       {"command": " " * huge + "git"}, {"command": "git " + "=" * huge}):
+        for tool in ("Edit", "Read", "Bash"):
+            assert len(tool_activity(tool, tool_input)[1]) <= LABEL_MAX
+    a = activity_of({"session_id": SID, "hook_event_name": "PreToolUse", "tool_name": "x" * huge,
+                     "tool_input": {"command": "ls"}}, 1.0)
+    assert len(a.tool) <= 40
+    assert seen["path"] <= 512 and seen["split"] <= 500 and seen["test"] <= 200 and seen["hint"] <= 512
+    assert seen["summarize"] <= 512
+
+
+def test_a_name_longer_than_the_path_window_is_never_shown():
+    assert edit("C:/x/" + "a-" * 400) == "editing a file"  # cut at the front by the window: not a real name
+    assert edit("a-" * 400 + "/short.py") == "editing short.py"

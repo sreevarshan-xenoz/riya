@@ -94,10 +94,16 @@ TOOL_FALLBACK = "using a tool"
 TEST_RE = re.compile(r"(?:^|[\s/\\])(?:pytest|jest|vitest)\b|\b(?:npm|yarn|pnpm)\s+(?:run\s+)?test\b"
                      r"|\bnode\s+--test\b|\b(?:cargo|go)\s+test\b")
 # What redact's \b anchors miss (a marker glued to a word, `Xsk-ant-...`): a name that looks like this is never shown
-SECRET_HINT_RE = re.compile(r"sk-|ghp_|xox|akia|bearer|=|[a-z0-9]{20,}", re.IGNORECASE)
+# (the token prefixes of GitHub, Stripe, GitLab, Slack, AWS and Google; `basic `/`token ` auth words; `=`; a URL
+# credential `://` or `user:x@`; and any run of 20+ alphanumerics)
+SECRET_HINT_RE = re.compile(r"sk-|sk_live|sk_test|pk_live|rk_live|ghp_|gh[osur]_|github_pat_|glpat-|xox|akia|aiza|"
+                            r"ya29\.|bearer|basic |token |=|:.*(?://|@)|[a-z0-9]{20,}", re.IGNORECASE | re.DOTALL)
+_URL_CRED_RE = re.compile(r":(?://|[^\s/\\]*@)")
 _WORD_RE = re.compile(r"[A-Za-z0-9._+-]{1,24}")
 _WORD_TOKENS = 20        # leading tokens _first_word looks at while skipping VAR=value prefixes
 _WORD_SCAN = 500         # chars of a command it tokenises
+_PATH_SCAN = 512         # trailing chars of a path it looks at (the file name is at the end)
+_TOOL_SCAN = 200         # chars of a tool name it looks at
 _FIXED_EVENTS = {"Stop": "done", "PostToolUseFailure": "oops", "StopFailure": "fail", "SubagentStop": "sparkle"}
 
 
@@ -109,10 +115,13 @@ def _secret_looking(text: str) -> bool:
 
 def _basename(path) -> str | None:
     """The file name of a path (never the directory), or None when it is empty or secret-looking."""
-    if not isinstance(path, str) or not path.strip():
+    if not isinstance(path, str):
         return None
-    name = PureWindowsPath(path).name
-    if not name.strip() or _secret_looking(name):
+    tail = path[-_PATH_SCAN:]
+    if len(path) > len(tail) and "/" not in tail and "\\" not in tail:
+        return None  # one name longer than the window: it is cut at the front, so it is not shown at all
+    name = PureWindowsPath(tail).name
+    if not name.strip(". ") or _secret_looking(name):  # empty, or only dots ("..") or blanks: nothing to name
         return None
     return name
 
@@ -128,9 +137,12 @@ def _first_word(command) -> str | None:
         tokens = text.split()
     for tok in tokens[:_WORD_TOKENS]:
         if "=" in tok:
-            if "bearer" in tok.lower():
-                return None  # `AUTH=Bearer v`: the value is the next token
+            value = tok.partition("=")[2].lstrip("\"'").lower()
+            if "bearer" in tok.lower() or value.startswith(("basic", "token")):
+                return None  # `AUTH=Bearer v`, `AUTH=Basic v`: the credential is the next token
             continue
+        if _URL_CRED_RE.search(tok):
+            return None  # a URL (or user:pw@host) as the program: the basename alone would hide the credential
         word = PureWindowsPath(tok.strip("\"'")).name
         if word.lower().endswith(".exe"):
             word = word[:-4]
@@ -178,7 +190,7 @@ def activity_of(payload, now: float) -> Activity | None:
     if not isinstance(payload, dict):
         return None
     sid, ev = payload.get("session_id"), payload.get("hook_event_name")
-    if not isinstance(sid, str) or not 1 <= len(sid) <= 128:
+    if not isinstance(sid, str) or not 1 <= len(sid) <= 128 or not isinstance(ev, str):
         return None
     name, args = payload.get("tool_name"), payload.get("tool_input")
     if ev == "PreToolUse":
@@ -192,7 +204,7 @@ def activity_of(payload, now: float) -> Activity | None:
         label = FIXED_LABELS[kind]
     else:
         return None
-    return Activity(sid, label, kind, summarize(name, 40) if isinstance(name, str) else "", now)
+    return Activity(sid, label, kind, summarize(name[:_TOOL_SCAN], 40) if isinstance(name, str) else "", now)
 
 
 class ActivityGate:
@@ -288,7 +300,7 @@ class AgentHub:
         if not isinstance(payload, dict):
             return []
         sid, ev = payload.get("session_id"), payload.get("hook_event_name")
-        if not isinstance(sid, str) or not sid or len(sid) > 128 or ev not in CLAUDE_EVENTS:
+        if not isinstance(sid, str) or not sid or len(sid) > 128 or not isinstance(ev, str) or ev not in CLAUDE_EVENTS:
             return []
         cwd = payload.get("cwd")
         folder = summarize(PureWindowsPath(cwd).name, 40) if isinstance(cwd, str) and cwd else ""
