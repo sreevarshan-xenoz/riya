@@ -1,6 +1,7 @@
 """Pure state machine for the user's Claude Code sessions and Colab runs (spec §4.2)."""
 import json
 import re
+import shlex
 import unicodedata
 from dataclasses import dataclass
 from pathlib import PureWindowsPath
@@ -13,7 +14,7 @@ SNAPSHOT_MAX = 20
 MAX_AGENTS = 200         # hard cap on tracked agents (least recently heard from is evicted)
 ATTENTION = {"waiting", "failed", "lost", "stalled"}
 CLAUDE_EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure", "PostToolUse",
-                 "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd"}
+                 "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd", "PreToolUse"}
 _COLAB = {"running": "running", "done": "finished", "fail": "failed", "lost": "lost", "stalled": "stalled"}
 
 
@@ -77,6 +78,156 @@ def _tool_summary(tool_input) -> str:
         return summarize(json.dumps(tool_input, separators=(",", ":"), ensure_ascii=False, default=str))
     except (TypeError, ValueError):
         return summarize(tool_input)
+
+
+LABEL_MAX = 40           # the longest activity label (a bubble never carries more)
+ACTIVITY_GAP_S = 1.5     # at most one activity label per session in this time; the latest one wins
+ACTIVITY_KINDS = ("edit", "run", "read", "search", "web", "delegate", "think", "wave", "done", "fail", "oops",
+                  "sparkle")
+TOOL_KINDS = {"Edit": "edit", "MultiEdit": "edit", "Write": "edit", "NotebookEdit": "edit", "Bash": "run",
+              "PowerShell": "run", "Read": "read", "NotebookRead": "read", "Grep": "search", "Glob": "search",
+              "LS": "search", "WebFetch": "web", "WebSearch": "web", "Task": "delegate", "Agent": "delegate"}
+FIXED_LABELS = {"search": "searching the code", "web": "browsing", "delegate": "asking a helper",
+                "think": "thinking…", "done": "all done!", "fail": "that didn't work", "oops": "oops!",
+                "sparkle": "helper done"}
+TOOL_FALLBACK = "using a tool"
+TEST_RE = re.compile(r"(?:^|[\s/\\])(?:pytest|jest|vitest)\b|\b(?:npm|yarn|pnpm)\s+(?:run\s+)?test\b"
+                     r"|\bnode\s+--test\b|\b(?:cargo|go)\s+test\b")
+# What redact's \b anchors miss (a marker glued to a word, `Xsk-ant-...`): a name that looks like this is never shown
+SECRET_HINT_RE = re.compile(r"sk-|ghp_|xox|akia|bearer|=|[a-z0-9]{20,}", re.IGNORECASE)
+_WORD_RE = re.compile(r"[A-Za-z0-9._+-]{1,24}")
+_WORD_TOKENS = 20        # leading tokens _first_word looks at while skipping VAR=value prefixes
+_WORD_SCAN = 500         # chars of a command it tokenises
+_FIXED_EVENTS = {"Stop": "done", "PostToolUseFailure": "oops", "StopFailure": "fail", "SubagentStop": "sparkle"}
+
+
+def _secret_looking(text: str) -> bool:
+    """True when text looks like (or hides, behind control or bidi chars) a key, token or credential."""
+    plain = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C")
+    return bool(SECRET_HINT_RE.search(text) or SECRET_HINT_RE.search(plain))
+
+
+def _basename(path) -> str | None:
+    """The file name of a path (never the directory), or None when it is empty or secret-looking."""
+    if not isinstance(path, str) or not path.strip():
+        return None
+    name = PureWindowsPath(path).name
+    if not name.strip() or _secret_looking(name):
+        return None
+    return name
+
+
+def _first_word(command) -> str | None:
+    """The program a command runs (skipping VAR=value prefixes), or None when it is odd or secret-looking."""
+    if not isinstance(command, str):
+        return None
+    text = command[:_WORD_SCAN]
+    try:
+        tokens = shlex.split(text, posix=False)
+    except ValueError:
+        tokens = text.split()
+    for tok in tokens[:_WORD_TOKENS]:
+        if "=" in tok:
+            if "bearer" in tok.lower():
+                return None  # `AUTH=Bearer v`: the value is the next token
+            continue
+        word = PureWindowsPath(tok.strip("\"'")).name
+        if word.lower().endswith(".exe"):
+            word = word[:-4]
+        if not word or _secret_looking(word):
+            return None
+        return word if _WORD_RE.fullmatch(word) else None
+    return None
+
+
+def tool_activity(tool_name, tool_input) -> tuple[str, str]:
+    """(kind, label) for a tool about to run: the tool name plus a file basename or a command's first word, never
+    arguments. Every label is at most LABEL_MAX chars and clean of secrets."""
+    kind = TOOL_KINDS.get(tool_name) if isinstance(tool_name, str) else None
+    if kind is None:
+        return "run", summarize(TOOL_FALLBACK, LABEL_MAX)
+    args = tool_input if isinstance(tool_input, dict) else {}
+    if kind in ("edit", "read"):
+        name = _basename(args.get("file_path")) or _basename(args.get("notebook_path"))
+        verb = "editing" if kind == "edit" else "reading"
+        text = f"{verb} {name}" if name else f"{verb} a file"
+    elif kind == "run":
+        command = args.get("command")
+        word = _first_word(command)
+        if isinstance(command, str) and TEST_RE.search(command[:200]):
+            text = "running tests"
+        else:
+            text = f"running {word}" if word else "running a command"
+    else:
+        text = FIXED_LABELS[kind]
+    return kind, summarize(text, LABEL_MAX)
+
+
+@dataclass(frozen=True)
+class Activity:
+    session: str
+    label: str
+    kind: str
+    tool: str
+    at: float
+
+
+def activity_of(payload, now: float) -> Activity | None:
+    """The pet-facing activity for a Claude Code hook payload, or None. Reads only session_id, hook_event_name,
+    tool_name and tool_input: never the prompt, the arguments or any message."""
+    if not isinstance(payload, dict):
+        return None
+    sid, ev = payload.get("session_id"), payload.get("hook_event_name")
+    if not isinstance(sid, str) or not 1 <= len(sid) <= 128:
+        return None
+    name, args = payload.get("tool_name"), payload.get("tool_input")
+    if ev == "PreToolUse":
+        kind, label = tool_activity(name, args)
+    elif ev == "UserPromptSubmit":
+        kind, label = "think", FIXED_LABELS["think"]
+    elif ev == "PermissionRequest":
+        kind, label = "wave", summarize(f"needs you! {tool_activity(name, args)[1]}", LABEL_MAX)
+    elif ev in _FIXED_EVENTS:
+        kind = _FIXED_EVENTS[ev]
+        label = FIXED_LABELS[kind]
+    else:
+        return None
+    return Activity(sid, label, kind, summarize(name, 40) if isinstance(name, str) else "", now)
+
+
+class ActivityGate:
+    """At most one activity per session every gap_s; what arrives in between is held, and the latest one wins."""
+
+    def __init__(self, gap_s: float = ACTIVITY_GAP_S):
+        self.gap_s = gap_s
+        self._last: dict[str, float] = {}      # session -> its last send (least recent first)
+        self._held: dict[str, Activity] = {}   # session -> the activity waiting (in the order first held)
+
+    def __len__(self) -> int:
+        return len(self._last)
+
+    def _sent(self, sid: str, now: float) -> None:
+        self._last.pop(sid, None)
+        self._last[sid] = now
+        self._held.pop(sid, None)
+
+    def offer(self, act: Activity, now: float) -> Activity | None:
+        last = self._last.get(act.session)
+        if last is None or now - last >= self.gap_s:
+            if last is None and len(self._last) >= MAX_AGENTS:
+                oldest = next(iter(self._last))
+                del self._last[oldest]
+                self._held.pop(oldest, None)
+            self._sent(act.session, now)
+            return act
+        self._held[act.session] = act  # replaces a held one in place: the order stays first-held
+        return None
+
+    def due(self, now: float) -> list[Activity]:
+        out = [a for sid, a in self._held.items() if self._last[sid] + self.gap_s <= now]
+        for a in out:
+            self._sent(a.session, now)
+        return out
 
 
 @dataclass
@@ -145,7 +296,7 @@ class AgentHub:
         a = self._agents.get(sid)
         if a is None:
             # sessions may predate Riya; a subagent stop or a tool that ran means a turn is running
-            a = self._get(sid, "claude", name, "busy" if ev in ("SubagentStop", "PostToolUse") else "idle")
+            a = self._get(sid, "claude", name, "busy" if ev in ("SubagentStop", "PostToolUse", "PreToolUse") else "idle")
         elif folder:
             a.name = name
         if a.status == "ended" and ev not in ("UserPromptSubmit", "SessionStart"):
@@ -163,6 +314,11 @@ class AgentHub:
 
     def _ev_SessionEnd(self, a, p):
         self._set(a, "ended", "")
+
+    def _ev_PreToolUse(self, a, p):
+        """A tool is about to run: the session is alive and mid-turn. Never an event, never a detail."""
+        if a.status == "unknown":
+            self._set(a, "busy")
 
     def _ev_SubagentStop(self, a, p):
         pass  # only proves the session is alive
