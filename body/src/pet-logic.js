@@ -129,7 +129,8 @@ function gates(ctx, { quiet, sinceAgentS }) {
 
 function bubbleText(label) {
   if (typeof label !== "string") return "";
-  return label.length > BUBBLE_MAX ? label.slice(0, BUBBLE_MAX - 1) + "…" : label;
+  const chars = Array.from(label); // code points, so a pair of surrogates is never split
+  return chars.length > BUBBLE_MAX ? chars.slice(0, BUBBLE_MAX - 1).join("") + "…" : label;
 }
 
 function cleanArea(area) {
@@ -253,6 +254,7 @@ class Pet {
     this.agentAt = now;
     const row = REACTIONS[kind];
     if (row.bubbleOnly) {
+      if (this.state === "react" && this.reactKind === "wave") return; // "needs you!" stays; this would be stale by then
       this._showBubble(label, now, PET.BUBBLE_MS);
       if (this.state === "sleep" && !this.sleepForced) {
         this.awakeUntil = Math.max(this.awakeUntil, now + PET.BUBBLE_MS);
@@ -298,10 +300,11 @@ class Pet {
     const g = this._gates(now);
     if (this.bubble && now >= this.bubble.untilMs) this.bubble = null;
     if (this.state === "drag") return this._frame(true);
-    if (!g.show) this.queue = [];
+    if (!g.show) this._hide(now);
 
     const floor = floorY(this.area, this.size.height);
     if (this.state !== "fall" && this.y < floor - 1 && this.ctx.reducedMotion !== true) this._startFall(now);
+    if (this.state === "fall" && this.ctx.reducedMotion === true) this._snapToFloor(now, floor);
     if (this.state === "fall") this._stepFall(now, dt, floor);
 
     if (this.state === "react") {
@@ -452,6 +455,29 @@ class Pet {
       this._drawWalk(now);
       this.saveNext = true;
     }
+  }
+
+  /** Gaming or away: nothing shows. A running reaction ends at once (away then sleeps in the same step), the queue and
+   *  the bubble are dropped. */
+  _hide(now) {
+    this.queue = [];
+    this.bubble = null;
+    if (this.state !== "react") return;
+    this.reactUntil = null;
+    this.reactKind = null;
+    this.effect = null;
+    this._enterSit(now);
+    this._drawWalk(now);
+  }
+
+  /** Reduced motion came on mid-fall: she is on the floor, landed and standing, with no squash. */
+  _snapToFloor(now, floor) {
+    this.y = floor;
+    this.vy = 0;
+    this.landUntil = null;
+    this._enterIdle(now);
+    this._drawWalk(now);
+    this.saveNext = true;
   }
 
   _startReaction(now, g) {

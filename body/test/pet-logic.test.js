@@ -490,6 +490,71 @@ test("while gaming a reaction shows nothing; while focused a finish is pose and 
   assert.equal(unknown.step(5050).view.effect, "sweat", "sweat is never big");
 });
 
+test("gaming or away ends a running reaction at once", () => {
+  const pet = mk({ rng: HI });
+  pet.step(0);
+  pet.react("done", "all done!", 100);
+  const on = pet.step(150).view;
+  assert.deepEqual([on.state, on.effect, on.bubble !== null], ["react", "confetti", true]);
+  pet.setContext({ presence: "gaming" }, 200);
+  const gaming = pet.step(200).view;
+  assert.notEqual(gaming.state, "react");
+  assert.equal(gaming.effect, null);
+  assert.equal(gaming.bubble, null);
+
+  const away = mk({ rng: HI });
+  away.step(0);
+  away.react("wave", "needs you!", 100);
+  assert.equal(away.step(150).view.state, "react");
+  away.setContext({ presence: "away" }, 200);
+  const asleep = away.step(200).view;
+  assert.equal(asleep.state, "sleep");
+  assert.equal(asleep.bubble, null);
+  assert.equal(asleep.effect, null);
+  away.setContext({ presence: "focused" }, 300);
+  assert.equal(away.step(300).view.state, "sit", "and she is not left holding a stale reaction or queue");
+});
+
+test("a bubble-only label does not replace a running wave's bubble", () => {
+  const pet = mk({ rng: HI });
+  pet.step(0);
+  pet.react("wave", "needs you! running tests", 100);
+  pet.step(150);
+  pet.react("edit", "editing a.py", 200);
+  assert.equal(pet.step(250).view.bubble.text, "needs you! running tests");
+  pet.react("wave", "needs you! again", 300); // a new wave still follows the normal rules
+  assert.equal(pet.step(350).view.bubble.text, "needs you! again");
+  const after = run(pet, 350, 350 + 15000); // the first wave, then the queued second one
+  assert.equal(after.view.state, "sit");
+  pet.react("edit", "editing a.py", 20000);
+  assert.equal(pet.step(20050).view.bubble.text, "editing a.py", "once the wave is over a label shows again");
+  // a pose that is not a wave is not shielded
+  const t = mk({ rng: HI });
+  t.step(0);
+  t.react("think", "thinking", 100);
+  t.step(150);
+  t.react("edit", "editing a.py", 200);
+  assert.equal(t.step(250).view.bubble.text, "editing a.py");
+});
+
+test("reduced motion mid-fall snaps her to the floor without a squash", () => {
+  const pet = mk();
+  pet.step(0);
+  pet.grab(0);
+  assert.equal(pet.drop({ x: 100, y: 300 }, 0), "fall");
+  pet.step(50);
+  pet.setContext({ reducedMotion: true }, 100);
+  const frame = pet.step(100);
+  assert.equal(frame.y, 696);
+  assert.equal(frame.view.state, "idle");
+  assert.equal(frame.view.motion, null);
+  assert.equal(frame.save, true);
+  assert.equal(pet.ticking(), false);
+  let squashed = false;
+  run(pet, 100, 2000, 50, (f) => { if (f.view.motion === "squash") squashed = true; assert.equal(f.save, false); });
+  assert.equal(squashed, false);
+});
+
 test("a finish surprises about 1 in 50, and never while focused", () => {
   const count = (idleS, seed) => {
     const pet = mk({ rng: makeRng(seed), ctx: { presence: "focused", idleS } });
@@ -671,6 +736,15 @@ test("bubbleText clips to 40", () => {
   assert.equal(clipped.length, 40);
   assert.ok(clipped.endsWith("…"));
   assert.equal(clipped, "a".repeat(39) + "…");
+  const emoji = "\u{1F600}"; // one code point, two UTF-16 units
+  const long = "a".repeat(38) + emoji + "bc";
+  assert.equal(Array.from(long).length, 41);
+  assert.equal(bubbleText(long), "a".repeat(38) + emoji + "…", "the pair is kept whole at the cut");
+  const edge = "a".repeat(39) + emoji + "b";
+  assert.equal(bubbleText(edge), "a".repeat(39) + "…", "and dropped whole when it is the cut");
+  assert.equal(bubbleText(emoji.repeat(40)), emoji.repeat(40), "40 code points fit");
+  assert.equal(bubbleText(emoji.repeat(41)), emoji.repeat(39) + "…");
+  assert.doesNotMatch(bubbleText(edge), /[\ud800-\udfff]/);
   assert.equal(bubbleText(null), "");
   assert.equal(bubbleText(12), "");
   assert.equal(bubbleText({}), "");
@@ -736,5 +810,8 @@ test("the module loads as a plain script", () => {
 
 test("the file needs no DOM, no Electron and no real clock or randomness", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "pet-logic.js"), "utf8");
-  assert.ok(!/Math\.random|Date\.now|performance\.now|setTimeout|setInterval/.test(source));
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+  assert.ok(!/Math\.random|Date\.now|performance\.now|setTimeout|setInterval/.test(code));
+  assert.ok(!/\bdocument\b|\bwindow\b|\brequire\s*\(|\belectron\b/i.test(code), "no DOM, no Electron, no require");
+  assert.ok(/typeof module !== "undefined"/.test(code) && /globalThis\.RiyaPet/.test(code), "only the dual-load guard");
 });

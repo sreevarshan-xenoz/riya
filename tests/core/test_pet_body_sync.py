@@ -45,6 +45,13 @@ def test_bubble_cap_matches_the_label_cap():
     assert js_int("BUBBLE_MAX") == hub.LABEL_MAX
 
 
+def test_default_scale_matches_the_settings_default():
+    m = re.search(r"\bSCALE_DEFAULT: ([\d.]+)", _text())
+    assert m, "pet-logic.js declares PET.SCALE_DEFAULT"
+    assert float(m.group(1)) == settings.Settings().pet_scale
+    assert settings.PET_SCALE_RANGE[0] <= float(m.group(1)) <= settings.PET_SCALE_RANGE[1]
+
+
 def test_reactions_are_keyed_by_the_kinds():
     assert js_reaction_keys() == list(hub.ACTIVITY_KINDS)
 
