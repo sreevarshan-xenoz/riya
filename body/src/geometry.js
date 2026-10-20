@@ -46,4 +46,4 @@ function boundsFor(mode, workArea, savedPos, size = DEFAULT_SIZE) {
   throw new Error(`unknown mode: ${mode}`);
 }
 
-module.exports = { boundsFor, clampToArea, MARGIN, PANEL_WIDTH, WINDOW_SIZE };
+module.exports = { boundsFor, clampToArea, DEFAULT_SIZE, MARGIN, PANEL_WIDTH, WINDOW_SIZE };
