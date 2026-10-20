@@ -931,3 +931,40 @@ test("the OS reduced-motion change reaches main, and her menu opens only while s
   assert.match(src, /reportReduced\(\);\s*reduced\.addEventListener/, "it reports on load too");
   assert.match(src, /contextmenu", \(e\) => \{[^}]*if \(!petActive\(\) \|\| !overSprite\(e\.clientX, e\.clientY\)\) return;/);
 });
+
+test("while gaming she holds her pose: no sit or stand toggle, no fidget, no view change over 10 minutes", () => {
+  for (const seed of [1, 2, 3]) {
+    const pet = new Pet({ rng: makeRng(seed), nowMs: 0, area: AREA, size: SIZE, ctx: { presence: "gaming", idleS: 5 } });
+    const first = pet.step(50);
+    const changes = [];
+    let wake = null;
+    run(pet, 50, 10 * 60 * 1000, 1000, (f, t) => {
+      if (f.viewChanged || f.moved) changes.push(t);
+      const w = pet.nextWakeMs(t);
+      if (w !== null && (wake === null || w - t > wake)) wake = w - t;
+    });
+    assert.deepEqual(changes, [], `seed ${seed}`);
+    assert.equal(pet.state, first.view.state);
+    assert.equal(pet.motion, first.view.motion);
+    assert.ok(wake >= 1000, "her next wake is the poll, not a toggle deadline");
+  }
+  // a long idle while gaming (a film in a borderless window) doesn't put her to sleep either
+  const idle = new Pet({ rng: makeRng(4), nowMs: 0, area: AREA, size: SIZE, ctx: { presence: "gaming", idleS: 5 } });
+  idle.step(50);
+  idle.setContext({ idleS: 5000 }, 100);
+  assert.equal(run(idle, 50, 20 * 60 * 1000, 1000).view.state, "idle");
+  // a fidget under way when the game starts ends, and nothing starts again
+  const fid = mk({ rng: HI });
+  const t0 = until(fid, 0, (f) => f.view.motion === "fidget").t;
+  fid.setContext({ presence: "gaming" }, t0 + 10);
+  const f1 = fid.step(t0 + 20);
+  assert.equal(f1.view.motion, null);
+  const after = [];
+  run(fid, t0 + 20, t0 + 600000, 1000, (f) => { if (f.viewChanged || f.moved) after.push(f.view.state); });
+  assert.deepEqual(after, []);
+  // when the game ends she carries on as before
+  fid.setContext({ presence: "focused", idleS: 0 }, t0 + 600500);
+  const states = new Set();
+  run(fid, t0 + 600500, t0 + 600500 + 300000, 1000, (f) => states.add(f.view.state));
+  assert.ok(states.has("sit"), "toggles resume");
+});

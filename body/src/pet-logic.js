@@ -315,7 +315,9 @@ class Pet {
     }
 
     const wantSleep = this.sleepForced || (g.sleep && (this.ctx.presence === "away" || now >= this.awakeUntil));
+    const gaming = this.ctx.presence === "gaming";
     if (this.state === "walk") this._stepWalk(now, dt, g, wantSleep, floor);
+    else if (gaming && (this.state === "idle" || this.state === "sit" || this.state === "sleep")) this._freeze(now);
     else if (this.state === "sleep") {
       if (!wantSleep) {
         this._enterSit(now);
@@ -323,7 +325,7 @@ class Pet {
       }
     } else if (this.state === "idle" || this.state === "sit") {
       if (wantSleep) this._enterSleep(now);
-      else this._stepResting(now, g);
+      else if (g.show) this._stepResting(now, g);
     }
     return this._frame(false);
   }
@@ -345,7 +347,9 @@ class Pet {
     const add = (list, t) => { if (Number.isFinite(t)) list.push(Math.max(t, now)); };
     if (this.bubble) add(exact, this.bubble.untilMs);
     if (this.awakeUntil > now) add(exact, this.awakeUntil);
-    if (this.state === "idle" || this.state === "sit") {
+    if ((this.state === "idle" || this.state === "sit" || this.state === "sleep") && this.ctx.presence === "gaming") {
+      // frozen while gaming: no toggle, fidget or walk deadline, only the poll
+    } else if (this.state === "idle" || this.state === "sit") {
       add(lazy, this.nextWalkAt);
       add(lazy, this.toggleAt);
       if (this.state === "idle" && this.ctx.reducedMotion !== true) {
@@ -570,6 +574,15 @@ class Pet {
       }
     }
     if (now >= this.nextWalkAt) this._tryWalk(now, g);
+  }
+
+  /** Gaming: she holds her pose (no sit or stand toggle, no fidget, no walk, no falling asleep or waking). A fidget under
+   *  way ends at once, so no wobble is left frozen on screen. */
+  _freeze(now) {
+    if (this.state === "idle" && this.fidgetUntil !== null) {
+      this.fidgetUntil = null;
+      this._set("idle", null, null, now);
+    }
   }
 
   _tryWalk(now, g) {
