@@ -209,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             log_path = os.environ.get("TEACHER_LOG", "/content/runs/teacher.log")
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             proc = subprocess.Popen([SERVER, "-m", teacher, "--port", str(PORT), "-ngl", "99",
-                                     "-c", str(SLOTS * SLOT_CTX), "-np", str(SLOTS), "-fa", "on", "--no-webui"],
+                                     "-c", str(SLOTS * SLOT_CTX), "-np", str(SLOTS), "-fa", "on", "--no-webui",
+                                     "--cache-ram", "0"],  # the default 8 GiB host prompt cache OOM-kills it on Colab
                                     stdout=subprocess.DEVNULL, stderr=open(log_path, "w"))
         if proc is not None:  # --url names a server that is already up
             _wait_healthy(base, proc)
