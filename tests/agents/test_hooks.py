@@ -383,6 +383,29 @@ def test_the_peer_is_not_recorded_for_a_bad_session_id():
     assert ports == []
 
 
+def test_a_forwarded_for_header_cannot_change_the_peer_port(tmp_path):
+    """Over a real loopback socket: the port noted is the socket's own, whatever X-Forwarded-For claims."""
+    ports, port = [], free_port()
+    started = start_hook_receiver(lambda p: None, token_path=tmp_path / "tok", port=port, warn=False,
+                                  peers=PeerMap(lambda p: ports.append(p) or 4242))
+    assert started is not None
+    server, thread = started
+    try:
+        body = json.dumps(OK).encode()
+        token = (tmp_path / "tok").read_text().strip()
+        head = ["POST /hook HTTP/1.1", "Host: x", f"X-Riya-Token: {token}", "X-Forwarded-For: 203.0.113.9:9999",
+                f"Content-Length: {len(body)}", "Connection: close", "", ""]
+        req = "\r\n".join(head).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            mine = c.getsockname()[1]
+            c.sendall(req + body)
+            assert c.recv(64).startswith(b"HTTP/1.1 200")
+        assert ports == [mine]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
 def test_a_failing_peer_lookup_never_breaks_the_200():
     got = []
 

@@ -128,8 +128,9 @@ def start_hook_receiver(enqueue: Callable[[dict], None], token_path: Path | str 
         import uvicorn
         token = load_or_create_token(token_path or default_token_path())
         app = create_hook_app(token, enqueue, rejected, peers)
-        server = uvicorn.Server(uvicorn.Config(app, host=HOOK_HOST, port=port,
-                                               log_level="warning"))  # shared uvicorn loggers: keep the level
+        server = uvicorn.Server(uvicorn.Config(app, host=HOOK_HOST, port=port, log_level="warning",
+                                               proxy_headers=False))  # request.client stays the socket's peer
+        # (log_level: the uvicorn loggers are shared, so keep it at warning)
         thread = threading.Thread(target=_serve, args=(server,), name="riya-hooks", daemon=True)
         thread.start()
         deadline = time.monotonic() + START_TIMEOUT_S

@@ -24,6 +24,13 @@ def test_owner_pid_is_the_client_side_row():
     assert os_.calls == ["tcp_rows"] * 2
 
 
+def test_owner_pid_skips_closing_ownerless_and_own_rows_before_the_live_one():
+    rows = [TcpRow(50000, 8766, 4242, state=11), TcpRow(50000, 8766, 0), TcpRow(50000, 8766, 111),
+            TcpRow(50000, 8766, 4242)]
+    assert owner_pid(50000, 8766, FakePeerOS(rows=rows), own_pid=111) == 4242
+    assert owner_pid(50000, 8766, FakePeerOS(rows=rows[:3]), own_pid=111) is None
+
+
 def test_parent_chain_stops_safely():
     table = procs((4242, 4100, "node.exe"), (4100, 4050, "pwsh.exe"), (4050, 4000, "openconsole.exe"),
                   (4000, 10, "windowsterminal.exe"), (10, 1, "explorer.exe"))
