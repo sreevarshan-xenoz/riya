@@ -27,4 +27,12 @@ contextBridge.exposeInMainWorld("riya", {
   openWelcome: () => ipcRenderer.send("welcome:open"),
   /** Welcome and Settings: the main process opens its one fixed "get a free key" page. Takes no argument, never a URL. */
   openKeyPage: () => ipcRenderer.send("welcome:key-page"),
+  /** Buddy: cb(view) for every pet view main sends on "pet:view" (the neutral OFF_VIEW when the pet is off). */
+  onPetView: (cb) => ipcRenderer.on("pet:view", (_event, view) => cb(view)),
+  /** Buddy: whether the OS asks for reduced motion (matchMedia), so main can keep her still. */
+  reportReducedMotion: (on) => ipcRenderer.send("pet:reduced-motion", Boolean(on)),
+  /** Buddy: open her right-click menu, which main builds and pops. Takes no argument. */
+  petMenu: () => ipcRenderer.send("pet:menu"),
+  /** Settings: cb(section) when main asks for a section to be scrolled to (e.g. "agents"). */
+  onShowSection: (cb) => ipcRenderer.on("settings:show", (_event, section) => cb(section)),
 });

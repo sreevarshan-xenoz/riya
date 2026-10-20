@@ -4,15 +4,21 @@
  *  Electron 33's main process has no WebSocket (Node 20), so the single core connection runs in a hidden bridge window
  *  (bridge.html) built on the reusable CoreClient and is relayed here over IPC; this process fans it out to the stage
  *  windows over `core:message` / `core:status` and forwards their `core:send` back. */
+const fs = require("node:fs");
 const path = require("node:path");
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, session, shell } = require("electron");
-const { boundsFor, clampToArea } = require("./src/geometry");
+const { execFile } = require("node:child_process");
+const {
+  app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, session, shell, powerMonitor,
+} = require("electron");
+const { boundsFor, clampToArea, DEFAULT_SIZE } = require("./src/geometry");
+const { Pet, petSize, makeRng, reducedMotionOn, OFF_VIEW, PET } = require("./src/pet-logic");
 const { loadFirstPack } = require("./src/pack-path");
 const { makeTrayPng } = require("./src/tray-icon");
 const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
   forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed, welcomeWebPreferences,
-  QUIT_EVENTS,
+  QUIT_EVENTS, rendererMayRequest, isClick, focusTarget, clickAction, decideFocus, focusCommand, petMenuItems,
+  reducedMotionPatch, moveRect, FOCUS_WAIT_MS,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -22,6 +28,8 @@ const TALK_HOTKEYS = ["Control+Alt+Space", "Control+Alt+F9"]; // first one that 
 const FIRST_SETTINGS_WAIT_MS = 1500;
 const DRAG_INTERVAL_MS = 1000 / 60;
 const STAGE_RESPAWN_MS = 1000;
+const IDLE_POLL_MS = 5000; // the pet looks at the user's idle time this often, for sleep
+const FORCE_WALK = process.env.RIYA_PET_FORCE_WALK === "1"; // dev override for evaluation/pet_cpu.py
 
 const state = {
   settings: {},
@@ -44,6 +52,21 @@ const state = {
   welcomeWin: null,
   welcomeShown: false, // the welcome opens on its own at most once per session
   cache: new Map(),
+  // Little Riya (buddy mode)
+  pet: null, // the Pet state machine, while she is on
+  petTimer: null, // the 20 Hz interval, only while she walks or falls
+  petWake: null, // the one timeout to her next deadline otherwise
+  idlePoll: null,
+  presence: null, // the core's latest presence, null while unknown or disconnected
+  agents: [], // the core's latest agents.items
+  lastActivity: null, // { session, atMs } of the latest agent_activity
+  pendingFocus: null, // { id, atMs, timer } while a click waits for its agent_window
+  lastPetView: null, // the view a new or recreated window draws at once
+  osReducedMotion: false, // what the renderer reports from matchMedia
+  press: null, // { cursor, atMs, pos } from drag-start, to tell a click from a drag
+  canvas: null, // the active sprite pack's canvas, for her size
+  settingsLoaded: false,
+  settingsSection: null, // a section the settings window should scroll to once it has loaded
 };
 const stageWindows = new Set();
 
@@ -119,7 +142,11 @@ function createBridge() {
 function onCoreStatus(connected) {
   state.connected = connected;
   state.readyPending = connected;
-  if (!connected) forgetOnDisconnect(state.cache); // the core sends a fresh look and agents on hello
+  if (!connected) {
+    forgetOnDisconnect(state.cache); // the core sends a fresh look and agents on hello
+    state.presence = null; // unknown until the core says so again: she does not walk
+    feedPet({ presence: null });
+  }
   broadcast("core:status", connected);
   sendBodyReady();
 }
@@ -141,10 +168,36 @@ function onCoreMessage(msg) {
       refreshTrayMenu();
     }
   }
+  if (msg.type === "state" && typeof msg.presence === "string") {
+    state.presence = msg.presence;
+    feedPet({ presence: state.presence });
+  }
+  if (msg.type === "presence" && typeof msg.state === "string") {
+    state.presence = msg.state;
+    feedPet({ presence: state.presence });
+  }
+  if (msg.type === "agents") state.agents = Array.isArray(msg.items) ? msg.items : [];
+  if (msg.type === "agent_activity" && typeof msg.session === "string") {
+    state.lastActivity = { session: msg.session, atMs: Date.now() };
+    petReact(msg.kind, msg.label);
+  }
+  if (msg.type === "agent_window") {
+    const d = decideFocus(state.pendingFocus, msg, Date.now());
+    if (d) {
+      clearTimeout(state.pendingFocus.timer);
+      state.pendingFocus = null;
+      const cmd = d.spawn ? focusCommand(REPO_ROOT, d.spawn, fs.existsSync) : null;
+      if (cmd) execFile(cmd.file, cmd.args, { cwd: REPO_ROOT, windowsHide: true, timeout: 5000 }, () => {});
+      else openAgentsList();
+    }
+  }
   if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
+    const before = { win: state.win, mode: state.mode, size: buddySize(), pack: state.settings.sprite_pack };
     state.settings = { ...msg.settings };
+    if (state.settings.sprite_pack !== before.pack) refreshCanvas();
     ensureMode(state.settings.mode);
     applyLateSavedPosition();
+    applyPetSettings(before);
     if (shouldOpenWelcome(msg.settings, state.welcomeShown)) {
       state.welcomeShown = true;
       openWelcome();
@@ -161,7 +214,8 @@ ipcMain.on("bridge:status", (event, connected) => {
 });
 ipcMain.on("core:send", (event, msg) => {
   if (!isUiSender(event.sender)) return;
-  if (msg && typeof msg === "object" && typeof msg.type === "string") sendToCore(msg);
+  if (!rendererMayRequest(msg)) return; // typed messages only, and never one that is main's alone
+  sendToCore(msg);
 });
 
 function isStageSender(sender) {
@@ -178,6 +232,16 @@ function isUiSender(sender) {
 /** The first valid pack (settings.sprite_pack, sprites/riya-v1, placeholder-pack) with frame paths as file URLs. */
 function loadPack() {
   return loadFirstPack({ spritePack: state.settings.sprite_pack, repoRoot: REPO_ROOT, bodyDir: __dirname, log });
+}
+
+/** The active pack's canvas (for her size), re-read when a window is made and when sprite_pack changes. */
+function refreshCanvas() {
+  try {
+    const pack = loadPack();
+    state.canvas = pack && pack.manifest ? pack.manifest.canvas || null : null;
+  } catch (e) {
+    state.canvas = null;
+  }
 }
 
 /** The active talk-hotkey accelerator (e.g. "Control+Alt+F9" when the preferred one was taken), or null. */
@@ -208,8 +272,12 @@ function workAreaFor(mode, pos) {
 }
 
 function createStageWindow(mode) {
+  if (mode === "buddy") refreshCanvas();
   const savedPos = savedPosDip();
-  const bounds = boundsFor(mode, workAreaFor(mode, savedPos), savedPos);
+  const area = workAreaFor(mode, savedPos);
+  const bounds = boundsFor(mode, area, savedPos, buddyBoundsSize());
+  const hasSaved = Array.isArray(savedPos) && savedPos.length === 2 && savedPos.every(Number.isFinite);
+  if (mode === "buddy" && petOn() && !hasSaved) bounds.y = area.y + area.height - bounds.height; // she starts on the floor
   const overlay = mode === "buddy" || mode === "panel";
   const win = new BrowserWindow({
     ...bounds,
@@ -252,6 +320,7 @@ function createStageWindow(mode) {
     if (win.isDestroyed()) return;
     win.webContents.send("core:status", state.connected);
     for (const msg of state.cache.values()) win.webContents.send("core:message", msg);
+    if (state.lastPetView) win.webContents.send("pet:view", state.lastPetView); // a new window draws her at once
   });
   win.on("close", (event) => {
     if (!state.quitting) {
@@ -282,11 +351,14 @@ function ensureMode(requested) {
   const mode = modeToApply(requested, state.mode);
   if (state.win && state.mode === mode) return;
   stopDrag(false);
+  state.press = null;
+  stopPet(); // a new window means a new pet, started from where the window is
   const old = state.win;
   log(`mode -> ${mode}`);
   state.mode = mode;
   state.win = createStageWindow(mode);
   if (old && !old.isDestroyed()) old.destroy();
+  if (petOn()) startPet();
   refreshTrayMenu();
   sendBodyReady();
 }
@@ -304,10 +376,15 @@ function applyLateSavedPosition() {
     current,
     savedPos,
     workArea: workAreaFor(state.mode, savedPos),
+    size: buddyBoundsSize(),
   });
   if (target) {
     log(`saved position arrived late, moving to ${target.x},${target.y}`);
     win.setBounds(target);
+    if (state.pet) {
+      state.pet.setPos(target);
+      stepPet();
+    }
   }
 }
 
@@ -323,8 +400,204 @@ function showWindow() {
 function relayout() {
   const win = state.win;
   if (!win || win.isDestroyed() || state.drag || state.mode === "window") return;
+  if (state.pet) { // a changed work area re-clamps her at once, and she falls if the floor moved up to meet her
+    state.pet.setArea(petArea(win), Date.now());
+    stepPet();
+    return;
+  }
   const [x, y] = win.getPosition();
-  win.setBounds(boundsFor(state.mode, workAreaFor(state.mode, [x, y]), [x, y]));
+  win.setBounds(boundsFor(state.mode, workAreaFor(state.mode, [x, y]), [x, y], buddyBoundsSize()));
+}
+
+// ---- Little Riya --------------------------------------------------------------------------------------------------
+
+/** Buddy mode with the pet setting on (the default). Off is exactly the v0.8 buddy. */
+function petOn() {
+  return state.mode === "buddy" && state.settings.pet_enabled !== false;
+}
+
+/** The buddy window's size: hers (from the pack's canvas and pet_scale) with the pet on, else v0.8's 300x520. */
+function buddySize() {
+  if (petOn()) return petSize({ canvas: state.canvas, scale: state.settings.pet_scale });
+  return { width: DEFAULT_SIZE.buddy[0], height: DEFAULT_SIZE.buddy[1] };
+}
+
+/** buddySize() in the shape geometry's boundsFor takes. */
+function buddyBoundsSize() {
+  const { width, height } = buddySize();
+  return { buddy: [width, height] };
+}
+
+/** The work area of the monitor she is on (a drop on another monitor uses that monitor's bounds and floor). */
+function petArea(win) {
+  return screen.getDisplayMatching(win.getBounds()).workArea;
+}
+
+/** The settings-derived part of her context. */
+function petSettingsContext() {
+  const s = state.settings;
+  return {
+    enabled: s.pet_enabled !== false,
+    walksWhen: s.pet_walks_when,
+    quietHours: s.quiet_hours === undefined ? null : s.quiet_hours,
+    reducedMotion: reducedMotionOn(s.reduced_motion, state.osReducedMotion),
+  };
+}
+
+function startPet() {
+  const win = state.win;
+  if (state.pet || !win || win.isDestroyed() || !petOn()) return;
+  const now = Date.now();
+  const [x, y] = win.getPosition();
+  const ctx = { ...petSettingsContext(), presence: state.presence, idleS: powerMonitor.getSystemIdleTime(), forceWalk: FORCE_WALK };
+  state.pet = new Pet({ rng: makeRng(now), nowMs: now, area: petArea(win), size: buddySize(), pos: { x, y }, ctx });
+  state.idlePoll = setInterval(pollIdle, IDLE_POLL_MS);
+  stepPet(); // sends her first view
+}
+
+/** She is off: every timer, a click still waiting for its answer, and the pet itself are dropped, and the window is told
+ *  the whole neutral view so it never keeps a stale pose. */
+function stopPet() {
+  clearInterval(state.petTimer);
+  clearTimeout(state.petWake);
+  clearInterval(state.idlePoll);
+  state.petTimer = null;
+  state.petWake = null;
+  state.idlePoll = null;
+  clearPendingFocus();
+  state.pet = null;
+  state.press = null;
+  state.lastPetView = OFF_VIEW;
+  const win = state.win;
+  if (win && !win.isDestroyed()) win.webContents.send("pet:view", OFF_VIEW);
+}
+
+/** Every 5 s: user idle time, for sleep. */
+function pollIdle() {
+  if (!state.pet) return;
+  state.pet.setContext({ idleS: powerMonitor.getSystemIdleTime() }, Date.now());
+  stepPet();
+}
+
+/** One step of her clock: idle time as of now, then move the window, send a changed view, save a position, and reschedule. */
+function stepPet() {
+  const pet = state.pet;
+  if (!pet) return;
+  const now = Date.now();
+  pet.setContext({ idleS: powerMonitor.getSystemIdleTime() }, now);
+  const f = pet.step(now);
+  const win = state.win;
+  if (win && !win.isDestroyed()) {
+    if (f.moved && !state.drag) win.setBounds(moveRect(f, buddySize()));
+    if (f.viewChanged) {
+      state.lastPetView = f.view;
+      win.webContents.send("pet:view", f.view);
+    }
+    if (f.save) saveBuddyPosition(win);
+  } else if (f.viewChanged) state.lastPetView = f.view;
+  schedulePet();
+}
+
+/** The 20 Hz interval exists only while she walks or falls; otherwise one timeout to her next deadline (none when off). */
+function schedulePet() {
+  const pet = state.pet;
+  if (!pet) return;
+  clearTimeout(state.petWake);
+  state.petWake = null;
+  if (pet.ticking()) {
+    if (!state.petTimer) state.petTimer = setInterval(stepPet, PET.MOVE_MS);
+    return;
+  }
+  clearInterval(state.petTimer);
+  state.petTimer = null;
+  const wake = pet.nextWakeMs(Date.now());
+  if (wake !== null) state.petWake = setTimeout(stepPet, Math.max(0, wake - Date.now()));
+}
+
+/** Feed her a context change and step at once, so a gate change never waits for the next wake. */
+function feedPet(patch) {
+  if (!state.pet) return;
+  state.pet.setContext(patch, Date.now());
+  stepPet();
+}
+
+function petReact(kind, label) {
+  if (!state.pet) return;
+  state.pet.react(kind, label, Date.now());
+  stepPet();
+}
+
+function petSleep() {
+  if (!state.pet) return;
+  state.pet.sleepNow(Date.now());
+  stepPet();
+}
+
+/** A drag that ended without drag-end (the window hid, blurred or crashed): let go of her where she is. */
+function releasePet() {
+  state.press = null;
+  const win = state.win;
+  if (!state.pet || state.pet.state !== "drag" || !win || win.isDestroyed()) return;
+  const [x, y] = win.getPosition();
+  state.pet.setArea(petArea(win), Date.now());
+  state.pet.drop({ x, y }, Date.now(), { save: false });
+  stepPet();
+}
+
+/** Settings changed: the pet turns off or on, and a size change keeps her feet where they were. `before` is what the
+ *  window, mode and size were before the new settings. */
+function applyPetSettings(before) {
+  const win = state.win;
+  const same = Boolean(win) && !win.isDestroyed() && win === before.win && state.mode === before.mode;
+  if (!petOn() && state.pet) stopPet();
+  if (same && state.mode === "buddy") resizeBuddy(before.size);
+  if (petOn() && !state.pet) startPet();
+  else feedPet(petSettingsContext());
+}
+
+/** Resize the buddy window in place (pet_scale, pet_enabled or the pack changed): her feet stay put, and she stays in the
+ *  work area. */
+function resizeBuddy(old) {
+  const win = state.win;
+  const size = buddySize();
+  if (!win || win.isDestroyed() || (size.width === old.width && size.height === old.height)) return;
+  const [x, y] = win.getPosition();
+  const rect = clampToArea({ x, y: y + old.height - size.height, width: size.width, height: size.height }, petArea(win));
+  win.setBounds(rect);
+  if (state.pet) {
+    state.pet.setPos(rect);
+    state.pet.setSize(size, Date.now());
+    stepPet();
+  }
+}
+
+/** A click on her (a press that barely moved): the agent that needs the user comes forward, else she is poked. */
+function petClick() {
+  const now = Date.now();
+  const action = clickAction(focusTarget(state.agents, state.lastActivity, now), state.connected);
+  if (action.poke) {
+    if (!state.pet) return;
+    state.pet.poke(now);
+    stepPet();
+  } else if (action.list) {
+    openAgentsList();
+  } else {
+    clearPendingFocus();
+    if (state.win && !state.win.isDestroyed()) state.win.focus(); // Riya holds foreground rights when the helper starts
+    sendToCore({ type: "focus_agent", id: action.focus });
+    state.pendingFocus = { id: action.focus, atMs: now, timer: setTimeout(focusTimedOut, FOCUS_WAIT_MS) };
+  }
+}
+
+/** No answer within FOCUS_WAIT_MS counts as no window found: she opens the agents list. */
+function focusTimedOut() {
+  state.pendingFocus = null;
+  openAgentsList();
+}
+
+function clearPendingFocus() {
+  if (state.pendingFocus) clearTimeout(state.pendingFocus.timer);
+  state.pendingFocus = null;
 }
 
 // ---- click-through and dragging ---------------------------------------------------------------------------------
@@ -342,12 +615,46 @@ ipcMain.on("click-through", (event, ignore) => {
   else state.win.setIgnoreMouseEvents(false);
 });
 
+ipcMain.on("pet:reduced-motion", (event, on) => {
+  if (!isBuddySender(event.sender) || typeof on !== "boolean") return;
+  state.osReducedMotion = on;
+  feedPet({ reducedMotion: reducedMotionOn(state.settings.reduced_motion, state.osReducedMotion) });
+});
+
+/** Her right-click menu: the items come from petMenuItems, main adds what each one does. */
+ipcMain.on("pet:menu", (event) => {
+  if (!isBuddySender(event.sender)) return;
+  const items = petMenuItems({
+    mode: state.mode,
+    dontLook: state.dontLook,
+    reducedMotion: reducedMotionOn(state.settings.reduced_motion, state.osReducedMotion),
+  });
+  const clicks = {
+    "mode:buddy": () => requestMode("buddy"),
+    "mode:panel": () => requestMode("panel"),
+    "mode:window": () => requestMode("window"),
+    dont_look: toggleDontLook,
+    reduced_motion: (menuItem) => sendToCore({ type: "set_settings", patch: reducedMotionPatch(menuItem.checked) }),
+    sleep: petSleep,
+    settings: openSettings,
+    quit: quitRiya,
+  };
+  const template = items.map((item) => {
+    if (item.type === "separator") return { type: "separator" };
+    const entry = { label: item.label, type: item.type, click: (menuItem) => clicks[item.id](menuItem) };
+    if (item.checked !== undefined) entry.checked = item.checked;
+    return entry;
+  });
+  Menu.buildFromTemplate(template).popup({ window: state.win });
+});
+
 ipcMain.on("drag-start", (event) => {
   if (!isBuddySender(event.sender) || state.drag) return;
   const win = state.win;
   const cursor = screen.getCursorScreenPoint();
   const [x, y] = win.getPosition();
-  const [width, height] = win.getSize();
+  const size = state.pet ? buddySize() : null; // her window has a fixed size, whatever the OS reports mid-drag
+  const [width, height] = size ? [size.width, size.height] : win.getSize();
   win.setIgnoreMouseEvents(false);
   state.ignoring = false;
   const drag = { win, cursor, x, y, width, height, timer: null };
@@ -358,16 +665,46 @@ ipcMain.on("drag-start", (event) => {
     win.setBounds(clampToArea(rect, screen.getDisplayNearestPoint(now).workArea));
   }, DRAG_INTERVAL_MS);
   state.drag = drag;
+  if (state.pet) {
+    state.press = { cursor, atMs: Date.now(), pos: { x, y } };
+    state.pet.grab(Date.now());
+    stepPet();
+  }
 });
 
 ipcMain.on("drag-end", (event) => {
-  if (state.drag && isBuddySender(event.sender)) stopDrag(true);
+  if (!state.drag || !isBuddySender(event.sender)) return;
+  if (!state.pet) { // pet off: the v0.8 buddy, a drag is only a drag
+    stopDrag(true);
+    return;
+  }
+  const now = Date.now();
+  const press = state.press;
+  state.press = null;
+  stopDrag(false);
+  const win = state.win;
+  if (!win || win.isDestroyed()) return;
+  const [x, y] = win.getPosition();
+  // A press that barely moved is a click: she stands back where she was, so it never hops, falls or saves. The drop
+  // re-reads the monitor first, so a drop on another monitor uses that monitor's floor.
+  const cursor = screen.getCursorScreenPoint();
+  const click = press !== null && isClick({ dx: cursor.x - press.cursor.x, dy: cursor.y - press.cursor.y, ms: now - press.atMs });
+  state.pet.setArea(screen.getDisplayMatching(win.getBounds()).workArea, now);
+  if (click) {
+    win.setBounds(moveRect(press.pos, buddySize()));
+    state.pet.drop(press.pos, now, { save: false });
+    petClick();
+  } else {
+    state.pet.drop({ x, y }, now);
+  }
+  stepPet();
 });
 
 /** A drag that loses its window (hidden, blurred, crashed) ends unsaved, and buddy goes back to click-through. */
 function cancelDragOf(win) {
   if (!state.drag || state.drag.win !== win) return;
   stopDrag(false);
+  releasePet();
   if (state.mode === "buddy" && state.win === win && !win.isDestroyed()) {
     win.setIgnoreMouseEvents(true, { forward: true });
     state.ignoring = true;
@@ -379,8 +716,13 @@ function stopDrag(save) {
   if (!drag) return;
   clearInterval(drag.timer);
   state.drag = null;
-  if (!save || drag.win.isDestroyed()) return;
-  const [x, y] = drag.win.getPosition();
+  if (save && !drag.win.isDestroyed()) saveBuddyPosition(drag.win);
+}
+
+/** Remember where buddy is (physical pixels, what the core compares with window rects); the late saved position then
+ *  leaves her alone this session. */
+function saveBuddyPosition(win) {
+  const [x, y] = win.getPosition();
   const position = toPhysical([x, y], converter());
   state.settings.buddy_position = position;
   state.userDragged = true;
@@ -414,6 +756,7 @@ function openSettings() {
     },
   });
   state.settingsWin = win;
+  state.settingsLoaded = false;
   win.removeMenu();
   win.once("ready-to-show", () => {
     if (win.isDestroyed()) return;
@@ -423,11 +766,32 @@ function openSettings() {
     if (win.isDestroyed()) return;
     win.webContents.send("core:status", state.connected);
     for (const msg of state.cache.values()) win.webContents.send("core:message", msg);
+    state.settingsLoaded = true;
+    sendSettingsSection();
   });
   win.on("closed", () => {
-    if (state.settingsWin === win) state.settingsWin = null;
+    if (state.settingsWin === win) {
+      state.settingsWin = null;
+      state.settingsLoaded = false;
+      state.settingsSection = null;
+    }
   });
   win.loadFile(path.join(__dirname, "settings.html"));
+}
+
+/** Tell the settings window which section to scroll to, once it has loaded (right away when it already has). */
+function sendSettingsSection() {
+  const win = state.settingsWin;
+  if (!win || win.isDestroyed() || !state.settingsLoaded || !state.settingsSection) return;
+  win.webContents.send("settings:show", state.settingsSection);
+  state.settingsSection = null;
+}
+
+/** "The agents list" is Settings scrolled to its Agents section. */
+function openAgentsList() {
+  state.settingsSection = "agents";
+  openSettings();
+  sendSettingsSection();
 }
 
 /** The first-run welcome: the openSettings() pattern, a small window of its own. Closing it by any route (Finish, Skip, the
@@ -544,6 +908,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
     stopDrag(false);
+    stopPet();
   });
 
   app.whenReady().then(() => {
