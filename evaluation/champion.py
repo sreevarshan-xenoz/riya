@@ -5,8 +5,9 @@
 It runs the persona scorecard (`persona_eval`, --repeat 3, a temp DB per conversation) on the base model and then on
 the base plus the candidate adapter (by default the candidate path next to the adopted adapter), each on its own
 llama-server on port 8091, one at a time, and always stops it. That server serves the candidate unconditionally (Riya's
-own server serves only an adopted file). The candidate's server must list the adapter in /lora-adapters, or nothing is
-compared. The decision is per metric:
+own server serves only an adopted file). Before any probe runs, the base model's server (the user's own llama-server
+build) must render her prompts exactly as the trainer's template does (riya.train.fmt.check_template), or it refuses.
+The candidate's server must list the adapter in /lora-adapters, or nothing is compared. The decision is per metric:
 - a weak metric (generic share, invented memories, unknown honesty, about-me recall) is "improved" when a metric off
   its target moves at least the noise band (max(10 points, 2x the larger per-pass standard deviation)) toward it, and
   "kept" when it was and stays at target; invented memories improve only when the count drops by at least
@@ -48,6 +49,7 @@ from riya.core.settings import Settings, apply_patch, load_settings, save_settin
 from riya.core.shaping import is_identity_question
 from riya.core.store import KV, open_db
 from riya.server import RiyaServer, free_vram_mb
+from riya.train import fmt
 
 REPEAT = 3
 PORT = 8091
@@ -230,15 +232,34 @@ def format_decision(base: Scored, cand: Scored, d: Decision) -> str:
     return "\n".join(lines)
 
 
+def check_template(url: str, http_post) -> None:
+    """ChampionError unless this llama-server (the user's own build, on the served GGUF) renders her prompts exactly
+    as the trainer's template does (fmt.check_template): an adapter trained on another template can't be judged."""
+    try:
+        problems = fmt.check_template(url, post=http_post)
+    except (OSError, ValueError) as e:
+        raise ChampionError(f"Couldn't check llama-server's chat template ({e}).") from None
+    if problems:
+        raise ChampionError("; ".join(problems) + ".")
+
+
+def _default_http_post(url: str, body: dict, timeout: float) -> dict:
+    return fmt._post_json(url, body, timeout)
+
+
 def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_server=RiyaServer,
-                run=persona_eval.run, http_get=health.default_http_get, phrases: list[str]) -> Scored:
-    """The scorecard on one variant: its own llama-server (a temp slot dir), stopped whatever happens."""
+                run=persona_eval.run, http_get=health.default_http_get, phrases: list[str],
+                template_post=None) -> Scored:
+    """The scorecard on one variant: its own llama-server (a temp slot dir), stopped whatever happens. template_post:
+    check the chat template on this server first (check_template) with that poster."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         # its own server serves the candidate as it is (no vetted-only rule): this is how a candidate gets vetted
         srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False, vetted_only=False)
         try:
             srv.start(gpu=True)
             url = f"http://127.0.0.1:{port}"
+            if template_post is not None:
+                check_template(url, template_post)
             if lora is not None and not any(same_path(p, lora) for p in served_adapters(http_get, url)):
                 raise ChampionError(f"the adapter didn't load: {lora}")
             transcript, pooled, problem = run(url, False, repeat)
@@ -356,7 +377,7 @@ def install(candidate: Path, adopted: Path) -> None:
 
 
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
-         run=persona_eval.run, http_get=None, connect=None) -> int:
+         run=persona_eval.run, http_get=None, http_post=None, connect=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
@@ -389,7 +410,8 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         _check_ready(fullscreen, free_vram, cand_lora)
         measured = _snapshot(cand_lora)
         phrases = persona_eval.style_phrases(persona_eval.load_probes())
-        base = run_variant(args.model, None, phrases=phrases, **variant)
+        base = run_variant(args.model, None, phrases=phrases, template_post=http_post or _default_http_post,
+                           **variant)
         _check_ready(fullscreen, free_vram, cand_lora)
         cand = run_variant(args.model, cand_lora, phrases=phrases, **variant)
         try:

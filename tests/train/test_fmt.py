@@ -237,3 +237,50 @@ def test_a_broken_last_line_is_reported_loudly(tmp_path, capsys):
     assert rows == [{"a": 1}, {"a": 2}] and dropped == 1
     err = capsys.readouterr().err
     assert "WARNING" in err and "dropped 1 broken last line" in err and str(p) in err
+
+
+# ---- final fix wave minor: the template check against the user's own llama-server ----
+
+def test_check_template_against_a_server():
+    from riya.train.fmt import CANARY, check_template
+
+    posted = []
+
+    def post(url, body, timeout):
+        posted.append((url, body))
+        return {"prompt": render_lfm2(body["messages"], add_generation_prompt=True)}
+
+    assert check_template("http://127.0.0.1:8090/", post=post) == []
+    (url, body), = posted
+    assert url == "http://127.0.0.1:8090/apply-template" and body == {"messages": CANARY, "add_generation_prompt": True}
+    assert [m["role"] for m in CANARY] == ["system", "user", "assistant", "user"]
+    assert any(ord(c) > 127 for m in CANARY for c in m["content"])  # non-ASCII and multi-turn are covered
+    no_bos = lambda url, body, timeout: {"prompt": render_lfm2(body["messages"], True)[len(BOS):]}  # noqa: E731
+    assert check_template("http://x", post=no_bos) == []  # one side adds BOS as a token
+    for broken in (lambda p: p.replace("<|im_end|>\n", "<|im_end|>"), lambda p: p[:-len("assistant\n")],
+                   lambda p: p.replace("system", "System")):
+        def post_bad(url, body, timeout, broken=broken):
+            return {"prompt": broken(render_lfm2(body["messages"], True))}
+        (problem,) = check_template("http://x", post=post_bad)
+        assert "differs" in problem and "character" in problem
+    assert check_template("http://x", post=lambda u, b, t: {"nope": 1}) == ["llama-server's /apply-template "
+                                                                           "returned no prompt"]
+
+
+def test_check_template_cli(monkeypatch, capsys):
+    from riya.train import fmt
+
+    ok = lambda url, body, timeout: {"prompt": render_lfm2(body["messages"], True)}  # noqa: E731
+    monkeypatch.setattr(fmt, "_post_json", ok)
+    assert fmt.main(["--check-template", "--server", "http://127.0.0.1:8090"]) == 0
+    assert "TEMPLATE_OK" in capsys.readouterr().out
+    monkeypatch.setattr(fmt, "_post_json", lambda url, body, timeout: {"prompt": "x"})
+    assert fmt.main(["--check-template"]) == 1  # the default server is Riya's own
+    assert "TEMPLATE_MISMATCH" in capsys.readouterr().out
+
+    def down(url, body, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(fmt, "_post_json", down)
+    assert fmt.main(["--check-template", "--server", "http://127.0.0.1:8090"]) == 2
+    assert "couldn't reach" in capsys.readouterr().out

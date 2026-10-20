@@ -300,8 +300,9 @@ class Rig:
     """The injected world: fake servers recording ("start"/"stop", lora), scripted persona_eval runs, an http_get
     that lists the adapter the running server was given, and no core on the socket."""
 
-    def __init__(self, transcripts=None, adapters_json=None, run_raises_on=None):
-        self.events, self.running, self.made = [], [], []
+    def __init__(self, transcripts=None, adapters_json=None, run_raises_on=None, template=None):
+        self.events, self.running, self.made, self.templates = [], [], [], []
+        self.template = template  # what /apply-template answers: None renders exactly as the trainer does
         self.transcripts = list(transcripts or [transcript(), transcript()])
         self.adapters_json, self.run_raises_on, self.runs = adapters_json, run_raises_on, 0
         rig = self
@@ -332,6 +333,13 @@ class Rig:
         lora = self.running[-1].lora
         return json.dumps([] if lora is None else [{"id": 0, "path": lora, "scale": 1.0}]).encode()
 
+    def http_post(self, url, body, timeout):
+        assert url == f"http://127.0.0.1:{champion.PORT}/apply-template" and self.running
+        self.templates.append(self.running[-1].lora)
+        from riya.train.fmt import render_lfm2
+        prompt = render_lfm2(body["messages"], add_generation_prompt=True)
+        return {"prompt": prompt if self.template is None else self.template(prompt)}
+
     def run(self, url, online, repeat):
         assert (url, online, repeat) == (f"http://127.0.0.1:{champion.PORT}", False, champion.REPEAT)
         self.runs += 1
@@ -347,7 +355,7 @@ def no_core(url, **kw):
 
 def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core) -> int:
     return champion.main(argv, fullscreen=fullscreen, free_vram=free_vram, make_server=rig.make_server, run=rig.run,
-                         http_get=rig.http_get, connect=connect)
+                         http_get=rig.http_get, http_post=rig.http_post, connect=connect)
 
 
 @pytest.fixture
@@ -782,3 +790,23 @@ def test_a_setting_the_core_would_refuse_is_refused_before_anything_runs(tmp_db,
     assert go(rig, ["--lora", __file__, "--db", str(tmp_db)]) == 2
     out = capsys.readouterr().out
     assert rig.made == [] and "local_adapter" in out and "Nothing changed." in out
+
+
+
+# ---- final fix wave minor: the template check on the user's own llama-server, before evaluating ----
+
+def test_the_template_is_checked_on_its_own_server_before_evaluating(adapter, tmp_db, capsys):
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 0
+    assert rig.templates == [None]  # once, on the base model's server, before its probes ran
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_a_template_mismatch_refuses(adapter, tmp_db, capsys, dry):
+    rig = Rig(template=lambda p: p.replace("<|im_end|>\n", "<|im_end|>"))
+    argv = ["--lora", str(adapter), "--db", str(tmp_db)] + (["--dry-run"] if dry else [])
+    assert go(rig, argv) == 2
+    out = capsys.readouterr().out
+    assert "chat template differs" in out and "Nothing changed." in out
+    assert rig.events == [("start", None), ("stop", None)] and rig.runs == 0 and rig.running == []
+    assert nothing_written(adapter, tmp_db)

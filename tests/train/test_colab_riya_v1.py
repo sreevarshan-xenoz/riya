@@ -200,7 +200,8 @@ def test_runbook_cells():
     pos = -1
     for needle in ("riya.train.build_sft", "sync_to_drive.py", "colab.gen_riya_v1", "riya.train.filter_sft",
                    "colab.train_riya_v1 --smoke", "SMOKE_OK", "colab.train_riya_v1", "base_mismatch",
-                   "C:/Users/sreev/models/riya/riya-v1-candidate-lora.gguf", "evaluation.champion"):
+                   "C:/Users/sreev/models/riya/riya-v1-candidate-lora.gguf",
+                   "riya.train.fmt --check-template --server http://127.0.0.1:8090", "evaluation.champion"):
         nxt = text.find(needle, pos + 1)
         assert nxt > pos, f"{needle!r} is missing or out of order"
         pos = nxt

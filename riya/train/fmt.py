@@ -200,3 +200,65 @@ def encode_row(tok, messages: list[dict], max_len: int = MAX_LEN) -> tuple[list[
     if len(ids) > max_len:
         return None
     return ids, [IGNORE_INDEX] * len(p_ids) + ids[len(p_ids):]
+
+
+# ---- the template check against the user's own llama-server ----------------------------------------------------
+# The trainer renders her prompts with the HF chat template, and the Colab smoke step proves that equals
+# render_lfm2 and Colab's fresh llama.cpp build. What she runs is the user's own llama-server on Windows: this check
+# compares render_lfm2 with that server's /apply-template, and the champion gate runs it before it evaluates.
+
+DEFAULT_SERVER = "http://127.0.0.1:8090"
+CANARY = [{"role": "system", "content": "You are Riya. Keep it short~\nTwo lines, a tab\tand “quotes”."},
+          {"role": "user", "content": "hey riya, what's up? 🙂"},
+          {"role": "assistant", "content": "Hmph, nothing much~ Café later?"},
+          {"role": "user", "content": "sure! remember that I like oat milk"}]
+
+
+def _post_json(url: str, body: dict, timeout: float) -> dict:
+    import urllib.request
+    req = urllib.request.Request(url, json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def check_template(server: str, *, messages: list[dict] = CANARY,
+                   post: Callable[[str, dict, float], dict] | None = None, timeout: float = 10.0) -> list[str]:
+    """[] when the server's /apply-template renders messages (with the generation prompt) exactly as render_lfm2 does,
+    one leading BOS aside; else what differs, with the first differing character. A server that can't be reached
+    raises (OSError)."""
+    got = (post or _post_json)(server.rstrip("/") + "/apply-template",
+                               {"messages": messages, "add_generation_prompt": True}, timeout)
+    prompt = got.get("prompt") if isinstance(got, dict) else None
+    if not isinstance(prompt, str):
+        return ["llama-server's /apply-template returned no prompt"]
+    want = render_lfm2(messages, add_generation_prompt=True)
+    if template_matches(prompt, want):
+        return []
+    a, b = (t[len(BOS):] if t.startswith(BOS) else t for t in (prompt, want))
+    at = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    return [f"llama-server's chat template differs from the trainer's at character {at}: "
+            f"server {a[at:at + 24]!r}, trainer {b[at:at + 24]!r}"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    p = argparse.ArgumentParser(prog="python -m riya.train.fmt",
+                                description="Check that your llama-server renders Riya's prompts as the trainer does.")
+    p.add_argument("--check-template", action="store_true", required=True,
+                   help="compare the trainer's LFM2 template with the server's /apply-template")
+    p.add_argument("--server", default=DEFAULT_SERVER, help="your running llama-server (default: Riya's own)")
+    args = p.parse_args(argv)
+    try:
+        problems = check_template(args.server, post=_post_json)
+    except (OSError, ValueError) as e:
+        print(f"TEMPLATE_UNKNOWN: couldn't reach llama-server at {args.server} ({e}). Start Riya and run it again.")
+        return 2
+    if problems:
+        print("TEMPLATE_MISMATCH: " + "; ".join(problems) + ". Don't adopt an adapter trained on this template.")
+        return 1
+    print(f"TEMPLATE_OK: {args.server} renders her prompts exactly as the trainer does.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
