@@ -79,10 +79,10 @@ def test_local(tmp_path):
         calls.append((url, timeout))
         return b'{"data":[{"id":"C:/models/riya-q4.gguf"}]}'
     item = check_local(ctx(tmp_path, local_url="http://127.0.0.1:8090", http_get=get))
-    assert (item.key, item.status, item.detail) == ("local", "ok", "LFM2.5 base · riya-q4.gguf")
+    assert (item.key, item.status, item.detail) == ("local", "ok", "Base model · riya-q4.gguf")
     assert calls[0][0] == "http://127.0.0.1:8090/v1/models"
     item = check_local(ctx(tmp_path, local_url="http://127.0.0.1:8090/", http_get=lambda u, t: b'{"data":[]}'))
-    assert (item.status, item.detail) == ("ok", "LFM2.5 base")
+    assert (item.status, item.detail) == ("ok", "Base model")
 
     def boom(url, timeout):
         raise OSError("refused")
