@@ -35,7 +35,9 @@ FIXES = ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect
          "use_base", "use_riya_v1")
 BROKEN = ("Riya v1 is set, but llama-server runs the base model: the adapter is missing, didn't load or is still "
           "loading.")
-STILL_V1 = "llama-server still runs an adapter; it switches to the base model on its next check."
+UNVETTED = ("Riya v1 is set, but this adapter has no passing champion check, so llama-server runs the base "
+            "model.")
+STILL_V1 ="llama-server still runs an adapter; it switches to the base model on its next check."
 HTTP_MAX_BYTES = 64 * 1024
 
 
@@ -198,8 +200,9 @@ def check_local(ctx: HealthCtx) -> HealthItem:
     want = getattr(ctx.settings, "local_adapter", None)
     if want and any(brain.same_path(p, want) for p in served):
         return HealthItem("local", "ok", riya_v1_detail(want, ctx.tz), "use_base")
-    if want:
-        return HealthItem("local", "warn", BROKEN, "use_base")
+    if want:  # the wrapper serves only an adopted file: one without its matching record means the base model
+        unvetted = Path(want).is_file() and brain.read_record(Path(want)) is None
+        return HealthItem("local", "warn", UNVETTED if unvetted else BROKEN, "use_base")
     if served:
         return HealthItem("local", "warn", STILL_V1)
     adapter = ctx.adapter_path

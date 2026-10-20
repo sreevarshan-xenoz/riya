@@ -115,15 +115,19 @@ About 2 epochs at lr 2e-4, fp16 on a T4. It prints `TRAIN_DONE` and writes `riya
 > applied to. It may still work, but nothing guarantees it; **the champion gate is the only judge**, so don't adopt by
 > hand. To train on the right weights, set the repo yourself and rerun: `%env BASE_ID=huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated`.
 
-## 7. Local: install the adapter and run the gate
+## 7. Local: hand the adapter to the gate
 
-Copy `riya_v1/riya-v1-lora.gguf` from `G:/My Drive/` into the models folder, next to the served GGUF:
+Copy `riya_v1/riya-v1-lora.gguf` from `G:/My Drive/` into the models folder as the **candidate**, next to the served
+GGUF. Never copy it over `riya-v1-lora.gguf` there: that is the adopted adapter, and only the gate replaces it.
 
 ```powershell
-Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "~/models/riya/"
+Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "~/models/riya/riya-v1-candidate-lora.gguf"
 .venv\Scripts\python -m evaluation.champion
 ```
 
-The gate runs the persona eval three times for the base and for base + adapter on its own llama-server, then adopts the
-adapter only if it clearly wins and regresses nothing. Close games and fullscreen windows first (it refuses below
-2500 MB of free VRAM). Add `--dry-run` to see the decision without writing it.
+The gate runs the persona eval three times for the base and for base + candidate on its own llama-server, then adopts
+the candidate only if it clearly wins and regresses nothing. On adopt it moves the candidate into place as
+`riya-v1-lora.gguf` in one step, writes its champion record and switches Riya to it. On reject it changes nothing: the
+adopted adapter (if any) and its record stay as they were. Riya's own server serves an adapter only while it has a
+matching champion record, so a file that skipped the gate is never served (Health says so). Close games and fullscreen
+windows first (it refuses below 2500 MB of free VRAM). Add `--dry-run` to see the decision without writing it.
