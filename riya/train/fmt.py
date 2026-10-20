@@ -146,6 +146,32 @@ def validate_teacher(row: dict) -> None:
         raise ValueError(f"{row['id']}: h must be a sha256 hex digest")
 
 
+# A remember-that turn: the engine says a templated ack first (engine.REMEMBER_ACKS, "Got it~ I'll remember that."),
+# before the model is even asked, then the model's one sentence. Her prompt doesn't show the ack, so the trained
+# answer is only what follows it; an ack of the teacher's own would be said twice at run time.
+LEAD_KINDS = frozenset({"remember"})
+_SENTENCE_END = re.compile(r"(?<=[.!?…~])\s+")
+_ACK = re.compile(r"\b(?:i'?ll|i\s+will|i\s+won'?t|i\s+will\s+not|won'?t|gonna)\s+"
+                  r"(?:remember|forget|keep|note|save|store)"
+                  r"|\b(?:noted|saved|stored|filed|memori[sz]ed|remembered|got\s+it|gotcha|got\s+that|mental\s+note"
+                  r"|written\s+down|jotted|locked\s+in|keep\s+that\s+in\s+mind)\b"
+                  r"|\bremember(?:ing)?\s+(?:that|this|it)\b", re.I)
+_BARE_ACK = re.compile(r"^\W*(?:ok(?:ay)?|alright|sure(?:\s+thing)?|done|mm+(?:-?hm+)?|mhm|yes|yep|yup|kay|roger"
+                       r"|understood|will\s+do|of\s+course)\W*$", re.I)
+
+
+def trained_reply(kind: str, response: str) -> str:
+    """The part of an answer the model is trained to say: on a remember row, what follows the leading
+    acknowledgement sentences ("Got it~", "Okay! Noted~", "I'll remember that."), since the engine already said its
+    own; on any other row, the answer as it is. "" when the answer is nothing but an acknowledgement."""
+    if kind not in LEAD_KINDS:
+        return response
+    sentences = _SENTENCE_END.split(response.strip())
+    while sentences and (_ACK.search(sentences[0]) or _BARE_ACK.match(sentences[0])):
+        sentences.pop(0)
+    return " ".join(sentences).strip()
+
+
 def sft_row(request: dict, response: str) -> dict:
     """The chat row the trainer reads: the request's messages, then the answer as the assistant's turn."""
     return {"id": request["id"], "kind": request["kind"],

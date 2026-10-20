@@ -17,11 +17,12 @@ from evaluation.style_metrics import (STOP, about_me_recalls, asserts_value, cou
                                       has_disclaimer, has_generic, invented_memories, says_ai)
 from riya.core.shaping import CODE_BLOCK, EMOJI, STAGE_WORDS, strip_label
 from riya.train import build_sft
-from riya.train.fmt import read_jsonl_checked, sft_row, validate_request, validate_teacher, write_json, write_jsonl
+from riya.train.fmt import (read_jsonl_checked, sft_row, trained_reply, validate_request, validate_teacher,
+                            write_json, write_jsonl)
 from riya.train.scenarios import ATTR_WORDS, value_words
 
 MIN_KEPT_PER_KIND = 40
-REASONS = ("empty", "generic", "too_many_sentences", "too_many_emoji", "invented", "missed_fact",
+REASONS = ("empty", "ack_only", "generic", "too_many_sentences", "too_many_emoji", "invented", "missed_fact",
            "no_unknown_admission", "no_ai_admission", "disclaimer", "stage_direction", "label",
            "truncated")  # the last is the truncation check (progress.md, CONFLICT 4)
 SITUATIONAL_KINDS = frozenset({"report", "tool", "game"})  # their facts live in the situation text
@@ -448,6 +449,9 @@ def reasons(request: dict, response: str, style_phrases: list[str]) -> list[str]
     if not response:
         return ["empty"]
     expect, kind = request["expect"], request["kind"]
+    response = trained_reply(kind, response)  # a remember row: what follows the engine's own templated ack
+    if not response:
+        return ["ack_only"]
     users = [m["content"] for m in request["messages"] if m["role"] == "user"]
     known = request["facts"] + users
     records, asks = request["meta"]["facts"], request["meta"]["asks"]
@@ -504,7 +508,7 @@ def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[s
         failed = reasons(request, answers[request["id"]], style_phrases)
         failures.update(failed)
         if not failed:
-            kept.append(sft_row(request, answers[request["id"]]))
+            kept.append(sft_row(request, trained_reply(request["kind"], answers[request["id"]])))
             kept_by_kind[request["kind"]] += 1
     by_kind = {k: {"total": n, "kept": kept_by_kind[k], "rate": kept_by_kind[k] / n,
                    "flagged": kept_by_kind[k] < MIN_KEPT_PER_KIND} for k, n in totals.items()}
