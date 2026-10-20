@@ -306,5 +306,27 @@ def test_trained_reply_drops_the_leading_acknowledgement_on_remember_rows():
     }
     for text, want in cases.items():
         assert trained_reply("remember", text) == want, text
-    for kind in ("small", "feedback", "greeting"):
+    for kind in ("small", "greeting", "explain"):
         assert trained_reply(kind, "Got it~ Ooh, Pim sounds sweet!") == "Got it~ Ooh, Pim sounds sweet!"
+
+
+
+def test_trained_reply_drops_the_leading_acknowledgement_on_feedback_rows():
+    """A feedback turn says ack_line(feedback) first (learn.feedback.ACKS / NOTE_ACKS), then the model's reply with
+    its full cap: the trained span is only that reply."""
+    from riya.core.learn.feedback import ACKS, NOTE_ACKS
+    from riya.train.fmt import trained_reply
+
+    for ack in [*ACKS.values(), *NOTE_ACKS.values()]:  # every ack the engine itself says is recognised
+        assert trained_reply("feedback", ack) == "", ack
+        assert trained_reply("feedback", ack + " So, how was your day?") == "So, how was your day?", ack
+    cases = {
+        "Okay, I'll keep it shorter~ So what's up?": "So what's up?",
+        "Fine, fewer emojis then. Anyway, I missed you~": "Anyway, I missed you~",
+        "Hmph, if you say so~ Less teasing. What are you up to?": "What are you up to?",
+        "Mm, more detail coming up! The trick is to start small.": "The trick is to start small.",
+        "As you wish~ Tell me about your game.": "Tell me about your game.",
+        "So, how was your day? I'll keep it short.": "So, how was your day? I'll keep it short.",  # leading only
+    }
+    for text, want in cases.items():
+        assert trained_reply("feedback", text) == want, text

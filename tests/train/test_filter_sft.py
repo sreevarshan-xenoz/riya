@@ -666,8 +666,9 @@ GOOD = {
     "bid": ["Hey, are you still there~", "Hmph, you've been quiet for a while~", "Psst, take a little break with me~"],
     "game": ["Ooh, nice try, your turn now~", "Hehe, my turn, and I'm winning~", "Okay, that one counts, dummy~"],
     "tool": ["All done, there you go~", "Okay, I took care of that for you~", "Done, easy, silly~"],
-    "feedback": ["Okay, I'll keep that in mind, promise~", "Got it, I'll be better about that~",
-                 "Hmph, fine, I'll do it your way~"],
+    # the engine says its templated ack first: the trained reply is what follows it
+    "feedback": ["So, what are we talking about now, dummy~", "Hehe, anyway, what are you up to~",
+                 "Hmph, now tell me something fun~"],
     "report": ["The agents have news, go and look, silly~", "Hmph, your agents finished while you were busy~",
                "Some of the agents need you, dummy~"],
 }
@@ -801,3 +802,15 @@ def test_a_remember_row_trains_the_reply_after_the_ack():
     assert reasons(small, "Got it~ Pim sounds adorable!", STYLE) == []
     kept, _ = filter_rows([small], teacher([("r", "Got it~ Hehe.")], [small]), STYLE)
     assert kept[0]["messages"][-1]["content"] == "Got it~ Hehe."
+
+
+
+def test_a_feedback_row_trains_the_reply_after_the_ack():
+    r = req("feedback", user="less teasing please", must_not_invent=True, max_sentences=2)
+    assert reasons(r, "Okay, I'll tease you less, promise~", STYLE) == ["ack_only"]  # the engine already said one
+    assert reasons(r, "Got it~ Less teasing. So what's up?", STYLE) == []
+    assert reasons(r, "Okay~ less teasing, got it. So what's up? Tell me. Now.", STYLE) == ["too_many_sentences"]
+    kept, report = filter_rows([r], teacher([("r", "Okay~ less teasing, got it. So what's up?")], [r]), STYLE)
+    assert kept[0]["messages"][-1] == {"role": "assistant", "content": "So what's up?"}
+    _, report = filter_rows([r], teacher([("r", "Hehe, sweeter it is~")], [r]), STYLE)
+    assert report["kept"] == 0 and report["reasons"]["ack_only"] == 1

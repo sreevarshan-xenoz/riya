@@ -47,7 +47,8 @@ REPLY_KINDS = frozenset({"small", "about_me", "unknown", "identity", "remember",
 # the sentence cap the engine enforces where it isn't the turn's own cap: a lead (remember) leaves one, a bid and a game
 # turn are one line, and a tool line and a report have their fixed caps. On a remember row the engine says its
 # templated ack (REMEMBER_ACKS) before asking the model, so the one sentence is her reply after it: the filter trains
-# only that span (fmt.trained_reply) and rejects an answer that is nothing but an ack (ack_only)
+# only that span (fmt.trained_reply) and rejects an answer that is nothing but an ack (ack_only). A feedback row is the
+# same with ack_line(feedback) first, except that the reply after it keeps the turn's full cap
 FIXED_SENTENCES = {"remember": 1, "bid": 1, "game": 1, "tool": CAPS["tool"], "report": CAPS["report"]}
 FP_NOW = 1_800_000_000.0
 # the fingerprint's canary turns: (turn kind, user text), so every reply-rules line (and the AI clause) is rendered
