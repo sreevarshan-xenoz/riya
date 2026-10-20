@@ -23,6 +23,8 @@ MAX_WINDOWS = 4000
 STOP_PROCESSES = frozenset({"explorer.exe", "svchost.exe", "services.exe", "wininit.exe", "winlogon.exe",
                             "csrss.exe", "smss.exe", "system"})
 CONSOLE_HOSTS = frozenset({"conhost.exe", "openconsole.exe"})
+ESTABLISHED = 5  # MIB_TCP_STATE_ESTAB
+TCP_HINT = 16 * 1024  # the first guess at the TCP table's size
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class TcpRow:
     local_port: int
     remote_port: int
     pid: int
+    state: int = ESTABLISHED
 
 
 @dataclass(frozen=True)
@@ -54,7 +57,7 @@ class Peer:
 
 class PeerOS(Protocol):
     def tcp_rows(self) -> list[TcpRow]:
-        """IPv4 loopback connections only."""
+        """Established IPv4 loopback connections only (the receiver binds only 127.0.0.1)."""
 
     def processes(self) -> dict[int, Proc]: ...
 
@@ -114,6 +117,7 @@ class WindowsPeerOS:
                         ("szExeFile", wintypes.WCHAR * 260)]
 
         self._ENTRY = PROCESSENTRY32W
+        self._hint = TCP_HINT  # the last table size: one kernel call per lookup, not two
         self._ENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         i, k, u, d = self._iphlp, self._kernel32, self._user32, self._dwm
         i.GetExtendedTcpTable.restype = wintypes.ULONG
@@ -137,7 +141,7 @@ class WindowsPeerOS:
     def tcp_rows(self) -> list[TcpRow]:
         import struct
         c, w = self._c, self._w
-        size = w.DWORD(0)
+        size = w.DWORD(self._hint)
         for _ in range(4):  # the table can grow between the sizing call and the read
             buf = c.create_string_buffer(size.value)
             err = self._iphlp.GetExtendedTcpTable(buf, c.byref(size), False, self.AF_INET,
@@ -148,13 +152,14 @@ class WindowsPeerOS:
                 raise OSError(f"GetExtendedTcpTable failed ({err})")
         else:
             raise OSError("GetExtendedTcpTable never settled")
+        self._hint = max(TCP_HINT, len(buf))
         (n,) = struct.unpack_from("<I", buf, 0)
-        n = min(n, (size.value - 4) // 24)
+        n = min(n, (len(buf) - 4) // 24)
         rows = []
         for j in range(n):  # MIB_TCPROW_OWNER_PID: state, laddr, lport, raddr, rport, pid (DWORDs)
-            _state, laddr, lport, raddr, rport, pid = struct.unpack_from("<6I", buf, 4 + 24 * j)
-            if laddr == self.LOOPBACK and raddr == self.LOOPBACK:
-                rows.append(TcpRow(socket.ntohs(lport & 0xFFFF), socket.ntohs(rport & 0xFFFF), pid))
+            state, laddr, lport, raddr, rport, pid = struct.unpack_from("<6I", buf, 4 + 24 * j)
+            if state == ESTABLISHED and laddr == self.LOOPBACK and raddr == self.LOOPBACK:
+                rows.append(TcpRow(socket.ntohs(lport & 0xFFFF), socket.ntohs(rport & 0xFFFF), pid, state))
         return rows
 
     def processes(self) -> dict[int, Proc]:
@@ -214,8 +219,9 @@ def owner_pid(local_port: int, remote_port: int, os_: PeerOS, own_pid: int | Non
     (local = request.client.port, remote = SERVER_PORT); the server-side row is the core's own pid, which is refused."""
     me = own_pid or os.getpid()
     for r in os_.tcp_rows():
-        if r.local_port == local_port and r.remote_port == remote_port:
-            return r.pid if r.pid > 0 and r.pid != me else None
+        if r.local_port == local_port and r.remote_port == remote_port and r.state == ESTABLISHED \
+                and r.pid > 0 and r.pid != me:  # a closing or ownerless row never hides the live one
+            return r.pid
     return None
 
 
