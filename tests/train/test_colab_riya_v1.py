@@ -355,3 +355,50 @@ def test_every_json_write_is_atomic():
     assert 'out.open("a"' in gen_src and "f.flush()" in gen_src  # the teacher appends and flushes each row
     train_src = (ROOT / "colab" / "train_riya_v1.py").read_text(encoding="utf-8")
     assert "write_json(" in train_src
+
+
+# ---- final fix wave minor: the trainer aborts on a non-finite loss ----
+
+def scripted(values):
+    """A fake micro-step: each call returns the next loss and a backward() that records it."""
+    seen, backward = [], []
+
+    def micro(idx):
+        v = values[len(seen)]
+        seen.append(list(idx))
+        return v, lambda: backward.append(v)
+    return micro, seen, backward
+
+
+def test_the_training_loop_groups_micro_batches_and_stops_at_steps():
+    micro, seen, backward = scripted([2.0, 4.0, 1.0, 3.0, 9.0, 9.0])
+    steps_done, logged = [], []
+    losses = tr.train_loop(lambda epoch: [[0, 1], [2, 3], [4]], epochs=2, accum=2, steps=3, micro=micro,
+                           opt_step=lambda: steps_done.append(len(seen)), log=lambda s, v: logged.append((s, v)))
+    assert losses == [(1, 3.0), (2, 1.0), (3, 6.0)]  # [2, 4], the epoch's short last group [1], then [3, 9]
+    assert steps_done == [2, 3, 5] and seen == [[0, 1], [2, 3], [4], [0, 1], [2, 3]] and logged == losses
+    assert backward == [2.0, 4.0, 1.0, 3.0, 9.0]
+
+
+def test_a_non_finite_loss_aborts_the_run():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        micro, seen, backward = scripted([2.0, 2.0, bad, 1.0])
+        with __import__("pytest").raises(tr.NonFiniteLoss) as e:
+            tr.train_loop(lambda epoch: [[0], [1], [2], [3]], epochs=1, accum=2, steps=10, micro=micro,
+                          opt_step=lambda: None, log=lambda s, v: None)
+        assert backward == [2.0, 2.0]  # the bad loss never reaches backward or the optimizer
+        assert e.value.losses == [(1, 2.0)] and e.value.step == 2
+        assert "non-finite loss" in str(e.value) and "step 2" in str(e.value)
+    r = tr.make_report(base_id=tr.DEFAULT_BASE, base_mismatch=False, rows=4, skipped=0, losses=[(1, 2.0)],
+                       smoke=False, gpu="Tesla T4", settings=tr.train_settings(False), aborted=tr.NON_FINITE)
+    assert r["aborted"] == "non-finite loss" == tr.NON_FINITE and r["loss_curve"] == [[1, 2.0]]
+    ok = tr.make_report(base_id=tr.DEFAULT_BASE, base_mismatch=False, rows=4, skipped=0, losses=[], smoke=False,
+                        gpu="T4", settings=tr.train_settings(False))
+    assert ok["aborted"] is None
+
+
+def test_the_run_writes_the_aborted_report_before_stopping():
+    src = (ROOT / "colab" / "train_riya_v1.py").read_text(encoding="utf-8")
+    run = src.split("def _run(", 1)[1].split("\ndef ", 1)[0]
+    assert "train_loop(" in run and "except NonFiniteLoss" in run and "aborted=NON_FINITE" in run
+    assert run.index("except NonFiniteLoss") < run.index("save_pretrained")  # no adapter is exported after it
