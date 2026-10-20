@@ -86,7 +86,10 @@ def main(argv: list[str] | None = None, *, sample=None, sleep=time.sleep, cores:
         if not before.keys() & after.keys():
             print("VERDICT: not measured: no Riya body process found in both samples (is the body running from this repo?)")
         else:
-            print(cpu_verdict(args.mode, cpu_percent(before, after, max(wall, 1e-6), cores)))
+            counted, seen = len(before.keys() & after.keys()), len(before.keys() | after.keys())
+            # a process that started or ended mid-run is left out of the sum, so say how many were counted
+            print(f"{cpu_verdict(args.mode, cpu_percent(before, after, max(wall, 1e-6), cores))} "
+                  f"({counted} of {seen} pids counted)")
     except Exception as e:  # a check script: report, never fail the caller
         print(f"VERDICT: error: {type(e).__name__}: {e}")
     return 0
