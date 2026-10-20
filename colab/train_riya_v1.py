@@ -51,10 +51,11 @@ RIYA_V1_DIR = os.environ.get("RIYA_V1_DIR", "/content/drive/MyDrive/riya_v1")
 LLAMA_DIR = os.environ.get("LLAMA_DIR", "/content/llama.cpp")
 LLAMA_SERVER = os.environ.get("LLAMA_SERVER", "/content/bin/llama-server")
 WORK_DIR = os.environ.get("RIYA_V1_WORK", "/content/riya_v1_work")  # local disk: the base, the served GGUF, logs
-
-MISMATCH_BANNER = ("BASE MISMATCH: training on LiquidAI/LFM2.5-1.2B-Instruct, not the abliterated weights she "
-                   "serves — the champion gate decides")
 _QUANTISED = ("gguf", "mlx", "awq", "gptq", "4bit", "8bit", "fp8", "int4", "int8", "exl2", "bnb")
+
+
+def mismatch_banner(base_id: str) -> str:
+    return f"BASE MISMATCH: training on {base_id}, not the abliterated weights she serves — the champion gate decides"
 
 
 # ---- pure helpers -------------------------------------------------------------------------------------------
@@ -86,13 +87,20 @@ def plain_weights(repo_id: str) -> bool:
     return not any(q in low for q in _QUANTISED)
 
 
+def served_family(repo_id: str) -> bool:
+    """The repo's name is the served GGUF's family name (Huihui-LFM2.5-1.2B-Instruct-abliterated), whoever uploaded
+    it: the weights her GGUF was quantised from."""
+    return repo_id.rsplit("/", 1)[-1].casefold() == BASE_SEARCH.casefold()
+
+
 def resolve_base(environ: Mapping[str, str], search: Callable[[str], list[str]]) -> tuple[str, bool]:
     """(HF repo id, base_mismatch): BASE_ID when set; else the abliterated safetensors repo found by search(BASE_SEARCH)
-    (DEFAULT_BASE when it is among the hits, else the first hit); else the official base, which is a mismatch with
-    the weights she serves. A search that raises counts as no hits."""
+    (DEFAULT_BASE when it is among the hits, else the first hit of the served family, else the first hit); else the
+    official base. base_mismatch is True unless the repo is of the served GGUF's family (served_family): a pinned
+    BASE_ID or a search hit of any other name is a mismatch too. A search that raises counts as no hits."""
     pinned = (environ.get("BASE_ID") or "").strip()
     if pinned:
-        return pinned, False
+        return pinned, not served_family(pinned)
     try:
         hits = search(BASE_SEARCH)
     except Exception as e:
@@ -100,9 +108,8 @@ def resolve_base(environ: Mapping[str, str], search: Callable[[str], list[str]])
         hits = []
     if DEFAULT_BASE in hits:
         return DEFAULT_BASE, False
-    if hits:
-        return hits[0], False
-    return OFFICIAL_BASE, True
+    base = next((h for h in hits if served_family(h)), hits[0] if hits else OFFICIAL_BASE)
+    return base, not served_family(base)
 
 
 def convert_cmd(llama_dir: str, adapter_dir: str, base_dir: str, out_path: str) -> list[str]:
@@ -288,7 +295,7 @@ def _run(args: argparse.Namespace) -> int:
     base_id, mismatch = resolve_base(os.environ, hf_safetensors_search)
     if mismatch:
         bar = "!" * 78
-        print(f"{bar}\n{MISMATCH_BANNER}\n{bar}", flush=True)
+        print(f"{bar}\n{mismatch_banner(base_id)}\n{bar}", flush=True)
     print("base:", base_id, flush=True)
     base_dir = snapshot_download(base_id, local_dir=f"{WORK_DIR}/base/{base_id.replace('/', '__')}",
                                 ignore_patterns=["*.gguf"])  # one folder per repo: no overlay on a rerun
@@ -395,7 +402,7 @@ def _run(args: argparse.Namespace) -> int:
     if problems:
         raise SystemExit("smoke failed: " + "; ".join(problems))
     if mismatch:
-        print(f"\n{MISMATCH_BANNER}\n", flush=True)
+        print(f"\n{mismatch_banner(base_id)}\n", flush=True)
     print("SMOKE_OK" if args.smoke else "TRAIN_DONE", flush=True)
     return 0
 
