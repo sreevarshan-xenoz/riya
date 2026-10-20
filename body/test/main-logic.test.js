@@ -565,10 +565,11 @@ test("a new window gets the current view, and stopping sends the whole OFF_VIEW"
 
 test("main spawns the helper only through decideFocus", () => {
   const main = readBody("main.js");
-  assert.equal((main.match(/execFile\(/g) || []).length, 1);
+  assert.equal((main.match(/\bexecFile\b/g) || []).length, 2, "the require and the one use");
+  assert.equal((main.match(/runFocusHelper\(/g) || []).length, 1, "the helper starts in one place");
   const branch = main.slice(main.indexOf('msg.type === "agent_window"'));
-  assert.ok(branch.indexOf("decideFocus(") >= 0 && branch.indexOf("decideFocus(") < branch.indexOf("execFile("));
-  assert.match(main, /execFile\(cmd\.file, cmd\.args, \{ cwd: REPO_ROOT, windowsHide: true, timeout: 5000 \}/);
+  assert.ok(branch.indexOf("decideFocus(") >= 0 && branch.indexOf("decideFocus(") < branch.indexOf("runFocusHelper("));
+  assert.match(branch, /runFocusHelper\(\{[^}]*spawn: execFile/);
   assert.match(main, /focusCommand\(REPO_ROOT, /);
   assert.equal((main.match(/"focus_agent"/g) || []).length, 1, "focus_agent is named once");
   assert.ok(fnSlice(main, "petClick").includes('"focus_agent"'), "and only in petClick");
@@ -596,4 +597,60 @@ test("the windows stay sandboxed, and the preload gains the pet's narrow surface
   assert.match(preload, /reportReducedMotion: \(on\) => ipcRenderer\.send\("pet:reduced-motion", Boolean\(on\)\)/);
   assert.match(preload, /petMenu: \(\) => ipcRenderer\.send\("pet:menu"\)/);
   assert.match(preload, /onShowSection: \(cb\) => ipcRenderer\.on\("settings:show"/);
+});
+
+// ---- round 1 fixes -------------------------------------------------------------------------------------------------
+
+test("the pet pauses while its window is hidden and resumes when it shows", () => {
+  assert.equal(M.petVisibilityAction(false, false), "pause");
+  assert.equal(M.petVisibilityAction(true, false), null, "already paused");
+  assert.equal(M.petVisibilityAction(true, true), "resume");
+  assert.equal(M.petVisibilityAction(false, true), null, "already running");
+  const main = readBody("main.js");
+  assert.match(main, /function stepPet\(\)[\s\S]{0,120}state\.petPaused/);
+  assert.match(fnSlice(main, "setPetVisible"), /petVisibilityAction\(/);
+  assert.match(fnSlice(main, "createStageWindow"), /win\.on\("hide", \(\) => setPetVisible\(win, false\)\)/);
+  assert.match(fnSlice(main, "createStageWindow"), /win\.on\("show", \(\) => setPetVisible\(win, true\)\)/);
+});
+
+test("a late settings message leaves her alone once she has moved this session", () => {
+  const moved = { ...base, moved: true };
+  assert.equal(M.repositionTarget(moved), null);
+  assert.deepEqual(M.repositionTarget({ ...base, moved: false }), { x: 100, y: 200, width: 300, height: 520 });
+  assert.deepEqual(M.repositionTarget(base), { x: 100, y: 200, width: 300, height: 520 }, "the flag is optional");
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "applyLateSavedPosition"), /moved: state\.petMoved/);
+  assert.match(fnSlice(main, "stepPet"), /f\.moved[\s\S]{0,200}state\.petMoved = true/);
+  const end = main.slice(main.indexOf('ipcMain.on("drag-end"'));
+  assert.match(end.slice(0, end.indexOf("\n});")), /state\.petMoved = true/, "a drop counts too");
+});
+
+test("a failed focus helper opens the agents list, only for the current click", () => {
+  const cmd = { file: "python", args: ["-m", "riya.agents.peer", "focus", "77"] };
+  const run = (outcome, current = () => true) => {
+    const calls = [];
+    const opened = [];
+    const spawn = (file, args, opts, cb) => {
+      calls.push({ file, args, opts });
+      if (outcome === "throw") throw new Error("EINVAL");
+      cb(outcome);
+    };
+    const started = M.runFocusHelper({ cmd, spawn, cwd: "E:\riya", isCurrent: current, onFailed: () => opened.push(1) });
+    return { calls, opened, started };
+  };
+  const ok = run(null);
+  assert.equal(ok.started, true);
+  assert.deepEqual(ok.calls, [{ file: "python", args: cmd.args, opts: { cwd: "E:\riya", windowsHide: true, timeout: 5000 } }]);
+  assert.equal(ok.opened.length, 0, "success: nothing more");
+  assert.equal(run(Object.assign(new Error("exit 1"), { code: 1 })).opened.length, 1, "non-zero exit");
+  assert.equal(run(Object.assign(new Error("spawn python ENOENT"), { code: "ENOENT" })).opened.length, 1, "spawn error");
+  assert.equal(run("throw").opened.length, 1, "a synchronous throw");
+  assert.equal(run(new Error("exit 1"), () => false).opened.length, 0, "a stale click opens nothing");
+  assert.equal(run("throw", () => false).opened.length, 0);
+  const none = M.runFocusHelper({ cmd: null, spawn: () => assert.fail("never spawns"), cwd: "x", isCurrent: () => true, onFailed() {} });
+  assert.equal(none, false);
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "petClick"), /state\.focusToken \+= 1/);
+  assert.match(fnSlice(main, "stopPet"), /state\.focusToken \+= 1/);
+  assert.match(main, /isCurrent: \(\) => token === state\.focusToken/);
 });

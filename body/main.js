@@ -18,7 +18,7 @@ const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
   forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed, welcomeWebPreferences,
   QUIT_EVENTS, rendererMayRequest, isClick, focusTarget, clickAction, decideFocus, focusCommand, petMenuItems,
-  reducedMotionPatch, moveRect, FOCUS_WAIT_MS,
+  reducedMotionPatch, moveRect, FOCUS_WAIT_MS, petVisibilityAction, runFocusHelper,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -63,6 +63,9 @@ const state = {
   pendingFocus: null, // { id, atMs, timer } while a click waits for its agent_window
   lastPetView: null, // the view a new or recreated window draws at once
   osReducedMotion: false, // what the renderer reports from matchMedia
+  petPaused: false, // her window is hidden: no timers, no steps, no saves
+  petMoved: false, // she has walked, fallen or been dropped this session: a late saved position leaves her alone
+  focusToken: 0, // counts clicks, so a helper that fails after a newer click opens nothing
   press: null, // { cursor, atMs, pos } from drag-start, to tell a click from a drag
   canvas: null, // the active sprite pack's canvas, for her size
   settingsLoaded: false,
@@ -187,8 +190,11 @@ function onCoreMessage(msg) {
       clearTimeout(state.pendingFocus.timer);
       state.pendingFocus = null;
       const cmd = d.spawn ? focusCommand(REPO_ROOT, d.spawn, fs.existsSync) : null;
-      if (cmd) execFile(cmd.file, cmd.args, { cwd: REPO_ROOT, windowsHide: true, timeout: 5000 }, () => {});
-      else openAgentsList();
+      const token = state.focusToken;
+      const started = runFocusHelper({
+        cmd, spawn: execFile, cwd: REPO_ROOT, isCurrent: () => token === state.focusToken, onFailed: openAgentsList,
+      });
+      if (!started) openAgentsList(); // no window found, or no safe command for it
     }
   }
   if (msg.type === "settings" && msg.settings && typeof msg.settings === "object") {
@@ -329,6 +335,8 @@ function createStageWindow(mode) {
     }
   });
   for (const event of ["hide", "blur"]) win.on(event, () => cancelDragOf(win));
+  win.on("hide", () => setPetVisible(win, false));
+  win.on("show", () => setPetVisible(win, true));
   win.webContents.on("render-process-gone", (_event, details) => {
     log(`stage renderer gone (${details.reason}), recreating`);
     cancelDragOf(win);
@@ -373,6 +381,7 @@ function applyLateSavedPosition() {
     mode: state.mode,
     dragging: Boolean(state.drag),
     userDragged: state.userDragged,
+    moved: state.petMoved,
     current,
     savedPos,
     workArea: workAreaFor(state.mode, savedPos),
@@ -466,7 +475,9 @@ function stopPet() {
   state.idlePoll = null;
   clearPendingFocus();
   state.pet = null;
+  state.petPaused = false;
   state.press = null;
+  state.focusToken += 1;
   state.lastPetView = OFF_VIEW;
   const win = state.win;
   if (win && !win.isDestroyed()) win.webContents.send("pet:view", OFF_VIEW);
@@ -482,13 +493,16 @@ function pollIdle() {
 /** One step of her clock: idle time as of now, then move the window, send a changed view, save a position, and reschedule. */
 function stepPet() {
   const pet = state.pet;
-  if (!pet) return;
+  if (!pet || state.petPaused) return;
   const now = Date.now();
   pet.setContext({ idleS: powerMonitor.getSystemIdleTime() }, now);
   const f = pet.step(now);
   const win = state.win;
   if (win && !win.isDestroyed()) {
-    if (f.moved && !state.drag) win.setBounds(moveRect(f, buddySize()));
+    if (f.moved && !state.drag) {
+      win.setBounds(moveRect(f, buddySize()));
+      state.petMoved = true;
+    }
     if (f.viewChanged) {
       state.lastPetView = f.view;
       win.webContents.send("pet:view", f.view);
@@ -512,6 +526,26 @@ function schedulePet() {
   state.petTimer = null;
   const wake = pet.nextWakeMs(Date.now());
   if (wake !== null) state.petWake = setTimeout(stepPet, Math.max(0, wake - Date.now()));
+}
+
+/** The buddy window hid or showed: a hidden pet has no timers, no steps and no saves, and a shown one picks up from where
+ *  she was (her clock caps a long gap, so she does not lurch). */
+function setPetVisible(win, visible) {
+  if (state.win !== win || !state.pet) return;
+  const action = petVisibilityAction(state.petPaused, visible);
+  if (action === "pause") {
+    state.petPaused = true;
+    clearInterval(state.petTimer);
+    clearTimeout(state.petWake);
+    clearInterval(state.idlePoll);
+    state.petTimer = null;
+    state.petWake = null;
+    state.idlePoll = null;
+  } else if (action === "resume") {
+    state.petPaused = false;
+    state.idlePoll = setInterval(pollIdle, IDLE_POLL_MS);
+    stepPet();
+  }
 }
 
 /** Feed her a context change and step at once, so a gate change never waits for the next wake. */
@@ -583,6 +617,7 @@ function petClick() {
     openAgentsList();
   } else {
     clearPendingFocus();
+    state.focusToken += 1;
     if (state.win && !state.win.isDestroyed()) state.win.focus(); // Riya holds foreground rights when the helper starts
     sendToCore({ type: "focus_agent", id: action.focus });
     state.pendingFocus = { id: action.focus, atMs: now, timer: setTimeout(focusTimedOut, FOCUS_WAIT_MS) };
@@ -696,6 +731,7 @@ ipcMain.on("drag-end", (event) => {
     petClick();
   } else {
     state.pet.drop({ x, y }, now);
+    state.petMoved = true;
   }
   stepPet();
 });
