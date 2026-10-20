@@ -280,18 +280,44 @@ Every decision taken on the user's behalf while executing the three plans. Each 
 - Ruling: the peer lookup stays inside the handler, before the 200. The TCP row exists only while the hook's connection is open, so a lookup after the response could find nothing. It runs once per session (cached), and on failure the reply is still an empty 200 — cost if wrong: a few ms on the first hook of a session.
 - Ruling: the controller runs a read-only smoke test of WindowsPeerOS (TCP table, process snapshot, EnumWindows; no focus) once Task 2 is reviewed — cost if wrong: none.
 - Ruling: T2 minors promoted to fix round 1:
+  - M1 proxy_headers=False, so the peer always comes from the socket;
+  - M2 established rows only, and skip pid-0/own-pid rows rather than returning on them;
+  - M4 a size hint and a len(buf) clamp;
+  - M5 a spec §4.1.5 doc fix.
 - Ruling: M3 (pid reuse) is carried to the click-time task (Task 3, focus_agent → agent_window). It checks that the cached pid is still alive and stops the parent chain at a missing parent, or at a parent created after its child (OpenProcess + GetProcessTimes, via the PeerOS protocol so it stays fakeable). Cost if wrong: a click could raise an unrelated visible window after pid reuse (benign).
 - Ruling: accepted T3 calls:
+  - Peer.created is recorded at hook time and checked at click time, so a reused-but-alive pid is refused as well as a dead one.
+  - ActivityGate sends a "wave" (needs you) at once and never holds or replaces it; a held PreToolUse for that session is dropped when a wave goes out.
+  - created() is read once per session at note time, in the receiver.
+  - Cost if wrong: one label is lost when a wave goes out.
 - Ruling: I1 fixed by a riya-activity daemon thread (0.25 s) that runs _activity_step outside tick; the tick call stays (non-blocking lock). The agents message stays on tick, since the wave flows through the activity loop. M1: waves are rate-limited per session (a repeat of the same label within 1.5 s is dropped; a new label passes at once). M2: an access-denied OpenProcess means "running, time unknown", so the walk keeps going; liveness is checked via GetExitCodeProcess. M3: a per-item emit try. M4: no echo of rejected setting values (fixed message per key). M5: the vacuous calls test is made real. M6 is skipped (cosmetic) — cost if wrong: one extra thread at 4 Hz, which is negligible.
 - Ruling: accepted the T4 calls. Wave priority: a wave pre-empts non-wave poses, and its bubble shows even mid-drag. Idle wakes are coalesced up to 1 s late. With no agent event yet, sinceAgent is infinite, so a long-idle start sleeps. drop redraws nextWalkAt. A reaction holds off sleep until its pose and bubble end, but away still sleeps at once. Cost if wrong: small behaviour tweaks.
 - Ruling: fixes for fix round 1 —
+  - I1: gaming or away ends a running reaction, bubble and effect at once, and away sleeps that same step;
+  - M1: a bubble-only label never replaces a running wave's "needs you!" (needs-you is never hidden);
+  - M2: reduced motion mid-fall snaps her to the floor;
+  - M3: the bubble counts code points;
+  - M4: purity test also rejects DOM and require;
+  - M5: SCALE_DEFAULT is pinned to Settings.
+  Cost if wrong: one activity label lost during a wave.
 - Ruling: accepted the T5 calls. A click drops her at the press position with no save. With no saved spot she starts on the floor. cancelDrag releases the pet. Position follows the relayout. A shrink keeps her feet. openAgentsList is gated on settingsLoaded. The renderer hooks are Task 6. Cost if wrong: none.
 - Ruling: all three minors promoted.
+  - M1: the pet pauses while the window is hidden (no loop, no saves).
+  - M2: a late settings message never snaps her back once she has moved this session.
+  - M3: if the focus helper fails, she opens the agents list (spec §2.3 wins over the plan's empty callback).
+  Cost if wrong: none.
 - Ruling: 7ae9de1 accepted. The controller confirmed that on main, index.html loads agents-logic.js and hands-logic.js, which both declare a top-level `const api`. In a real renderer, classic scripts share one global lexical scope, so the second throws a SyntaxError and never runs. That is a latent bug since v0.5. The fix renames only internals, and the new script-scope test loads each page's scripts together. Cost if wrong: none (renames only).
 - Ruling: the not-strictly-red-first order in T6 is accepted. The tests exist and the reviewer checks they bite. Desktop visuals are a user check.
 - Ruling: fix round 1 takes M1 (renamed setting-choice consts plus an equality test), M2 (the matchMedia change-listener test), M3 (the settings round-trip test) and M4 (contextmenu gated on petActive). M5 (pose offsets in the hit test) is in-interface and skipped. Cost if wrong: a few px of click mask during sit, squash or wave.
 - Ruling: per the runbook, add more requests for the flagged kinds instead of loosening the precision-first filter. 540 more each (seed 1), ids renumbered +10000 (h covers only messages and meta, so it is unchanged). The combined requests_all.jsonl (4620) is uploaded and the teacher resumes only the new rows. Cost if wrong: about 35 min of Colab T4.
 - Ruling: M1–M7 promoted to fix round 1: bite tests, a token-not-printed test, a no-shell assert, README accuracy, and an N-of-M pids line. M8 (locale decoding) skipped — rare, and reports honestly — cost if wrong: "not measured" on a non-ASCII path.
 - Ruling: fix wave covers I1, M1, M2, M3, M5 and M6. M4 is parked for the user's desktop check, with a README troubleshooting line.
+  - I1: Health shows warn "Partly connected" when Riya's hooks lack any installer EVENT (e.g. PreToolUse), and offers Connect, which is the user's click; Claude never applies it. README matches.
+  - M1: non-wave reactions queued while hidden are dropped on show; a still-current wave may show.
+  - M2: gaming freezes the sit/stand toggles and fidgets.
+  - M3: focusTarget falls back to the session of a recent wave/activity even before the agents list catches up, and the core still validates the id.
+  - M5: README wording.
+  - M6: needs-you stays visible while her speech bubble is up (badge highlight), and the wave bubble shows when her speech ends if the wave is still current.
+  - Cost if wrong: small UX differences; M4 falls back to the agents list.
 - Ruling: accepted fix-wave calls — focusTarget(…, lastWave) targets an unlisted wave session (core validates); gaming also holds sleep/wake; badge "!" during a current wave; installer merge unchanged (pinned by test) — cost if wrong: none.
 - Ruling: merge v0.9 via a PR handled by Claude. User checks: the pet on the real desktop, click-to-focus (M4), Connect Claude Code from Health (adds PreToolUse), optional walk frames and the pet_cpu check — cost if wrong: main carries v0.9 (revertable).
