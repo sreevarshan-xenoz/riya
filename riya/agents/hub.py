@@ -303,7 +303,7 @@ class AgentHub:
         if not isinstance(sid, str) or not sid or len(sid) > 128 or not isinstance(ev, str) or ev not in CLAUDE_EVENTS:
             return []
         cwd = payload.get("cwd")
-        folder = summarize(PureWindowsPath(cwd).name, 40) if isinstance(cwd, str) and cwd else ""
+        folder = summarize(PureWindowsPath(cwd[-512:]).name, 40) if isinstance(cwd, str) and cwd else ""
         name = f"{folder or 'claude'} {summarize(sid[:6], 6)}"
         a = self._agents.get(sid)
         if a is None:

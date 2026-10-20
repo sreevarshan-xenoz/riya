@@ -14,6 +14,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 
+from riya.agents.peer import PeerMap
+
 HOOK_HOST = "127.0.0.1"
 HOOK_PORT = 8766
 MAX_BODY = 256 * 1024
@@ -61,10 +63,13 @@ class RejectCounter:
             return len(self._hits)
 
 
-def create_hook_app(token: str, enqueue: Callable[[dict], None], rejected: RejectCounter | None = None) -> FastAPI:
+def create_hook_app(token: str, enqueue: Callable[[dict], None], rejected: RejectCounter | None = None,
+                    peers: PeerMap | None = None) -> FastAPI:
     """POST /hook. Checks run in order: Origin (403), token (401, counted in rejected), size (413), then parse.
     Anything that passes them answers 200 with an empty body; a payload that isn't a JSON object is dropped. enqueue
-    runs on the event loop, so it must not block (queue.SimpleQueue.put is fine)."""
+    runs on the event loop, so it must not block (queue.SimpleQueue.put is fine). peers: notes which process sent the
+    event (the TCP table is read once per session, so this is cheap); a failure there is logged and never changes the
+    answer."""
     if not token.strip():
         raise ValueError("the hook token can't be empty")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -91,6 +96,13 @@ def create_hook_app(token: str, enqueue: Callable[[dict], None], rejected: Rejec
         except (ValueError, RecursionError):  # bad UTF-8, bad JSON, absurdly deep nesting
             payload = None
         if isinstance(payload, dict):
+            sid, cwd = payload.get("session_id"), payload.get("cwd")
+            if peers is not None and request.client is not None and isinstance(sid, str) and 1 <= len(sid) <= 128:
+                try:
+                    peers.note(sid, request.client.port, cwd if isinstance(cwd, str) else None,
+                               fresh=payload.get("hook_event_name") == "SessionStart")
+                except Exception:
+                    log.debug("couldn't record a hook's peer", exc_info=True)
             try:
                 enqueue(payload)
             except Exception:
@@ -108,13 +120,15 @@ def _serve(server) -> None:
 
 
 def start_hook_receiver(enqueue: Callable[[dict], None], token_path: Path | str | None = None,
-                        port: int = HOOK_PORT, rejected: RejectCounter | None = None, warn: bool = True):
+                        port: int = HOOK_PORT, rejected: RejectCounter | None = None, warn: bool = True,
+                        peers: PeerMap | None = None):
     """Serves the receiver on 127.0.0.1:port in a daemon thread named riya-hooks. Returns (server, thread), or None
     after one log line (a warning, or debug when warn is off) when it can't start (port taken, token unwritable)."""
     try:
         import uvicorn
         token = load_or_create_token(token_path or default_token_path())
-        server = uvicorn.Server(uvicorn.Config(create_hook_app(token, enqueue, rejected), host=HOOK_HOST, port=port,
+        app = create_hook_app(token, enqueue, rejected, peers)
+        server = uvicorn.Server(uvicorn.Config(app, host=HOOK_HOST, port=port,
                                                log_level="warning"))  # shared uvicorn loggers: keep the level
         thread = threading.Thread(target=_serve, args=(server,), name="riya-hooks", daemon=True)
         thread.start()
@@ -136,8 +150,9 @@ class HookReceiver:
     it), retries every RETRY_S in a daemon thread until it binds or stop(). ok: serving now. rejected: the 401s."""
 
     def __init__(self, enqueue: Callable[[dict], None], token_path: Path | str | None = None, port: int = HOOK_PORT,
-                 retry_s: float = RETRY_S):
+                 retry_s: float = RETRY_S, peers: PeerMap | None = None):
         self.enqueue, self.token_path, self.port, self.retry_s = enqueue, token_path, port, retry_s
+        self.peers = peers
         self.rejected = RejectCounter()
         self._stop = threading.Event()
         self._serving = None  # (server, thread) once bound
@@ -155,7 +170,8 @@ class HookReceiver:
         return self
 
     def _try(self, warn: bool) -> bool:
-        self._serving = start_hook_receiver(self.enqueue, self.token_path, self.port, self.rejected, warn=warn)
+        self._serving = start_hook_receiver(self.enqueue, self.token_path, self.port, self.rejected, warn=warn,
+                                            peers=self.peers)
         return self._serving is not None
 
     def _retry_loop(self) -> None:
