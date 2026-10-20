@@ -730,3 +730,34 @@ def test_cli_counts_legacy_teacher_rows_as_stale(tmp_path, capsys):
                  "--report", str(report_path)]) == 0
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["kept"] == 1 and report["stale_answer"] == 2 and report["missing"] == 1
+
+
+# ---- final fix wave minors: "your mom" in a question, "we always ..." ----
+
+@pytest.mark.parametrize("kind", ["small", "explain", "greeting", "bid", "unknown", "report"])
+def test_your_family_is_a_claim_even_in_a_question(kind):
+    r = req(kind, must_not_invent=True, max_sentences=5)
+    for reply in ("Did your mom call again? Hehe~", "How's your sister doing~", "Is your dad still mad at you?"):
+        assert "invented" in reasons(r, reply, STYLE), (kind, reply)
+    for reply in ("Tell me about your family sometime~", "How was your day?", "What's on your mind~"):
+        assert "invented" not in reasons(r, reply, STYLE), (kind, reply)
+    known = req(kind, facts=["The user's mom is called Asha"], must_not_invent=True, max_sentences=5)
+    assert "invented" not in reasons(known, "Did your mom call again? Hehe~", STYLE)
+
+
+def test_we_always_is_a_shared_history():
+    r = req(must_not_invent=True)
+    for reply in ("Just like old times, remember? We always do this~", "We always do this~",
+                  "We usually stay up way too late~", "Hehe, like old times~"):
+        assert "invented" in reasons(r, reply, STYLE), reply
+    for reply in ("We could do this again sometime~", "We should play a game~", "Let's do this~"):
+        assert "invented" not in reasons(r, reply, STYLE), reply
+    said = req(user="lol we always do this", must_not_invent=True)  # the user's own words back it
+    assert "invented" not in reasons(said, "We always do this~", STYLE)
+
+
+def test_the_reviewers_rows_are_rejected():
+    row = build_sft.request_for(build_sft.scenarios(0, 60, ("small",))[0])
+    assert row["id"] == "small-00000" and not row["facts"]
+    for reply in ("Did your mom call again? Hehe~", "Just like old times, remember? We always do this~"):
+        assert "invented" in reasons(row, reply, STYLE), reply

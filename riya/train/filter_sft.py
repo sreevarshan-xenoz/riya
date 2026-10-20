@@ -59,8 +59,9 @@ _QUESTION_WORDS = frozenset("how what when where why who which did do does are i
                             "has should shall".split())  # a sentence starting with one asks, "?" or not ("how was it~")
 _INVITATION = re.compile(r"\b(?:tell|share|show|let) (?:me|us)\b|^\W*(?:tell|share|show|teach)\b", re.I)
 _SHARED = re.compile(r"\b(?:remember when|we (?:talked|chatted|spoke|went|did|said|met|saw|watched|played|had|used to)"
+                     r"|we (?:always|usually|often|normally|typically|never)"
                      r"|last (?:time|summer|winter|spring|autumn|week|night|year|month|weekend)|you always"
-                     r"|you used to)\b", re.I)  # a history the two of them don't share unless the row says so
+                     r"|you used to|like old times)\b", re.I)  # a history they share only when the row says so
 _COPULA = re.compile(r"^\W*(?:\w+\W+){0,2}?(?:is|was|are|were)\s+([^,;.!?~]+)", re.I)
 _CLAIM = re.compile(
     r"\b(?:(?:didn't|don't|haven't|weren't|wasn't|aren't)\s+you\b(?!\s+(?:dare|even|forget|worry|think|stop|go|"
@@ -238,7 +239,7 @@ _ATTR_WORD = re.compile(r"\b(?:" + "|".join(sorted({re.escape(w) for ws in ATTR_
 PERSONAL_NOUNS = frozenset("""dog cat pet sister brother mother mom mum father dad cousin roommate friend girlfriend
 boyfriend wife husband partner son daughter kid hometown city town job boss school college university team
 neighbour neighbor teacher family friends parents grandma grandpa gran nan aunt uncle niece nephew ex crush
-landlord flatmate colleague coworker manager""".split())  # what an explanation may not invent about the user
+landlord flatmate colleague coworker manager""".split())  # never invented, in any kind (a question too)
 
 
 def unsupported(response: str, known_texts: list[str], world: bool = False, personal_only: bool = False) -> list[str]:
@@ -255,17 +256,25 @@ def unsupported(response: str, known_texts: list[str], world: bool = False, pers
         starts = _sentence_starts(response)
         found += [f"date {m.group()}" for m in _MONTH_OR_DAY.finditer(response)
                   if m.start() not in starts and not known.has(m.group())]
+    known_tokens = _tokens(" ".join(known_texts))
     for sentence in _sentences(response):
         question = _is_question(sentence)
-        found += [f"history {w}" for m in _SHARED.finditer(sentence) for w in _words(sentence[m.start():])
-                  if w not in STOPS and w not in PERSONA_WORDS and not known.has(w) and not w.isdigit()]
-        if not question and not _INVITATION.search(sentence):  # asking about "your X" claims nothing
+        for m in _SHARED.finditer(sentence):
+            words = [w for w in _words(sentence[m.start():])
+                     if w not in STOPS and w not in PERSONA_WORDS and not known.has(w) and not w.isdigit()]
+            if words:
+                found += [f"history {w}" for w in words]
+            elif not _has_sequence(known_tokens, _tokens(m.group())):  # "we always do this~": the claim itself
+                found.append(f"history {m.group().lower()}")
+        if not _INVITATION.search(sentence):  # "tell me about your sister" claims nothing
             for m in _YOUR.finditer(sentence):
                 noun = next((w for w in _words(m.group(1)) if w not in _MODIFIERS and w not in STOPS), None)
                 if not noun or noun.endswith("ly") or noun in GENERIC_YOUR or _norm(noun) in GENERIC_YOUR \
                         or known.has(noun):
                     continue
                 personal = noun in PERSONAL_NOUNS or _norm(noun) in PERSONAL_NOUNS
+                if question and not personal:
+                    continue  # asking about "your X" claims nothing, but "did your mom call?" presumes a mom
                 common = noun in COMMON_WORDS or _norm(noun) in COMMON_WORDS  # "enjoy your tea": no claim
                 if personal or not (personal_only or common):
                     found.append(f"your {noun}")
