@@ -10,16 +10,16 @@ const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
   "eyes_enabled", "hands_online", "learning_enabled"];
-const PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
+const DENY_PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
 const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
 const MAX_PATTERNS = 100; // the core's limits
-const MAX_PATTERN_LEN = 300;
+const MAX_DENY_PATTERN_LEN = 300;
 const HANDS_KEYS = ["tools_enabled", "tools_ask", "apps", "commands", "weather_place"];
-const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...PATTERN_KEYS, "agent_logs",
+const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...DENY_PATTERN_KEYS, "agent_logs",
   ...HANDS_KEYS];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const QUIET_ERROR = "Use HH:MM-HH:MM (24-hour), like 23:30-08:00, or leave it empty to turn quiet hours off.";
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DATE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const SOURCES = {
   user_said: { label: "user said", tone: "user" },
   inferred: { label: "inferred", tone: "inferred" },
@@ -42,7 +42,7 @@ function formatWhen(seconds, { utc = false } = {}) {
   if (Number.isNaN(d.getTime())) return "unknown";
   const get = (local, universal) => (utc ? d[universal]() : d[local]());
   const pad = (n) => String(n).padStart(2, "0");
-  const date = `${get("getDate", "getUTCDate")} ${MONTHS[get("getMonth", "getUTCMonth")]} ${get("getFullYear", "getUTCFullYear")}`;
+  const date = `${get("getDate", "getUTCDate")} ${DATE_MONTHS[get("getMonth", "getUTCMonth")]} ${get("getFullYear", "getUTCFullYear")}`;
   return `${date}, ${pad(get("getHours", "getUTCHours"))}:${pad(get("getMinutes", "getUTCMinutes"))}`;
 }
 
@@ -61,7 +61,7 @@ function parsePatternLines(raw) {
   for (let i = 0; i < lines.length; i++) {
     const pattern = lines[i].trim();
     if (!pattern || patterns.includes(pattern)) continue;
-    if (pattern.length > MAX_PATTERN_LEN) return { ok: false, error: `Line ${i + 1} is longer than ${MAX_PATTERN_LEN} characters.` };
+    if (pattern.length > MAX_DENY_PATTERN_LEN) return { ok: false, error: `Line ${i + 1} is longer than ${MAX_DENY_PATTERN_LEN} characters.` };
     try {
       new RegExp(pattern);
     } catch (e) {
@@ -102,7 +102,7 @@ function settingPatch(key, raw) {
     const [lo, hi] = INT_RANGES[key];
     return n === null ? { ok: false, error: `Enter a whole number from ${lo} to ${hi}.` } : { ok: true, patch: { [key]: n } };
   }
-  if (PATTERN_KEYS.includes(key)) {
+  if (DENY_PATTERN_KEYS.includes(key)) {
     const r = parsePatternLines(raw);
     return r.ok ? { ok: true, patch: { [key]: r.patterns } } : r;
   }
@@ -234,9 +234,9 @@ class ErrorRouter {
   }
 }
 
-const api = {
+const settingsExports = {
   MODES, VOICES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
   episodeText, dueText, memoryLists, ErrorRouter, DeferWhileFocused, parsePatternLines, eyesCountText, eyesStatusText, glanceRows,
 };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaSettings = api;
+if (typeof module !== "undefined" && module.exports) module.exports = settingsExports;
+else globalThis.RiyaSettings = settingsExports;
