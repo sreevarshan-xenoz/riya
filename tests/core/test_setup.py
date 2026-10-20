@@ -121,7 +121,7 @@ def test_allow_list(tmp_path):
     assert str(e.value) == "bad arguments for online_key_set" and CANARY not in repr(e.value)
     assert set(ACTIONS) == set(CONFIRM_GATED) | set(PLAIN) and not set(CONFIRM_GATED) & set(PLAIN)
     assert PLAIN == ("online_key_set", "online_key_clear", "voice_sample", "voice_choose", "mic_check", "autostart",
-                     "onboarding_done")
+                     "onboarding_done", "use_base", "use_riya_v1")
     assert CONFIRM_GATED == ("online_test", "eyes_test", "hooks_connect", "hooks_disconnect")
     assert set(SUMMARIES) == set(ACTIONS)
     assert results == [] and host.rows == [] and host.patches == []

@@ -30,6 +30,8 @@ const FIX_LABELS = {
   mic_check: "Check mic",
   hooks_connect: "Connect",
   hooks_disconnect: "Disconnect",
+  use_base: "Use base model",
+  use_riya_v1: "Use Riya v1",
 };
 const CONFIRM_TITLES = {
   online_test: "Test the online key?",
