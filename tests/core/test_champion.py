@@ -855,3 +855,17 @@ def test_a_busy_port_is_refused_before_starting(adapter, tmp_db, capsys):
     assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db), "--port", "8090"],
               port_busy=lambda port: port == 8090) == 2  # Riya's own live server is never measured as the gate's
     assert rig.made == []
+
+
+def test_a_record_that_cant_be_written_after_the_install_is_reported(adopted, candidate, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+
+    def full_disk(adapter, record):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(brain, "write_record", full_disk)
+    assert go(Rig(), ["--db", str(tmp_db)]) == 2
+    out = capsys.readouterr().out
+    assert "couldn't be written" in out and "base model" in out and "Nothing changed." not in out
+    assert brain.read_local_adapter(tmp_db) is None  # no setting without a record
+    assert brain.vetted_adapter(str(adopted)) is None  # the installed file isn't served: its record doesn't match
