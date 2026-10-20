@@ -438,10 +438,54 @@ test("focusTarget prefers the session that needs you", () => {
   assert.equal(M.focusTarget(agents.slice(0, 1), { session: "a", atMs: 0 }, 600000), "a");
   assert.equal(M.focusTarget(agents.slice(0, 1), { session: "a", atMs: 0 }, 601000), null, "601 s old");
   assert.equal(M.focusTarget([{ ...agents[0], status: "ended" }], { session: "a", atMs: 0 }, 1000), null);
-  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "zz", atMs: 0 }, 1000), null, "not in the list");
-  assert.equal(M.focusTarget([], { session: "a", atMs: 0 }, 1000), null);
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "zz", atMs: 0 }, 1000), "zz", "not listed yet: the core checks it");
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "zz", atMs: 0 }, 601000), null, "but only while recent");
+  assert.equal(M.focusTarget([], { session: "a", atMs: 0 }, 1000), "a", "an empty list has not caught up either");
   assert.equal(M.focusTarget(undefined, undefined, 0), null);
   assert.equal(M.focusTarget([null, 3, { id: "a", kind: "claude", needs_attention: true }], null, 0), "a");
+});
+
+test("a click on a fresh wave reaches its session before the agents list has it", () => {
+  const listed = [{ id: "a", kind: "claude", needs_attention: false, status: "busy" }];
+  const wave = { session: "new", atMs: 1000 };
+  const later = { session: "a", atMs: 2000 };
+  // the wave's session is not in the list yet: still the target, and a later activity of another session doesn't steal it
+  assert.equal(M.focusTarget(listed, later, 3000, wave), "new");
+  assert.equal(M.focusTarget([], null, 3000, wave), "new");
+  assert.equal(M.focusTarget(listed, later, 3000, null), "a", "no wave: the latest activity");
+  // a session needing attention in the list still wins, and so does nothing once everything is old
+  assert.equal(M.focusTarget([{ ...listed[0], needs_attention: true }], later, 3000, wave), "a");
+  assert.equal(M.focusTarget(listed, { ...later, atMs: 1000 }, 1000 + M.RECENT_ACTIVITY_MS + 1, wave), null);
+  // a wave for a session the list says has ended falls through to the activity
+  const ended = [{ id: "new", kind: "claude", status: "ended" }, listed[0]];
+  assert.equal(M.focusTarget(ended, later, 3000, wave), "a");
+  assert.equal(M.focusTarget(listed, null, 3000, { session: 7, atMs: 1000 }), null, "a bad session is never a target");
+  // the id is the core's to validate: an unknown one answers hwnd null, which opens the agents list
+  assert.deepEqual(M.decideFocus({ id: "new", atMs: 3000 }, { type: "agent_window", id: "new", hwnd: null }, 3100), { list: true });
+  assert.deepEqual(M.clickAction("new", true), { focus: "new" });
+  const main = readBody("main.js");
+  assert.match(main, /if \(msg\.kind === "wave"\) state\.lastWave = state\.lastActivity/);
+  assert.match(fnSlice(main, "petClick"), /focusTarget\(state\.agents, state\.lastActivity, now, state\.lastWave\)/);
+});
+
+test("reactions that arrive while her window is hidden are dropped, except a wave that is still current", () => {
+  assert.equal(M.HELD_WAVE_MS, 6000);
+  assert.equal(M.holdWhileHidden(null, "done", "all done!", 1000), null);
+  assert.equal(M.holdWhileHidden(null, "edit", "editing a.py", 1000), null);
+  const wave = M.holdWhileHidden(null, "wave", "needs you! running rm", 1000);
+  assert.deepEqual(wave, { label: "needs you! running rm", atMs: 1000 });
+  assert.equal(M.holdWhileHidden(wave, "fail", "oops", 2000), wave, "another kind never replaces or clears the wave");
+  assert.deepEqual(M.holdWhileHidden(wave, "wave", "needs you!", 2000), { label: "needs you!", atMs: 2000 }, "the latest wave");
+  assert.deepEqual(M.heldReactionOnShow(wave, 1000 + 6000), { kind: "wave", label: "needs you! running rm" });
+  assert.equal(M.heldReactionOnShow(wave, 1000 + 6001), null, "an hour-old wave is stale");
+  assert.equal(M.heldReactionOnShow(null, 0), null);
+  assert.equal(M.heldReactionOnShow({ label: "x", atMs: NaN }, 0), null);
+  const main = readBody("main.js");
+  const react = fnSlice(main, "petReact");
+  assert.ok(react.indexOf("state.petPaused") > 0 && react.indexOf("state.petPaused") < react.indexOf("state.pet.react("));
+  assert.match(react, /holdWhileHidden\(/);
+  assert.match(fnSlice(main, "setPetVisible"), /heldReactionOnShow\([\s\S]*state\.pet\.react\(held\.kind/);
+  assert.match(fnSlice(main, "stopPet"), /state\.heldWave = null/);
 });
 
 test("a focus only follows its own fresh click", () => {

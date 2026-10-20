@@ -18,7 +18,7 @@ const {
   pickHotkey, modeToApply, repositionTarget, shouldSendToCore, quitDelay, rememberForReplay, toPhysical, toDip, displayConverter,
   forgetOnDisconnect, DONT_LOOK_HOTKEYS, KEY_URL, shouldOpenWelcome, welcomeClosedMessage, ipcAllowed, welcomeWebPreferences,
   QUIT_EVENTS, rendererMayRequest, isClick, focusTarget, clickAction, decideFocus, focusCommand, petMenuItems,
-  reducedMotionPatch, moveRect, FOCUS_WAIT_MS, petVisibilityAction, runFocusHelper,
+  reducedMotionPatch, moveRect, FOCUS_WAIT_MS, petVisibilityAction, runFocusHelper, holdWhileHidden, heldReactionOnShow,
 } = require("./src/main-logic");
 
 const SMOKE = process.env.RIYA_SMOKE === "1";
@@ -60,6 +60,8 @@ const state = {
   presence: null, // the core's latest presence, null while unknown or disconnected
   agents: [], // the core's latest agents.items
   lastActivity: null, // { session, atMs } of the latest agent_activity
+  lastWave: null, // { session, atMs } of the latest wave ("needs you"), a click target before the agents list has it
+  heldWave: null, // { label, atMs }: a wave that arrived while her window was hidden
   pendingFocus: null, // { id, atMs, timer } while a click waits for its agent_window
   lastPetView: null, // the view a new or recreated window draws at once
   osReducedMotion: false, // what the renderer reports from matchMedia
@@ -182,6 +184,7 @@ function onCoreMessage(msg) {
   if (msg.type === "agents") state.agents = Array.isArray(msg.items) ? msg.items : [];
   if (msg.type === "agent_activity" && typeof msg.session === "string") {
     state.lastActivity = { session: msg.session, atMs: Date.now() };
+    if (msg.kind === "wave") state.lastWave = state.lastActivity;
     petReact(msg.kind, msg.label);
   }
   if (msg.type === "agent_window") {
@@ -476,6 +479,7 @@ function stopPet() {
   clearPendingFocus();
   state.pet = null;
   state.petPaused = false;
+  state.heldWave = null;
   state.press = null;
   state.focusToken += 1;
   state.lastPetView = OFF_VIEW;
@@ -544,6 +548,9 @@ function setPetVisible(win, visible) {
   } else if (action === "resume") {
     state.petPaused = false;
     state.idlePoll = setInterval(pollIdle, IDLE_POLL_MS);
+    const held = heldReactionOnShow(state.heldWave, Date.now()); // only a still-current wave; the rest was dropped
+    state.heldWave = null;
+    if (held) state.pet.react(held.kind, held.label, Date.now());
     stepPet();
   }
 }
@@ -557,6 +564,10 @@ function feedPet(patch) {
 
 function petReact(kind, label) {
   if (!state.pet) return;
+  if (state.petPaused) { // hidden: nothing queues behind her back, only a wave is kept for when she shows
+    state.heldWave = holdWhileHidden(state.heldWave, kind, label, Date.now());
+    return;
+  }
   state.pet.react(kind, label, Date.now());
   stepPet();
 }
@@ -608,7 +619,7 @@ function resizeBuddy(old) {
 /** A click on her (a press that barely moved): the agent that needs the user comes forward, else she is poked. */
 function petClick() {
   const now = Date.now();
-  const action = clickAction(focusTarget(state.agents, state.lastActivity, now), state.connected);
+  const action = clickAction(focusTarget(state.agents, state.lastActivity, now, state.lastWave), state.connected);
   if (action.poke) {
     if (!state.pet) return;
     state.pet.poke(now);
