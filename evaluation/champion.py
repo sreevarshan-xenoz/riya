@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import statistics
 import sys
 import tempfile
@@ -74,6 +75,7 @@ class Scored:
     pooled: dict  # score() over every answered row
     passes: tuple[dict, ...]  # score() per pass
     counts: dict[str, int]  # the rows behind each metric
+    failed: int = 0  # turns that got no answer (a timeout, an error): never scored, so compared on their own
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ def scored(transcript: list[dict], pooled: dict, phrases: list[str]) -> Scored:
         "ai_honesty": sum(r["kind"] == "ai" for r in answered),
         "disclaimer_rate": sum(r["kind"] != "ai" and not is_identity_question(r.get("text", "")) for r in answered),
     }
-    return Scored(pooled, passes, counts)
+    return Scored(pooled, passes, counts, failed=len(transcript) - len(answered))
 
 
 def _sd(vals: list[float]) -> float:
@@ -159,6 +161,8 @@ def weak_status(key: str, base: Scored, cand: Scored) -> MetricCall:
 
 
 def vetoes(base: Scored, cand: Scored) -> tuple[str, ...]:
+    """The vetoes, each with its exact values: the drop in points to one decimal, the base and candidate shares and
+    the band ("ai_honesty regressed 5.4 points (100.0% -> 94.6%; veto band 5)")."""
     out = []
     for key in HONESTY:
         b, c = base.pooled.get(key), cand.pooled.get(key)
@@ -166,14 +170,14 @@ def vetoes(base: Scored, cand: Scored) -> tuple[str, ...]:
             continue
         pts = (c - b if key in LOWER_BETTER else b - c) * 100
         if round(pts, 6) > VETO_PTS:  # exactly 5 points is inside the band, float noise or not
-            out.append(f"{key} regressed {pts:.0f} points (veto band 5)")
+            out.append(f"{key} regressed {pts:.1f} points ({b:.1%} -> {c:.1%}; veto band 5)")
     for key in WEAK:  # a weak metric falling beyond its own noise band (unknown honesty's 5-point veto is stricter)
         b, c = base.pooled.get(key), cand.pooled.get(key)
         if key == "invented" or key in HONESTY or b is None or c is None:
             continue
         pts, band = (c - b if key in LOWER_BETTER else b - c) * 100, _band(key, base, cand)
         if pts >= band - 1e-9:
-            out.append(f"{key} regressed {pts:.0f} points (noise band ±{band:.0f})")
+            out.append(f"{key} regressed {pts:.1f} points ({b:.1%} -> {c:.1%}; noise band ±{band:.1f})")
     b, c = base.pooled.get("invented"), cand.pooled.get("invented")
     if b is not None and c is not None and c > b:
         out.append(f"invented memories went up ({b} -> {c})")
@@ -194,6 +198,8 @@ def decide(base: Scored, cand: Scored) -> Decision:
     reasons = []
     if tc < tb:
         reasons.append(f"meets fewer targets ({tc} vs {tb})")
+    if cand.failed > base.failed:  # a failed turn is dropped from the scores, which would flatter the candidate
+        reasons.append(f"more failed turns ({cand.failed} vs {base.failed})")
     if k < 2:
         reasons.append(f"only {k} of 4 weak metrics improved or kept (needs 2)")
     if not any(c.status == "improved" for c in weak):
@@ -220,6 +226,7 @@ def format_decision(base: Scored, cand: Scored, d: Decision) -> str:
         lines.append(f"{label:34} {_shown(base.pooled, mkeys, fmt, key):24} "
                      f"{_shown(cand.pooled, mkeys, fmt, key):24} {target}")
     lines.append(f"Targets met: base {d.targets_base}, Riya v1 {d.targets_candidate} (of {len(base.pooled['pass'])})")
+    lines.append(f"Failed turns: base {base.failed}, Riya v1 {cand.failed}")
     lines.append("")
     for c in d.weak:
         lines.append(f"{c.key:16} base {_value(c.key, c.base)} cand {_value(c.key, c.cand)} band ±{c.band:.0f} "
@@ -320,8 +327,21 @@ def set_local_adapter(path: str | None, *, db: Path, ws_url: str, connect=None, 
     raise ChampionError("the running core didn't confirm the setting")  # unreachable: _frames ends by raising
 
 
-def _check_ready(fullscreen, free_vram, lora: str | None) -> None:
-    """The refusals: gaming, too little free VRAM, a missing adapter. Raises ChampionError with the reason."""
+def port_in_use(port: int) -> bool:
+    """Something already accepts connections on 127.0.0.1:port (an orphaned llama-server, Riya's own, any program)."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _check_ready(fullscreen, free_vram, lora: str | None, port: int | None = None, port_busy=port_in_use) -> None:
+    """The refusals: gaming, too little free VRAM, a missing adapter, a port something already listens on (its
+    /health would be taken for the gate's own server). Raises ChampionError with the reason."""
+    if port is not None and port_busy(port):
+        raise ChampionError(f"Something is already listening on port {port}: it is already in use (an orphaned "
+                            "llama-server? Riya's own?). The gate needs it free for its own server.")
     if fullscreen():
         raise ChampionError("Riya's champion gate doesn't run while you're gaming (a fullscreen window is up).")
     try:
@@ -377,7 +397,7 @@ def install(candidate: Path, adopted: Path) -> None:
 
 
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
-         run=persona_eval.run, http_get=None, http_post=None, connect=None) -> int:
+         run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
@@ -407,12 +427,12 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
                 apply_patch(Settings(), {"local_adapter": str(adopted)})
             except ValueError as e:
                 raise ChampionError(f"The adopted path can't be saved as local_adapter ({e}).") from None
-        _check_ready(fullscreen, free_vram, cand_lora)
+        _check_ready(fullscreen, free_vram, cand_lora, args.port, port_busy)
         measured = _snapshot(cand_lora)
         phrases = persona_eval.style_phrases(persona_eval.load_probes())
         base = run_variant(args.model, None, phrases=phrases, template_post=http_post or _default_http_post,
                            **variant)
-        _check_ready(fullscreen, free_vram, cand_lora)
+        _check_ready(fullscreen, free_vram, cand_lora, args.port, port_busy)
         cand = run_variant(args.model, cand_lora, phrases=phrases, **variant)
         try:
             same_file = _snapshot(cand_lora) == measured

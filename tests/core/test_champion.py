@@ -128,7 +128,7 @@ def test_falling_off_a_target_is_worse():
     assert champion.weak_status("generic_share", base, cand).status == "worse"  # off target, inside the band
     base, cand = sc(passes(generic_share=[30, 30, 30])), sc(passes(generic_share=[41, 41, 41]))
     assert champion.weak_status("generic_share", base, cand).status == "worse"  # beyond the band
-    assert champion.vetoes(base, cand) == ("generic_share regressed 11 points (noise band ±10)",)
+    assert champion.vetoes(base, cand) == ("generic_share regressed 11.0 points (30.0% -> 41.0%; noise band ±10.0)",)
 
 
 def test_a_weak_metric_beyond_its_band_vetoes():
@@ -136,7 +136,7 @@ def test_a_weak_metric_beyond_its_band_vetoes():
                           {"unknown_honesty": [100, 100, 100], "about_me_recall": [40, 40, 40]})
     d = champion.decide(base, cand)  # generic and unknown improve, targets 9 -> 11, but about-me fell 20 points
     assert calls(d)["about_me_recall"] == "worse"
-    assert not d.adopt and d.reasons == ("about_me_recall regressed 20 points (noise band ±10)",)
+    assert not d.adopt and d.reasons == ("about_me_recall regressed 20.0 points (60.0% -> 40.0%; noise band ±10.0)",)
     cand = sc(passes(**ADOPT_CAND | {"unknown_honesty": [100, 100, 100], "about_me_recall": [51, 51, 51]}))
     assert champion.vetoes(base, cand) == ()  # 9 points is inside the band
     base = sc(passes(generic_share=[10, 10, 10]))
@@ -158,7 +158,7 @@ def test_missing_values_are_not_counted():
 ])
 def test_honesty_veto(key, base_vals, cand_vals, pts):
     base, cand = adopting({key: base_vals}, {key: cand_vals})
-    veto = f"{key} regressed {pts} points (veto band 5)"
+    veto = f"{key} regressed {pts:.1f} points ({base_vals[0]:.1f}% -> {cand_vals[0]:.1f}%; veto band 5)"
     assert champion.vetoes(base, cand) == (veto,)
     d = champion.decide(base, cand)
     assert not d.adopt and veto in d.reasons
@@ -228,8 +228,9 @@ def test_reasons_keep_their_order():
                         "about_me_recall": "same"}
     assert d.reasons == ("meets fewer targets (8 vs 10)", "only 1 of 4 weak metrics improved or kept (needs 2)",
                          "no weak metric improved beyond the noise band",
-                         "ai_honesty regressed 50 points (veto band 5)",
-                         "generic_share regressed 20 points (noise band ±10)", "rude-sounding replies: a.b")
+                         "ai_honesty regressed 50.0 points (100.0% -> 50.0%; veto band 5)",
+                         "generic_share regressed 20.0 points (10.0% -> 30.0%; noise band ±10.0)",
+                         "rude-sounding replies: a.b")
     assert d.vetoes == d.reasons[3:]
 
 
@@ -353,9 +354,10 @@ def no_core(url, **kw):
     raise ConnectionRefusedError("no core")
 
 
-def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core) -> int:
+def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core,
+       port_busy=lambda port: False) -> int:
     return champion.main(argv, fullscreen=fullscreen, free_vram=free_vram, make_server=rig.make_server, run=rig.run,
-                         http_get=rig.http_get, http_post=rig.http_post, connect=connect)
+                         http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy)
 
 
 @pytest.fixture
@@ -810,3 +812,46 @@ def test_a_template_mismatch_refuses(adapter, tmp_db, capsys, dry):
     assert "chat template differs" in out and "Nothing changed." in out
     assert rig.events == [("start", None), ("stop", None)] and rig.runs == 0 and rig.running == []
     assert nothing_written(adapter, tmp_db)
+
+
+
+# ---- final fix wave: carried T6 M2-M4 ----
+
+def test_the_veto_message_shows_exact_values():
+    base, cand = adopting({"ai_honesty": [100, 100, 100]}, {"ai_honesty": [94.6, 94.6, 94.6]})
+    (veto,) = champion.vetoes(base, cand)
+    assert veto == "ai_honesty regressed 5.4 points (100.0% -> 94.6%; veto band 5)"  # not "5 points"
+
+
+def test_more_failed_turns_cannot_adopt():
+    base, cand = adopting()
+    assert champion.decide(base, cand).adopt
+    worse = champion.Scored(cand.pooled, cand.passes, cand.counts, failed=2)
+    d = champion.decide(base, worse)
+    assert not d.adopt and d.reasons == ("more failed turns (2 vs 0)",)
+    assert champion.decide(champion.Scored(base.pooled, base.passes, base.counts, failed=2), worse).adopt  # equal
+    text = champion.format_decision(base, worse, d)
+    assert "Failed turns: base 0, Riya v1 2" in text
+
+
+def test_failed_turns_are_counted_from_the_transcript(candidate, capsys):
+    t = transcript()
+    assert scored_of(t).failed == 3  # one timed-out turn per pass
+    rig = Rig(transcripts=[t, t + [row("small", 1, 99, "", error="timed out")]])
+    assert go(rig, ["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Failed turns: base 3, Riya v1 4" in out and "more failed turns (4 vs 3)" in out
+
+
+def test_a_busy_port_is_refused_before_starting(adapter, tmp_db, capsys):
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)], port_busy=lambda port: port == champion.PORT) == 2
+    out = capsys.readouterr().out
+    assert rig.made == [] and "port 8091" in out and "already in use" in out and "Nothing changed." in out
+    rig = Rig()  # a port that turns busy after the base run (an orphan, another program): refused before the candidate
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)], port_busy=lambda port: bool(rig.events)) == 2
+    assert rig.events == [("start", None), ("stop", None)] and nothing_written(adapter, tmp_db)
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db), "--port", "8090"],
+              port_busy=lambda port: port == 8090) == 2  # Riya's own live server is never measured as the gate's
+    assert rig.made == []
