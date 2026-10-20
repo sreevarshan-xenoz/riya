@@ -38,6 +38,7 @@ EVENTS = [
     ("SubagentStop", "*"),
     ("SessionStart", None),
     ("SessionEnd", None),
+    ("PreToolUse", "*"),
 ]
 
 

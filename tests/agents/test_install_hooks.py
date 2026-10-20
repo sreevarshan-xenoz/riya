@@ -9,9 +9,9 @@ from riya.agents import install_hooks as ih
 HANDLER = {"type": "http", "url": "http://127.0.0.1:8766/hook", "timeout": 3,
            "headers": {"X-Riya-Token": "$RIYA_HOOK_TOKEN"}, "allowedEnvVars": ["RIYA_HOOK_TOKEN"]}
 MATCHERS = {"Notification": "permission_prompt|idle_prompt", "PostToolUseFailure": "*", "PostToolUse": "*",
-            "PermissionRequest": "*", "SubagentStop": "*"}
+            "PermissionRequest": "*", "SubagentStop": "*", "PreToolUse": "*"}
 EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure",
-          "PostToolUse", "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd"}
+          "PostToolUse", "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd", "PreToolUse"}
 MINE = {"type": "command", "command": "echo hi"}
 
 
@@ -82,7 +82,7 @@ def test_apply_preserves_other_hooks_keys_and_order(env):
     got = load(env)
     assert list(got) == ["model", "hooks", "permissions"]
     assert got["permissions"] == original["permissions"] and got["model"] == "opus"
-    assert got["hooks"]["PreToolUse"] == original["hooks"]["PreToolUse"]
+    assert got["hooks"]["PreToolUse"] == original["hooks"]["PreToolUse"] + [{"matcher": "*", "hooks": [HANDLER]}]
     assert got["hooks"]["Stop"][0] == {"hooks": [MINE]}
     assert got["hooks"]["Stop"][1] == {"hooks": [HANDLER]}
     assert list(got["hooks"])[:2] == ["Stop", "PreToolUse"]
@@ -330,7 +330,7 @@ def test_riya_events_over_read_settings_shapes(tmp_path):
 def test_preview_and_print(env):
     names = [e for e, _ in ih.EVENTS]
     text = ih.preview("apply", env.settings)  # a missing file: every event will be added
-    assert text == (f"Riya will add her hook to 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file "
+    assert text == (f"Riya will add her hook to 11 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file "
                     f"is backed up first, and the RIYA_HOOK_TOKEN user environment variable is set to her token. "
                     f"{ih.RESTART_LINE}")
     assert ih.RESTART_LINE == "Restart Claude Code (and open a new terminal) afterwards."
@@ -340,10 +340,10 @@ def test_preview_and_print(env):
 
     assert run(env, "--apply") == 0
     assert ih.preview("apply", env.settings) == (
-        f"Riya's hook is already in all 10 events in {env.settings}; only the RIYA_HOOK_TOKEN variable is set again. "
+        f"Riya's hook is already in all 11 events in {env.settings}; only the RIYA_HOOK_TOKEN variable is set again. "
         f"{ih.RESTART_LINE}")
     assert ih.preview("remove", env.settings) == (
-        f"Riya will remove her hook from 10 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file is "
+        f"Riya will remove her hook from 11 Claude Code event(s) in {env.settings}: {', '.join(names)}. The file is "
         f"backed up first; the RIYA_HOOK_TOKEN variable is left alone. {ih.RESTART_LINE}")
 
     data = load(env)
@@ -351,7 +351,7 @@ def test_preview_and_print(env):
     env.settings.write_text(json.dumps(data), encoding="utf-8")
     assert "add her hook to 2 Claude Code event(s)" in ih.preview("apply", env.settings)
     assert ": Stop, SessionEnd. The file" in ih.preview("apply", env.settings)
-    assert "remove her hook from 8 Claude Code event(s)" in ih.preview("remove", env.settings)
+    assert "remove her hook from 9 Claude Code event(s)" in ih.preview("remove", env.settings)
 
     env.out.clear()
     before = env.settings.read_bytes()
@@ -434,18 +434,18 @@ def test_the_apply_preview_names_the_blocker(env, data, reason):
 def test_the_remove_preview_lists_exactly_what_remove_deletes(env):
     """strip takes Riya's handler out of any event, not only EVENTS: the preview must name every one of them."""
     data = {"hooks": {
-        "PreToolUse": [{"matcher": "Bash", "hooks": [MINE, HANDLER]}],  # not one of EVENTS
+        "PreCompact": [{"matcher": "Bash", "hooks": [MINE, HANDLER]}],  # not one of EVENTS
         "Stop": [{"hooks": [HANDLER]}, {"hooks": [HANDLER, MINE]}],  # two handlers in one event
         "SessionEnd": [{"hooks": [MINE]}],
     }}
     put(env, data)
     text = ih.preview("remove", env.settings)
     assert ("Riya will remove her hook from 2 Claude Code event(s) (3 handlers) in "
-            f"{env.settings}: Stop, PreToolUse. ") in text and text.endswith(ih.RESTART_LINE)
+            f"{env.settings}: Stop, PreCompact. ") in text and text.endswith(ih.RESTART_LINE)
     assert load(env) == data  # the preview wrote nothing
     assert run(env, "--remove") == 0
     assert any(line.startswith("Removed 3 Riya handler(s)") for line in env.out)
-    assert load(env) == {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [MINE]}], "Stop": [{"hooks": [MINE]}],
+    assert load(env) == {"hooks": {"PreCompact": [{"matcher": "Bash", "hooks": [MINE]}], "Stop": [{"hooks": [MINE]}],
                                    "SessionEnd": [{"hooks": [MINE]}]}}
 
 
