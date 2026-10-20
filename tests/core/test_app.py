@@ -340,7 +340,7 @@ def test_main_exits_cleanly_on_quit_core_and_gates_eyes_on_a_connected_body(monk
                     threading.Event().wait(0.01)
 
     class HookReceiver:                                        # never the real one: it would bind 8766
-        def __init__(self, enqueue):
+        def __init__(self, enqueue, peers=None):
             made["enqueue"], made["hooks"], self.stopped = enqueue, self, False
 
         def start(self):
@@ -395,7 +395,7 @@ def test_main_runs_on_when_the_hook_receiver_cannot_start(monkeypatch):
     class Busy:                                                # 8766 taken: serving later, maybe never
         ok = False
 
-        def __init__(self, enqueue):
+        def __init__(self, enqueue, peers=None):
             made["receiver"], self.rejected = self, RejectCounter()
 
         def start(self):
@@ -581,7 +581,7 @@ def test_main_lists_her_voices_when_text_only(monkeypatch):
     class Receiver:
         ok = True
 
-        def __init__(self, enqueue):
+        def __init__(self, enqueue, peers=None):
             pass
 
         def start(self):

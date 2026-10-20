@@ -426,3 +426,8 @@ def test_snapshot_order_doesnt_move_on_every_tool_call(hub, clock):
         clock.advance(1)
         hub.on_claude_event(ev("PostToolUse", sid=sid, tool_name="Read"))
         assert hub.snapshot() == first
+
+
+def test_a_huge_cwd_is_bounded_before_it_is_parsed(hub):
+    hub.on_claude_event(ev("Stop", cwd="C:\\" + "a\\" * 200_000 + "riya"))
+    assert state(hub)["name"].startswith("riya ")

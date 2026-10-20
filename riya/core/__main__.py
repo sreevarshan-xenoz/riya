@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from riya.agents import install_hooks
 from riya.agents.hooks import HookReceiver
 from riya.agents.logwatch import LogWatch
+from riya.agents.peer import default_peer_os
 from riya.core import secrets as keystore
 from riya.core.app import create_app, drain
 from riya.core.clock import SystemClock
@@ -85,7 +86,7 @@ def build_core(args: argparse.Namespace, emit: Callable[[BaseModel], None],
                     online=online, emit=emit, vision=vision,
                     window_source=make_window_source(), body_present=body_present,
                     effects=WindowsEffects(), http=UrlHttp(),  # her hands: only the runner gives her real ones
-                    setup_deps=deps, local_url=args.local_url)
+                    setup_deps=deps, local_url=args.local_url, peer_os=default_peer_os())
     legacy = Path(args.legacy_memory)
     legacy = legacy if legacy.is_absolute() else REPO_ROOT / legacy
     if not core.kv.get("legacy_imported") and legacy.is_file():
@@ -185,7 +186,7 @@ def start_logwatch(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thr
 
 def start_receiver(core: RiyaCore, make=None):
     """The hook receiver, kept up (retried while 8766 is busy) and handed to the core for the settings' status."""
-    receiver = (make or HookReceiver)(core.agent_inbox.put).start()
+    receiver = (make or HookReceiver)(core.agent_inbox.put, peers=core.peers).start()
     core.receiver = receiver
     return receiver
 

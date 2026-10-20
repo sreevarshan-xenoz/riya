@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from riya.agents.hub import AgentEvent, AgentHub, summarize
+from riya.agents.peer import FakePeerOS, PeerMap, PeerOS
 from riya.core import games, health
 from riya.core import secrets as keystore
 from riya.core.appraise import SENTENCE_END
@@ -230,14 +231,15 @@ class RiyaCore:
                  window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
                  body_present: Callable[[], bool] = lambda: True, effects=None, http=None,
                  riya_dir: str | Path | None = None, tz=None, setup_deps: SetupDeps | None = None,
-                 local_url: str | None = None):
+                 local_url: str | None = None, peer_os: PeerOS | None = None):
         """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
         window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
         body is connected (her eyes stay shut without one). effects and http: her hands on the OS and the network
         (None: she has none, and every such tool fails kindly; the runner passes the real ones). riya_dir: the only
         folder write_file writes into. tz: the zone for times she parses and for quiet hours (None: the machine's).
         setup_deps: what the Health page's actions touch (the key file, Claude Code's settings, the installer's runner,
-        the voice list); None sandboxes them all under riya_dir. local_url: llama-server's base URL, for Health."""
+        the voice list); None sandboxes them all under riya_dir. local_url: llama-server's base URL, for Health. peer_os:
+        the process, TCP and window tables behind the agents' windows (None: a fake with nothing in it)."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
         self.effects, self.http, self.tz = effects, http, tz
         self.riya_dir = Path(riya_dir) if riya_dir is not None else default_riya_dir()
@@ -331,6 +333,8 @@ class RiyaCore:
         self._expression = self._face()
         # v0.7: Health and setup. Checks and actions run on their own threads, never under the core lock
         self.local_url = local_url or ""
+        self.peer_os = peer_os if peer_os is not None else FakePeerOS()
+        self.peers = PeerMap.for_os(self.peer_os)  # session -> its agent's pid, noted by the hook receiver
         self.voice_sampler: Callable[[str, str], None] | None = None  # the voice loop's sample, set by the runner
         self.mic_prober: Callable[[], tuple[bool, str]] | None = None  # riya.voice.probe_mic, set by the runner
         self.health_http = health.default_http_get
