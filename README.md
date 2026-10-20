@@ -105,9 +105,10 @@ In buddy mode Riya is a small desktop pet. She stands on your taskbar, breathes 
 walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing, but only with a pose and a short bubble
 (never spoken, so she never breaks your focus). What you do:
 
-- **Turn her on.** Settings → Little Riya → "Let her walk around and react to your agents", then pick buddy mode from her
-  tray menu. Size (0.4 to 1.0, default 0.6), Motion and "She walks" are in the same section. With the box unticked buddy
-  mode is exactly the plain buddy of v0.8: no walking, no bubbles, no click-to-jump.
+- **She's on by default.** The toggle is Settings → Little Riya → "Let her walk around and react to your agents"; she
+  shows up when you pick buddy mode from her tray menu. Size (0.4 to 1.0, default 0.6), Motion and "She walks" are in the
+  same section. Untick the box and buddy mode is exactly the plain buddy of v0.8: no walking, no bubbles, no
+  click-to-jump.
 - **Connect Claude Code from Health.** Settings → Health → Connect Claude Code. It's your click: Riya never applies the
   hooks installer on her own. v0.9 adds a `PreToolUse` hook for the activity bubbles, so if you connected before, press
   Connect again once (it shows what it will add first), then restart Claude Code and open a new terminal.
@@ -119,7 +120,7 @@ walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing
   | `PreToolUse` | a bubble: "editing engine.py", "running tests", "reading the spec", "searching the code", "browsing", "asking a helper" |
   | `UserPromptSubmit` | a "thinking" pose |
   | `PermissionRequest` | she waves and shows "needs you!" with the tool |
-  | `Stop` | a happy pose and a small confetti burst (one finish in 50 is a spin or a heart) |
+  | `Stop` | a happy pose; when you're away from the keyboard also a small confetti burst (one finish in 50 a spin or a heart) |
   | tool failure | an "oops" pose with a sweat drop |
   | `StopFailure` | a sad pose |
   | `SubagentStop` | a tiny "helper done" sparkle |
@@ -139,7 +140,8 @@ walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing
 - **Two optional checks**, both manual and never part of the tests. `pet_check` posts a scripted Claude Code session
   straight to a running core and prints the five bubbles it gets back (open the body to watch her react); `pet_cpu`
   measures the body's CPU against the budget of 1% idle and 3% walking. For the walking run, start the body with
-  `$env:RIYA_PET_FORCE_WALK=1` first (it skips only the idle wait):
+  `$env:RIYA_PET_FORCE_WALK=1` first (it skips the wait for you to be idle and the unknown-presence check, nothing else:
+  gaming, away, quiet hours and reduced motion still keep her still):
 
   ```
   python -m evaluation.pet_check [--spawn]

@@ -75,6 +75,7 @@ def test_body_cpu_seconds_keeps_only_the_bodys_electron():
     cmd = calls[0][0]
     assert cmd[:3] == ["powershell", "-NoProfile", "-Command"] and "Get-Process electron" in cmd[3]
     assert "ConvertTo-Json" in cmd[3] and calls[0][1].get("capture_output") is True
+    assert not calls[0][1].get("shell") and isinstance(cmd, list)
 
 
 def test_body_cpu_seconds_survives_a_failing_shell():
@@ -93,7 +94,12 @@ def test_pet_cpu_main_samples_twice_and_always_exits_0(capsys):
                       clock=iter([100.0, 160.0]).__next__)
     out = capsys.readouterr().out
     assert rc == 0 and slept == [60.0]
-    assert "RIYA_PET_FORCE_WALK=1" in out and out.strip().splitlines()[-1] == "VERDICT: walk 0.25% (budget 3.0%) ok"
+    assert "RIYA_PET_FORCE_WALK=1" in out and out.strip().splitlines()[-1] == "VERDICT: walk 0.25% (budget 3.0%) ok (2 of 2 pids counted)"
+    # a process that ended mid-run isn't counted, and the line says so
+    samples = iter([{11: 10.0, 12: 5.0, 13: 1.0}, {11: 10.6, 14: 2.0}])
+    pet_cpu.main(["--mode", "idle", "--seconds", "60"], sample=lambda: next(samples), sleep=lambda s: None, cores=8,
+                 clock=iter([0.0, 60.0]).__next__)
+    assert capsys.readouterr().out.strip().splitlines()[-1].endswith("(1 of 4 pids counted)")
     # no body running: say so, still exit 0, never a verdict that looks like a pass
     assert pet_cpu.main(["--mode", "idle", "--seconds", "1"], sample=lambda: {}, sleep=lambda s: None, cores=4,
                         clock=iter([0.0, 1.0]).__next__) == 0
@@ -118,7 +124,10 @@ class FakeWS:
         self.queue.put(None)
 
 
-def run_with_fakes(monkeypatch, capsys, drop=(), extra_session=False, token="tok"):
+TOKEN = "SECRET-TOKEN-123"
+
+
+def run_with_fakes(monkeypatch, capsys, drop=(), extra_session=False, token=TOKEN):
     posted, ws = [], FakeWS()
 
     def fake_post(tok, payload, timeout_s=10.0):
@@ -128,21 +137,24 @@ def run_with_fakes(monkeypatch, capsys, drop=(), extra_session=False, token="tok
             ws.feed({"type": "agent_activity", "session": act.session, "label": act.label, "kind": act.kind, "at": 1.0})
         if len(posted) == 1:
             ws.feed({"type": "presence", "state": "break"})
-        if extra_session:
-            ws.feed({"type": "agent_activity", "session": "other", "label": "x" * 40, "kind": "edit", "at": 1.0})
+        if extra_session and len(posted) == 1:  # another session's bubbles: all five expected ones, and a too-long one
+            for kind, label in EXPECTED + [("run", "x" * 41)]:
+                ws.feed({"type": "agent_activity", "session": "other", "label": label, "kind": kind, "at": 1.0})
         return "200"
 
     slept = []
     rc = pet_check.main([], connect=lambda deadline_s, proc=None: ws, post=fake_post, token_for=lambda s: token,
                         sleep=slept.append, wait_s=1.0 if not drop else 0.5)
-    return rc, posted, slept, capsys.readouterr().out, ws
+    out = capsys.readouterr().out
+    assert token not in out  # the hook token is only ever sent as a header, never printed
+    return rc, posted, slept, out, ws
 
 
 def test_main_posts_the_script_and_prints_the_bubbles(monkeypatch, capsys):
     rc, posted, slept, out, ws = run_with_fakes(monkeypatch, capsys)
     assert rc == 0 and ws.closed
     assert [p["hook_event_name"] for _, p in posted] == [ev for ev, _ in SCRIPT]
-    assert {tok for tok, _ in posted} == {"tok"} and len({p["session_id"] for _, p in posted}) == 1
+    assert {tok for tok, _ in posted} == {TOKEN} and len({p["session_id"] for _, p in posted}) == 1
     assert posted[0][1]["session_id"].startswith("riya-pet-check-")
     assert slept.count(SPACING_S) == len(SCRIPT) - 1
     lines = out.strip().splitlines()
@@ -157,8 +169,10 @@ def test_main_names_the_first_missing_bubble(monkeypatch, capsys):
 
 
 def test_main_ignores_other_sessions_and_reports_a_missing_core(monkeypatch, capsys):
-    rc, *_, out, _ = run_with_fakes(monkeypatch, capsys, extra_session=True)
-    assert rc == 0 and out.strip().splitlines()[-1] == "VERDICT: ok"
+    # the real session drops its wave: counting the other session's bubbles would turn this into ok (or over 40)
+    rc, *_, out, _ = run_with_fakes(monkeypatch, capsys, drop={3}, extra_session=True)
+    assert rc == 0 and out.strip().splitlines()[-1] == "VERDICT: missing ('wave', 'needs you! running tests')"
+    assert "x" * 41 not in out and "other" not in out
     assert pet_check.main([], connect=lambda deadline_s, proc=None: None, sleep=lambda s: None) == 0
     assert "not run" in capsys.readouterr().out
     assert pet_check.main([], connect=lambda deadline_s, proc=None: FakeWS(), token_for=lambda s: None,
