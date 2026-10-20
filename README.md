@@ -110,8 +110,9 @@ walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing
   same section. Untick the box and buddy mode is exactly the plain buddy of v0.8: no walking, no bubbles, no
   click-to-jump.
 - **Connect Claude Code from Health.** Settings → Health → Connect Claude Code. It's your click: Riya never applies the
-  hooks installer on her own. v0.9 adds a `PreToolUse` hook for the activity bubbles, so if you connected before, press
-  Connect again once (it shows what it will add first), then restart Claude Code and open a new terminal.
+  hooks installer on her own. v0.9 adds a `PreToolUse` hook for the activity bubbles, so if you connected before, the
+  row reads "Partly connected: missing PreToolUse" and offers Connect. Press it once (it shows what it will add first;
+  it adds only the missing events and leaves your other hooks alone), then restart Claude Code and open a new terminal.
 - **What she does** (labels come from the tool name and a file name or a command's first word, never the arguments, are
   at most 40 characters, and anything that looks like a key becomes "a file" or "a command"):
 

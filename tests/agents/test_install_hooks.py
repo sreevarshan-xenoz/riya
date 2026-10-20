@@ -88,6 +88,25 @@ def test_apply_preserves_other_hooks_keys_and_order(env):
     assert list(got["hooks"])[:2] == ["Stop", "PreToolUse"]
 
 
+def test_apply_on_a_pre_v09_install_adds_only_the_missing_event_and_keeps_the_rest(env):
+    """The partly-connected fix: Connect again on a file with every event but PreToolUse. Temp paths only."""
+    old = ih.snippet()
+    del old["hooks"]["PreToolUse"]
+    old["hooks"]["Stop"].insert(0, {"hooks": [MINE]})
+    old["hooks"]["PreCompact"] = [{"hooks": [MINE]}]
+    old["model"] = "opus"
+    env.settings.parent.mkdir(parents=True)
+    env.settings.write_text(json.dumps(old), encoding="utf-8")
+    assert ih.riya_events(old) == [e for e, _ in ih.EVENTS if e != "PreToolUse"]
+    assert "1 Claude Code event(s)" in ih.preview("apply", env.settings) and "PreToolUse" in ih.preview("apply", env.settings)
+    assert run(env, "--apply") == 0
+    got = load(env)
+    assert got["hooks"]["PreToolUse"] == [{"matcher": "*", "hooks": [HANDLER]}]
+    assert {k: v for k, v in got["hooks"].items() if k != "PreToolUse"} == old["hooks"]
+    assert got["model"] == "opus" and ih.riya_events(got) == [e for e, _ in ih.EVENTS]
+    assert len(backups(env)) == 1
+
+
 def test_apply_is_idempotent(env):
     run(env, "--apply")
     first = env.settings.read_text(encoding="utf-8")

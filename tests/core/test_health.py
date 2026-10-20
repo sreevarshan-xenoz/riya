@@ -271,6 +271,31 @@ def test_claude_code_four_states(tmp_path):
     assert path.read_bytes() == before and sorted(p.name for p in path.parent.iterdir()) == ["settings.json"]
 
 
+def test_claude_code_partly_connected_offers_connect(tmp_path):
+    """A settings file from before v0.9 holds every event but PreToolUse: warn, name what's missing, offer Connect."""
+    path = tmp_path / "claude" / "settings.json"
+    path.parent.mkdir(parents=True)
+    old = install_hooks.snippet()
+    del old["hooks"]["PreToolUse"]
+    path.write_text(json.dumps(old))
+    before = path.read_bytes()
+    for seen in (None, NOW - 60, NOW - 25 * 3600):  # a recent event doesn't make it "ok": the bubbles are missing
+        item = check_claude_code(ctx(tmp_path, hooks_seen_at=seen))
+        assert (item.status, item.detail, item.fix) == ("warn", "Partly connected: missing PreToolUse", "hooks_connect")
+    assert path.read_bytes() == before  # read-only
+    two = install_hooks.snippet()
+    del two["hooks"]["PreToolUse"], two["hooks"]["Stop"]
+    path.write_text(json.dumps(two))
+    item = check_claude_code(ctx(tmp_path))
+    assert item.detail == "Partly connected: missing Stop, PreToolUse" and item.fix == "hooks_connect"
+    # the blocker row still wins over it: only the user changes those keys
+    path.write_text(json.dumps({**two, "disableAllHooks": True}))
+    assert check_claude_code(ctx(tmp_path)).fix is None
+    # a full file is no longer partly connected
+    path.write_text(json.dumps(install_hooks.snippet()))
+    assert not check_claude_code(ctx(tmp_path)).detail.startswith("Partly")
+
+
 # ---- run_checks --------------------------------------------------------------------------------------------------------
 
 def test_run_checks_returns_every_row_in_order(tmp_path):
