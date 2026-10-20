@@ -101,8 +101,8 @@ Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
 
 ### Little Riya
 
-In buddy mode Riya is a small desktop pet. She stands on your taskbar, breathes and blinks, now and then takes a short
-walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing, but only with a pose and a short bubble
+In buddy mode Riya is a small desktop pet. She stands just above your taskbar, breathes and blinks, now and then takes a
+short walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing, but only with a pose and a short bubble
 (never spoken, so she never breaks your focus). What you do:
 
 - **She's on by default.** The toggle is Settings → Little Riya → "Let her walk around and react to your agents"; she
@@ -118,10 +118,10 @@ walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing
 
   | Claude Code | Little Riya |
   |---|---|
-  | `PreToolUse` | a bubble: "editing engine.py", "running tests", "reading the spec", "searching the code", "browsing", "asking a helper" |
+  | `PreToolUse` | a bubble: "editing engine.py", "reading README.md", "running tests", "running ls", "searching the code", "browsing", "asking a helper" |
   | `UserPromptSubmit` | a "thinking" pose |
   | `PermissionRequest` | she waves and shows "needs you!" with the tool |
-  | `Stop` | a happy pose; when you're away from the keyboard also a small confetti burst (one finish in 50 a spin or a heart) |
+  | `Stop` | a happy pose; after 30 s without your input (not once she's marked you away) also a small confetti burst (one finish in 50 a spin or a heart) |
   | tool failure | an "oops" pose with a sweat drop |
   | `StopFailure` | a sad pose |
   | `SubagentStop` | a tiny "helper done" sparkle |
@@ -129,6 +129,9 @@ walk, sits, and sleeps when you're away. She reacts to what Claude Code is doing
 - **Click her** to bring the agent's terminal forward: the session that needs you, or else the one that was last active
   (under 10 minutes ago). It's the terminal app's window, not a tab. If no window is found she opens the agents list
   instead, and with no agent at all a click is just a happy poke.
+  If a click opens the agents list instead of bringing the terminal forward, Windows refused to hand over the focus
+  (it only does so to a process the foreground app started). That fallback is by design: nothing is lost, the list
+  shows the session, and you can switch to the terminal yourself.
 - **Right-click her** for the menu: display mode, Don't look, Keep her still, Go to sleep, Settings, Quit. Drag her
   to pick her up; dropped above the floor she falls and lands, then stands.
 - **When she stays put.** She walks only after 30 s without keyboard or mouse ("She walks" → "Any time except while you
