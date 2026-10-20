@@ -111,8 +111,8 @@ class RiyaServer:
         matching champion adopt record (unvetted). base: this launch serves the base model, whatever is wanted (a
         fallback)."""
         serve, key = None, "base"
-        if not base:
-            self.unvetted = None
+        if not base:  # the statuses describe this launch
+            self.unvetted = self.lora_failed = None
             if self.lora:
                 try:
                     if not os.path.isfile(self.lora):
@@ -176,18 +176,18 @@ class RiyaServer:
                 raise RuntimeError("the adapter changed while llama-server was loading it")
 
     def start(self, gpu=True):
-        """Launch; an adapter that won't load means one relaunch on the base model. Any failure that is raised leaves
-        no llama-server running."""
+        """Launch; an adapter that won't load means one relaunch on the base model, for this launch only: the adapter
+        stays wanted, so the next game-mode move tries it again (a launch can fail for want of VRAM, not only for a
+        bad file). Nothing retries it in between. Any failure that is raised leaves no llama-server running."""
         try:
             self._launch(gpu)
         except RuntimeError:
             if not (self._serve and self.fallback_to_base):
                 self.stop()
                 raise
-            print(f"[riya] the adapter {self._serve} didn't load; serving the base model", flush=True)
+            print(f"[riya] the adapter {self._serve} didn't load; serving the base model for now", flush=True)
             self.stop()
-            self.lora_failed, self.lora = self._serve, None
-            self._decided = self._identity()
+            self.lora_failed = self._serve
             try:
                 self._launch(gpu, base=True)
             except RuntimeError:
@@ -198,7 +198,7 @@ class RiyaServer:
                   flush=True)
 
     def move(self, gpu):
-        """Save the conversation slot, restart on GPU/CPU (same adapter), restore the slot."""
+        """Save the conversation slot, restart on GPU/CPU (the same wanted adapter, checked again), restore the slot."""
         with self.lock:
             before = self._pinned
             try:
@@ -221,7 +221,10 @@ class RiyaServer:
             self.wanted = lora
             usable = usable_adapter(lora)
             if usable == self.lora and self._identity() == self._decided:
-                self.lora_failed = None
+                return  # the same file, decided on already
+            if usable is None and self._serve is None:  # the base model, which is what runs now
+                self.lora, self.lora_failed, self.unvetted = None, None, None
+                self._decided = self._identity()
                 return
             self.stop()
             self.lora, self.lora_failed = usable, None
