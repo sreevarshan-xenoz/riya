@@ -71,8 +71,8 @@ def test_local_row_adapter_states(tmp_path):
     assert (item.status, item.detail, item.fix) == ("warn", STILL_V1, None) and len(STILL_V1) <= DETAIL_MAX
 
     item = row(tmp_path, http_get=http([]), adapter_path=path)  # base, with an adopted adapter on disk
-    assert (item.status, item.detail, item.fix) == ("ok", "LFM2.5 base · x.gguf", "use_riya_v1")
-    assert row(tmp_path, http_get=http([], models=b'{"data":[]}'), adapter_path=path).detail == "LFM2.5 base"
+    assert (item.status, item.detail, item.fix) == ("ok", "Base model · x.gguf", "use_riya_v1")
+    assert row(tmp_path, http_get=http([], models=b'{"data":[]}'), adapter_path=path).detail == "Base model"
 
     brain.write_record(path, {**ADOPT, "decision": "reject"})
     assert row(tmp_path, http_get=http([]), adapter_path=path).fix is None
@@ -112,7 +112,7 @@ def test_local_row_details(tmp_path):
     assert item.status == "ok" and "champion +2" in item.detail
     # a bad answer from /lora-adapters is "nothing served", never an error
     item = row(tmp_path, http_get=lambda u, t: MODELS if u.endswith("/v1/models") else b"not json")
-    assert (item.status, item.detail) == ("ok", "LFM2.5 base · x.gguf")
+    assert (item.status, item.detail) == ("ok", "Base model · x.gguf")
 
 
 def test_unreachable_rows_are_unchanged(tmp_path):
@@ -184,7 +184,7 @@ def test_engine_offers_the_switch(tmp_path):
     core.handle(HealthGet())
     h = wait_for(emitted, HealthMsg)
     (local,) = [i for i in h.items if i.key == "local"]
-    assert local.fix == "use_riya_v1" and local.detail == "LFM2.5 base · x.gguf"
+    assert local.fix == "use_riya_v1" and local.detail == "Base model · x.gguf"
 
     mark = len(emitted)
     core.handle(SetupRequest(action="use_riya_v1"))
@@ -233,3 +233,16 @@ def test_local_row_names_an_unvetted_wanted_adapter(tmp_path):
     assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == BROKEN
     path.unlink()
     assert row(tmp_path, settings=on, http_get=http([]), adapter_path=path).detail == BROKEN
+
+
+def test_the_row_names_the_served_gguf_and_promises_nothing():
+    other = json.dumps({"data": [{"id": "C:\models\Some-Other-Model.Q8_0.gguf"}]}).encode()
+    item = row(tmp_path_factory_free := None) if False else None  # noqa: F841
+    assert STILL_V1 == "llama-server is serving an adapter that Riya's settings don't name."
+    assert "next check" not in STILL_V1 and "switch" not in STILL_V1
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as d:
+        item = row(Path(d), http_get=http([], models=other))
+        assert (item.status, item.detail) == ("ok", "Base model · Some-Other-Model.Q8_0.gguf")
+        assert "LFM2.5" not in item.detail

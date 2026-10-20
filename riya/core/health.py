@@ -38,7 +38,7 @@ BROKEN = ("Riya v1 is set, but llama-server runs the base model: the adapter is 
 IN_USE_UNVETTED = "A Riya v1 adapter is in use without a passing champion check."
 UNVETTED = ("Riya v1 is set, but this adapter has no passing champion check, so llama-server runs the base "
             "model.")
-STILL_V1 ="llama-server still runs an adapter; it switches to the base model on its next check."
+STILL_V1 = "llama-server is serving an adapter that Riya's settings don't name."
 HTTP_MAX_BYTES = 64 * 1024
 
 
@@ -210,7 +210,7 @@ def check_local(ctx: HealthCtx) -> HealthItem:
         return HealthItem("local", "warn", STILL_V1)
     adapter = ctx.adapter_path
     vetted = adapter is not None and Path(adapter).is_file() and brain.read_record(Path(adapter)) is not None
-    return HealthItem("local", "ok", f"LFM2.5 base · {name}" if name else "LFM2.5 base",
+    return HealthItem("local", "ok", f"Base model · {name}" if name else "Base model",  # named from the served GGUF
                       "use_riya_v1" if vetted else None)
 
 
