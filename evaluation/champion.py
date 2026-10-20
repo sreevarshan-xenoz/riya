@@ -44,7 +44,7 @@ from riya import brain
 from riya.brain import same_path, served_adapters
 from riya.core import health
 from riya.core.presence import make_idle_source
-from riya.core.settings import apply_patch, load_settings, save_settings
+from riya.core.settings import Settings, apply_patch, load_settings, save_settings
 from riya.core.shaping import is_identity_question
 from riya.core.store import KV, open_db
 from riya.server import RiyaServer, free_vram_mb
@@ -375,11 +375,17 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     free_vram = free_vram or free_vram_mb
     http_get = http_get or health.default_http_get
     dry = args.dry_run or args.base_vs_base
+    args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
     adopted = brain.default_adapter()  # where an adopted candidate is installed, and what the setting names
     repeat = max(1, args.repeat)
     variant = dict(repeat=repeat, port=args.port, make_server=make_server, run=run, http_get=http_get)
     try:
+        if not dry:  # the setting an adopt would write must be one the core takes, before anything is written
+            try:
+                apply_patch(Settings(), {"local_adapter": str(adopted)})
+            except ValueError as e:
+                raise ChampionError(f"The adopted path can't be saved as local_adapter ({e}).") from None
         _check_ready(fullscreen, free_vram, cand_lora)
         measured = _snapshot(cand_lora)
         phrases = persona_eval.style_phrases(persona_eval.load_probes())
@@ -410,8 +416,9 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     try:
         where = set_local_adapter(str(adopted), db=Path(args.db), ws_url=args.url, connect=connect,
                                   timeout_s=CORE_TIMEOUT_S)
-    except ChampionError as e:  # the record is written; only the switch is missing
-        print(f"{e} The adopt record is written: \"Use Riya v1\" in Health switches her to it.")
+    except Exception as e:  # the record is written; only the switch is missing (never a traceback here)
+        why = str(e) if isinstance(e, ChampionError) else f"Couldn't save the setting ({type(e).__name__}: {e})."
+        print(f"{why} The adopt record is written: \"Use Riya v1\" in Health switches her to it.")
         return 2
     print("Adopted: Riya v1 is her local brain now." + (" (set in the running core)" if where == "core"
                                                        else " (saved; it applies on Riya's next start)"))

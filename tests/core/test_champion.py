@@ -747,3 +747,38 @@ def test_an_install_that_fails_writes_nothing(adopted, candidate, tmp_db, capsys
     assert "Couldn't install" in out and "Nothing changed." in out
     assert (adopted.read_bytes(), brain.record_path(adopted).read_text(encoding="utf-8")) == before
     assert candidate.exists() and brain.read_local_adapter(tmp_db) is None
+
+
+# ---- final fix wave minors: a relative --lora, no crash between the record and the setting ----
+
+def test_a_relative_lora_is_resolved_first(adopted, candidate, tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+    monkeypatch.chdir(candidate.parent)
+    rig = Rig()
+    assert go(rig, ["--lora", candidate.name, "--db", str(tmp_db)]) == 0
+    assert rig.made[1][1] == str(candidate.resolve())  # the gate's server got the absolute path
+    assert brain.read_local_adapter(tmp_db) == str(adopted) and brain.read_record(adopted) is not None
+    assert "Traceback" not in capsys.readouterr().out
+
+
+def test_an_unexpected_failure_setting_it_is_reported_not_raised(adopted, candidate, tmp_db, capsys, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(champion, "decide", adopt_decision)
+
+    def broken(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(champion, "set_local_adapter", broken)
+    assert go(Rig(), ["--db", str(tmp_db)]) == 2  # never a traceback between the record and the setting
+    out = capsys.readouterr().out
+    assert "database is locked" in out and "Use Riya v1" in out
+    assert brain.read_record(adopted) is not None
+
+
+def test_a_setting_the_core_would_refuse_is_refused_before_anything_runs(tmp_db, capsys, monkeypatch):
+    monkeypatch.setattr(brain, "default_adapter", lambda: champion.Path("C:/x/" + "a" * 300 + ".gguf"))  # too long
+    rig = Rig()
+    assert go(rig, ["--lora", __file__, "--db", str(tmp_db)]) == 2
+    out = capsys.readouterr().out
+    assert rig.made == [] and "local_adapter" in out and "Nothing changed." in out
