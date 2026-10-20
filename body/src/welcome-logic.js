@@ -93,9 +93,9 @@ function agentRows(healthMsg) {
   return Health.healthRows(healthMsg).filter((row) => AGENT_KEYS.includes(row.key)).map((row) => ({ ...row, fix: null }));
 }
 
-const api = {
+const welcomeExports = {
   STEPS, LINES, MAX_NAME, NAME_RULES, KEY_IN_NAME, nextStep, prevStep, looksLikeKey, cleanName, nameError, nameMessage,
   modeMessage, eyesMessage, eyesLine, agentRows,
 };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaWelcome = api;
+if (typeof module !== "undefined" && module.exports) module.exports = welcomeExports;
+else globalThis.RiyaWelcome = welcomeExports;
