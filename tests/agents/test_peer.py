@@ -212,3 +212,62 @@ def test_cli(capsys):
         assert peer.main(argv, user32=u) == 2 and u.calls == []
     assert "usage" in capsys.readouterr().err
     assert peer.main(["focus", str(2**63 - 1)], user32=FakeUser32()) == 0
+
+
+def test_fake_peer_os_created():
+    os_ = FakePeerOS(procs=[Proc(1, 0, "a"), Proc(2, 1, "b")], created={2: 7.5, 9: 3.0})
+    assert os_.created(1) == 0.0  # listed without a time: alive at 0.0
+    assert os_.created(2) == 7.5 and os_.created(9) == 3.0
+    assert os_.created(77) is None
+    assert os_.calls == ["created"] * 4
+    os_.raises = {"created"}
+    with pytest.raises(OSError):
+        os_.created(1)
+
+
+def test_parent_chain_stops_at_a_missing_or_younger_parent():
+    table = procs((4242, 4100, "node.exe"), (4100, 4000, "pwsh.exe"), (4000, 10, "wt.exe"), (10, 1, "explorer.exe"))
+    alive = FakePeerOS(procs=table.values(), created={4242: 300.0, 4100: 200.0, 4000: 100.0})
+    assert parent_chain(4242, table, alive.created) == [4242, 4100, 4000]
+    # a parent born after its child is a reused pid (its real parent is gone): the chain stops before it
+    reused = FakePeerOS(procs=table.values(), created={4242: 300.0, 4100: 200.0, 4000: 900.0})
+    assert parent_chain(4242, table, reused.created) == [4242, 4100]
+    younger = FakePeerOS(procs=table.values(), created={4242: 300.0, 4100: 301.0})
+    assert parent_chain(4242, table, younger.created) == [4242]
+    # equal times (no times known) never stop it
+    assert parent_chain(4242, table, FakePeerOS(procs=table.values()).created) == [4242, 4100, 4000]
+    # the pid itself or a parent that is not running (no time) stops it
+    gone = FakePeerOS(procs=[Proc(4242, 4100, "node.exe"), Proc(4100, 4000, "pwsh.exe")])
+    assert parent_chain(4242, table, gone.created) == [4242, 4100]
+    assert parent_chain(4242, table, FakePeerOS().created) == []
+    assert parent_chain(4242, table) == [4242, 4100, 4000]  # no created: as before
+
+
+def test_window_for_pid_ignores_a_reused_parents_window():
+    table = [Proc(4242, 4000, "node.exe"), Proc(4000, 10, "windowsterminal.exe"), Proc(10, 0, "explorer.exe")]
+    wins = [TopWindow(77, 4000, "riya - Windows Terminal")]
+    fine = FakePeerOS(procs=table, wins=wins, created={4242: 100.0, 4000: 50.0})
+    assert window_for_pid(4242, "riya", fine) == 77
+    reused = FakePeerOS(procs=table, wins=wins, created={4242: 100.0, 4000: 500.0})
+    assert window_for_pid(4242, "riya", reused) is None
+
+
+def test_peer_alive_needs_the_same_process():
+    from riya.agents.peer import peer_alive
+    os_ = FakePeerOS(procs=[Proc(5, 0, "a")], created={5: 10.0})
+    assert peer_alive(Peer(5, "riya", 10.0), os_) is True
+    assert peer_alive(Peer(5, "riya", 11.0), os_) is False  # reused: another creation time
+    assert peer_alive(Peer(5, "riya"), os_) is True  # no time noted: running is all that can be checked
+    assert peer_alive(Peer(6, "riya"), os_) is False and peer_alive(Peer(6, "riya", 1.0), os_) is False
+
+
+def test_peer_map_stores_the_creation_time_and_keeps_it_on_a_folder_refresh():
+    os_ = FakePeerOS(rows=[TcpRow(50000, 8766, 4242)], procs=[Proc(4242, 0, "node.exe")], created={4242: 12.5})
+    m = PeerMap.for_os(os_)
+    m.note("s", 50000, "E:/riya")
+    assert m.get("s") == Peer(4242, "riya", 12.5)
+    m.note("s", 50000, "E:/other")  # a cached session only refreshes its folder
+    assert m.get("s") == Peer(4242, "other", 12.5)
+    broken = PeerMap(lambda p: 7, lambda pid: (_ for _ in ()).throw(OSError("no")))
+    broken.note("t", 1, "E:/riya")
+    assert broken.get("t") == Peer(7, "riya", None)  # a failed time read never loses the peer

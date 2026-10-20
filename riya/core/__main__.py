@@ -186,7 +186,7 @@ def start_logwatch(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thr
 
 def start_receiver(core: RiyaCore, make=None):
     """The hook receiver, kept up (retried while 8766 is busy) and handed to the core for the settings' status."""
-    receiver = (make or HookReceiver)(core.agent_inbox.put, peers=core.peers).start()
+    receiver = (make or HookReceiver)(core.take_hook, peers=core.peers).start()
     core.receiver = receiver
     return receiver
 

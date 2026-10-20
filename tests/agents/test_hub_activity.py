@@ -286,3 +286,16 @@ def test_a_huge_payload_is_bounded_before_any_regex_or_split(monkeypatch):
 def test_a_name_longer_than_the_path_window_is_never_shown():
     assert edit("C:/x/" + "a-" * 400) == "editing a file"  # cut at the front by the window: not a real name
     assert edit("a-" * 400 + "/short.py") == "editing short.py"
+
+
+def test_gate_never_holds_or_replaces_a_wave():
+    """A PermissionRequest ("needs you") goes out at once, even inside the gap; a later tool bubble can't replace it."""
+    gate = ActivityGate()
+    run1, run2 = act("a", 1), act("a", 2)
+    wave = Activity("a", "needs you! running tests", "wave", "Bash", 0.2)
+    assert gate.offer(run1, 0) is run1
+    assert gate.offer(wave, 0.2) is wave  # inside the 1.5 s gap
+    assert gate.offer(run2, 0.3) is None  # the wave started a new gap; this one is held...
+    assert gate.due(1.6) == []
+    assert gate.due(1.7) == [run2]  # ...and only ever sent after the wave
+    assert gate.offer(Activity("a", "needs you! again", "wave", "Bash", 1.8), 1.8).kind == "wave"
