@@ -337,3 +337,20 @@ def test_a_remember_row_matches_how_the_engine_streams_it():
     assert rows and all(r["expect"]["max_sentences"] == 1 for r in rows)
     assert not any(ack in m["content"] for r in rows for m in r["messages"] for ack in REMEMBER_ACKS)
     assert all(trained_reply("remember", f"{ack} Aww, cute~") == "Aww, cute~" for ack in REMEMBER_ACKS)
+
+
+
+def test_a_feedback_row_matches_how_the_engine_streams_it():
+    """The engine says ack_line(feedback) first and the model keeps its full cap: the prompt has no ack in it, the cap
+    is the turn's own (after the nudge), and the row's own ack is what fmt.trained_reply strips."""
+    from riya.core.learn.feedback import ack_line
+    from riya.train.fmt import trained_reply
+
+    rows = [r for r in built(0, 600) if r["kind"] == "feedback"]
+    assert rows
+    for r in rows:
+        kind, _, index = r["id"].rpartition("-")
+        ack = ack_line(detect_feedback(scenario(kind, int(index), 0).user_text))
+        assert not any(ack in m["content"] for m in r["messages"])
+        assert r["expect"]["max_sentences"] == _engine_cap(scenario(kind, int(index), 0))
+        assert trained_reply("feedback", f"{ack} So, what's new?") == "So, what's new?", ack

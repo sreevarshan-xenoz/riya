@@ -147,9 +147,11 @@ def validate_teacher(row: dict) -> None:
 
 
 # A remember-that turn: the engine says a templated ack first (engine.REMEMBER_ACKS, "Got it~ I'll remember that."),
-# before the model is even asked, then the model's one sentence. Her prompt doesn't show the ack, so the trained
-# answer is only what follows it; an ack of the teacher's own would be said twice at run time.
-LEAD_KINDS = frozenset({"remember"})
+# before the model is even asked, then the model's one sentence. A feedback turn the same way: ack_line(feedback)
+# (learn.feedback.ACKS / NOTE_ACKS, "Got it, I'll keep it short.") first, then the model's reply with its full cap.
+# Her prompt doesn't show the ack, so the trained answer is only what follows it; an ack of the teacher's own would be
+# said twice at run time.
+LEAD_KINDS = frozenset({"remember", "feedback"})
 _SENTENCE_END = re.compile(r"(?<=[.!?…~])\s+")
 _ACK = re.compile(r"\b(?:i'?ll|i\s+will|i\s+won'?t|i\s+will\s+not|won'?t|gonna)\s+"
                   r"(?:remember|forget|keep|note|save|store)"
@@ -158,16 +160,31 @@ _ACK = re.compile(r"\b(?:i'?ll|i\s+will|i\s+won'?t|i\s+will\s+not|won'?t|gonna)\
                   r"|\bremember(?:ing)?\s+(?:that|this|it)\b", re.I)
 _BARE_ACK = re.compile(r"^\W*(?:ok(?:ay)?|alright|sure(?:\s+thing)?|done|mm+(?:-?hm+)?|mhm|yes|yep|yup|kay|roger"
                        r"|understood|will\s+do|of\s+course)\W*$", re.I)
+# a feedback ack promises a change of style ("I'll go easy on the emojis", "sweeter it is~", "less teasing?")
+_STYLE_ACK = re.compile(r"\b(?:i'?ll|i\s+will|i\s+won'?t|i\s+will\s+not|i'?m\s+gonna|gonna|let\s+me)\s+(?:\w+\s+){0,2}?"
+                        r"(?:keep|tone|go|cut|stop|try|be|do|give|tell|dial|turn|use|add|tease|talk|say|write|ease"
+                        r"|scale|hold)\b"
+                        r"|\byou\s+asked\s+for\s+it\b|\bas\s+you\s+wish\b|\bif\s+you\s+say\s+so\b|\byou\s+got\s+it\b"
+                        r"|\b(?:less|more|fewer)\s+\w+(?:\s+\w+)?\s+(?:it\s+is|then|coming\s+up)\b|\b\w+er\s+it\s+is\b",
+                        re.I)
+_DIAL_ONLY = re.compile(r"^\W*(?:\w+\W+)?(?:less|more|fewer)\s+\w+\W*$", re.I)  # "Ooh, more teasing?"
+
+
+def _is_ack(kind: str, sentence: str) -> bool:
+    if _ACK.search(sentence) or _BARE_ACK.match(sentence):
+        return True
+    return kind == "feedback" and bool(_STYLE_ACK.search(sentence) or _DIAL_ONLY.match(sentence))
 
 
 def trained_reply(kind: str, response: str) -> str:
-    """The part of an answer the model is trained to say: on a remember row, what follows the leading
-    acknowledgement sentences ("Got it~", "Okay! Noted~", "I'll remember that."), since the engine already said its
-    own; on any other row, the answer as it is. "" when the answer is nothing but an acknowledgement."""
+    """The part of an answer the model is trained to say: on a remember or feedback row, what follows the leading
+    acknowledgement sentences ("Got it~", "Okay! Noted~", "I'll remember that.", "I'll keep it short."), since the
+    engine already said its own; on any other row, the answer as it is. "" when the answer is nothing but an
+    acknowledgement."""
     if kind not in LEAD_KINDS:
         return response
     sentences = _SENTENCE_END.split(response.strip())
-    while sentences and (_ACK.search(sentences[0]) or _BARE_ACK.match(sentences[0])):
+    while sentences and _is_ack(kind, sentences[0]):
         sentences.pop(0)
     return " ".join(sentences).strip()
 
