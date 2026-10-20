@@ -314,3 +314,37 @@ test("settings.html has the four Little Riya rows, and settings.js wires them", 
   assert.match(js, /\$\("h-agents"\)\.scrollIntoView/);
   assert.ok(html.includes('id="h-agents"'));
 });
+
+test("the settings window's pet choices equal pet-logic's lists", () => {
+  const P = require("../src/pet-logic");
+  assert.deepEqual(L.REDUCED_MOTION_CHOICES, P.REDUCED_MOTION);
+  assert.deepEqual(L.PET_WALKS_CHOICES, P.PET_WALKS_WHEN);
+  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "settings.html"), "utf8");
+  for (const v of P.REDUCED_MOTION) assert.ok(html.includes(`<option value="${v}">`), v);
+  for (const v of P.PET_WALKS_WHEN) assert.ok(html.includes(`<option value="${v}">`), v);
+});
+
+test("petControls maps the core's settings onto the Little Riya controls", () => {
+  assert.deepEqual(L.petControls({ pet_scale: 0.6, reduced_motion: "on", pet_walks_when: "always_but_focus" }),
+    { scale: 0.6, scaleText: "60%", reducedMotion: "on", walksWhen: "always_but_focus" });
+  assert.deepEqual(L.petControls({ pet_scale: 0.45, reduced_motion: "system", pet_walks_when: "idle" }),
+    { scale: 0.45, scaleText: "45%", reducedMotion: "system", walksWhen: "idle" });
+  const none = { scale: null, scaleText: null, reducedMotion: null, walksWhen: null };
+  for (const junk of [undefined, null, {}, { pet_scale: "0.6", reduced_motion: "maybe", pet_walks_when: "always" }, { pet_scale: NaN }]) {
+    assert.deepEqual(L.petControls(junk), none);
+  }
+  // what a control sends is what comes back: every accepted patch round-trips through petControls
+  for (const [key, raw, field, expected] of [["pet_scale", "0.62", "scale", 0.6], ["reduced_motion", "off", "reducedMotion", "off"],
+    ["pet_walks_when", "idle", "walksWhen", "idle"]]) {
+    const { patch } = L.settingPatch(key, raw);
+    assert.equal(L.petControls(patch)[field], expected, key);
+  }
+});
+
+test("settings.js shows the pet controls through petControls", () => {
+  const js = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "settings.js"), "utf8");
+  assert.match(js, /const pet = petControls\(s\);/);
+  assert.match(js, /set\("pet_scale", "value", String\(pet\.scale\)\)/);
+  assert.match(js, /set\("reduced_motion", "value", pet\.reducedMotion\)/);
+  assert.match(js, /set\("pet_walks_when", "value", pet\.walksWhen\)/);
+});

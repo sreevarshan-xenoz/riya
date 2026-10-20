@@ -923,3 +923,11 @@ test("the pet layout comes from one constant", () => {
   assert.match(html, /script-src 'self'/);
   assert.ok(!/<script>|onclick=|style=/.test(html), "no inline script or style");
 });
+
+test("the OS reduced-motion change reaches main, and her menu opens only while she is on", () => {
+  const src = stripComments(readBody("renderer.js"));
+  assert.match(src, /const reportReduced = \(\) => window\.riya\.reportReducedMotion\(reduced\.matches\);/);
+  assert.match(src, /reduced\.addEventListener\("change", reportReduced\);/);
+  assert.match(src, /reportReduced\(\);\s*reduced\.addEventListener/, "it reports on load too");
+  assert.match(src, /contextmenu", \(e\) => \{[^}]*if \(!petActive\(\) \|\| !overSprite\(e\.clientX, e\.clientY\)\) return;/);
+});

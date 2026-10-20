@@ -5,7 +5,7 @@
 (() => {
   const {
     sourceLabel, formatWhen, settingPatch, voiceOptions, hotkeyText, episodeText, dueText, memoryLists, ErrorRouter,
-    DeferWhileFocused, eyesCountText, eyesStatusText, glanceRows,
+    DeferWhileFocused, petControls, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
   const { dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage } = RiyaLearning;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
@@ -335,11 +335,13 @@
       $("volume-out").textContent = `${Math.round(s.volume * 100)}%`;
     }
     for (const key of CHECK_KEYS) if (typeof s[key] === "boolean") $(key).checked = s[key];
-    if (typeof s.pet_scale === "number") {
-      set("pet_scale", "value", String(s.pet_scale));
-      $("pet_scale-out").textContent = `${Math.round(s.pet_scale * 100)}%`;
+    const pet = petControls(s);
+    if (pet.scale !== null) {
+      set("pet_scale", "value", String(pet.scale));
+      $("pet_scale-out").textContent = pet.scaleText;
     }
-    for (const key of ["reduced_motion", "pet_walks_when"]) if (typeof s[key] === "string") set(key, "value", s[key]);
+    if (pet.reducedMotion !== null) set("reduced_motion", "value", pet.reducedMotion);
+    if (pet.walksWhen !== null) set("pet_walks_when", "value", pet.walksWhen);
     for (const key of ["glance_daily_cap", "glance_min_gap_s"]) if (Number.isFinite(s[key])) set(key, "value", String(s[key]));
     for (const key of ["eyes_deny_titles", "eyes_deny_processes"]) {
       if (Array.isArray(s[key])) set(key, "value", s[key].filter((p) => typeof p === "string").join("\n"));

@@ -210,7 +210,7 @@
     });
     document.addEventListener("mouseup", endDrag);
     document.addEventListener("contextmenu", (e) => { // her menu (main builds and pops it), only over her own pixels
-      if (!document.body.classList.contains("pet") || !overSprite(e.clientX, e.clientY)) return;
+      if (!petActive() || !overSprite(e.clientX, e.clientY)) return;
       e.preventDefault();
       window.riya.petMenu();
     });
