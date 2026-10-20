@@ -99,6 +99,39 @@
     </div>
   </section>
 
+  <section aria-labelledby="h-pet">
+    <h2 id="h-pet">Little Riya</h2>
+    <p class="note">In buddy mode she can walk along the bottom of your screen and react to what your agents are doing.</p>
+    <div class="row check" data-key="pet_enabled">
+      <input id="pet_enabled" type="checkbox"><label for="pet_enabled">Let her walk around and react to your agents (buddy mode)</label>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="pet_scale">
+      <label for="pet_scale">Size <output id="pet_scale-out"></output></label>
+      <input id="pet_scale" type="range" min="0.4" max="1.0" step="0.05">
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="reduced_motion">
+      <label for="reduced_motion">Motion</label>
+      <select id="reduced_motion">
+        <option value="system">Follow Windows</option>
+        <option value="on">Keep her still</option>
+        <option value="off">Let her move</option>
+      </select>
+      <p class="note">Keeping her still means no walking, bouncing or confetti. Her poses and bubbles still show.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row" data-key="pet_walks_when">
+      <label for="pet_walks_when">She walks</label>
+      <select id="pet_walks_when">
+        <option value="idle">Only when you're away from the keyboard (30 s)</option>
+        <option value="always_but_focus">Any time except while you type</option>
+      </select>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <p class="note">She never walks while you game or in full screen, and sleeps when you're away.</p>
+  </section>
+
   <section aria-labelledby="h-eyes">
     <h2 id="h-eyes">Eyes</h2>
     <p class="note">She can glance at the window you are using, now and then, and keep a short note of what you were doing. The screenshot itself is never saved.</p>

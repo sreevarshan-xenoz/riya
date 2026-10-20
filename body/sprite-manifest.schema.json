@@ -52,6 +52,16 @@
         "surprised": { "$ref": "#/definitions/frames" },
         "covering_eyes": { "$ref": "#/definitions/frames" }
       }
+    },
+    "motions": {
+      "description": "Optional animation frames, played in order and looping: a walk cycle for Little Riya's strolls (walk_01.png and so on), and optional sit and sleep poses. An older pack without them still works: the body slides her idle frames along instead.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "walk": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/definitions/file" } },
+        "sit": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/definitions/file" } },
+        "sleep": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/definitions/file" } }
+      }
     }
   },
   "definitions": {

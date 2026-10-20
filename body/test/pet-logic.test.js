@@ -815,3 +815,111 @@ test("the file needs no DOM, no Electron and no real clock or randomness", () =>
   assert.ok(!/\bdocument\b|\bwindow\b|\brequire\s*\(|\belectron\b/i.test(code), "no DOM, no Electron, no require");
   assert.ok(/typeof module !== "undefined"/.test(code) && /globalThis\.RiyaPet/.test(code), "only the dual-load guard");
 });
+
+// ---- the renderer and the stylesheet are wired to her view (source tests: the renderer cannot run here) ----
+
+const readBody = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+const stripComments = (code) => code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+
+test("renderer wiring", () => {
+  const src = stripComments(readBody("renderer.js"));
+  for (const needle of ["petTransformCss(", "mirrorForFacing(", 'matchMedia("(prefers-reduced-motion: reduce)")', "reportReducedMotion(",
+    "walkFrame(", "bubbleText(", "onPetView(", "petMenu(", "particlesAt("]) {
+    assert.ok(src.includes(needle), needle);
+  }
+  // one effects timer, started once, with the path that clears it tied to effectDone and the hidden page
+  const interval = src.indexOf("setInterval(drawEffects");
+  assert.ok(interval > 0 && src.indexOf("effectDone(") > 0 && src.indexOf("effectDone(") < interval);
+  assert.equal(src.split("setInterval(drawEffects").length, 2, "the effects interval is created in one place");
+  const draw = src.slice(src.indexOf("function drawEffects"), src.indexOf("function startEffects"));
+  assert.match(draw, /effectDone\(kind, t\)/);
+  assert.match(draw, /document\.hidden/);
+  assert.match(draw, /stopEffects\(\)/);
+  const stop = src.slice(src.indexOf("function stopEffects"), src.indexOf("function drawParticle"));
+  assert.match(stop, /clearInterval\(fx\.timer\)/);
+  assert.match(stop, /clearRect\(/, "the canvas is wiped when it stops");
+  assert.match(src, /visibilitychange[\s\S]*stopEffects\(\)/, "a hidden page stops the effects");
+  // every use of the view sits behind petActive()
+  assert.match(src, /function petActive\(\) \{\s*return Boolean\(petView && petView\.on\);/);
+  assert.ok(src.indexOf("petActive()") < src.indexOf("petTransformCss("));
+  const transform = src.slice(src.indexOf("function movePet"), src.indexOf("function moveSprite"));
+  assert.ok(transform.indexOf("petActive()") >= 0 && transform.indexOf("petActive()") < transform.indexOf("petTransformCss("));
+  const activity = src.slice(src.indexOf("function renderActivity"), src.indexOf("function renderStatus"));
+  assert.ok(activity.indexOf("petActive()") >= 0 && activity.indexOf("petActive()") < activity.indexOf("activity.textContent = "));
+  assert.match(activity, /Date\.now\(\) < b\.untilMs/);
+  assert.match(activity, /!bubble\.visible\(t\)/);
+  assert.match(activity, /!confirmShown\(\)/);
+  // the other view fields: the mirror, the expression, the walk frame and the sleep blink
+  assert.match(src, /petActive\(\) && petView\.facing === -1\) p = mirrorForFacing\(/);
+  assert.match(src, /\(petActive\(\) \? petView\.expression : null\) \?\? base/);
+  assert.match(src, /asleep = petActive\(\) && petView\.state === "sleep"/);
+  assert.match(src, /blinking = asleep \|\|/);
+  assert.match(src, /function walkUrl\(\) \{\s*if \(!petActive\(\) \|\| petView\.motion !== "walk"/);
+  assert.match(src, /manifest\.motions && manifest\.motions\.walk/);
+  assert.match(src, /walkUrl\(\) \|\| frameFor\(/, "no walk frames: her idle frames slide along");
+  assert.match(src, /contextmenu[\s\S]*overSprite\([\s\S]*preventDefault\(\)[\s\S]*petMenu\(\)/);
+  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(src));
+});
+
+test("reduced motion draws a static pose: no breathing, no walk frames, no effects", () => {
+  const src = stripComments(readBody("renderer.js"));
+  assert.match(src, /const calm = \(\) => petActive\(\) && petView\.reduced === true;/);
+  assert.match(src, /const run = manifest !== null && animating\(\) && !calm\(\);/);
+  assert.match(src, /petView\.motion !== "walk" \|\| petView\.reduced === true\) return null/);
+  assert.match(src, /!petView\.effect \|\| petView\.reduced === true/);
+});
+
+test("the pet layout comes from one constant", () => {
+  const renderer = stripComments(readBody("renderer.js"));
+  assert.match(renderer, /setProperty\("--pet-bubble-room", `\$\{PET\.BUBBLE_ROOM\}px`\)/);
+  assert.match(renderer, /setProperty\("--pet-effects-room", `\$\{PET\.EFFECTS_ROOM\}px`\)/);
+  const layout = renderer.slice(renderer.indexOf("function layoutSprite"), renderer.indexOf("function preload"));
+  const petBranch = layout.slice(layout.indexOf("if (petLayout())"), layout.indexOf('if (mode === "buddy")'));
+  assert.ok(petBranch.includes("PET.BUBBLE_ROOM + PET.EFFECTS_ROOM"));
+  assert.ok(!petBranch.includes("buddySpriteBox"), "the pet branch no longer uses the v0.8 buddy box");
+  assert.ok(layout.includes("buddySpriteBox("), "outside pet mode buddySpriteBox is unchanged");
+  assert.equal(PET.BUBBLE_ROOM, 80);
+  assert.equal(PET.EFFECTS_ROOM, 24);
+
+  const css = stripComments(readBody("styles.css"));
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1].trim(), body: m[2] }));
+  const pet = rules.filter((r) => r.selector.split(",").some((sel) => sel.trim().startsWith("body.mode-buddy.pet")));
+  assert.ok(pet.length >= 8);
+  for (const r of pet) assert.ok(!/(?<![\d.])(?:80|104)px/.test(r.selector + r.body), `${r.selector} has a room literal`);
+  assert.ok(!/--pet-(?:bubble|effects)-room\s*:/.test(css), "the variables are only ever set by renderer.js");
+  assert.ok(!/var\(--pet-[a-z-]+\s*,/.test(css), "no var() fallback");
+  const rule = (selector) => rules.find((r) => r.selector === selector);
+  const bubbles = rule("body.mode-buddy.pet #bubble, body.mode-buddy.pet #confirm");
+  assert.ok(bubbles, "#bubble and #confirm share one anchor");
+  assert.match(bubbles.body, /bottom: calc\(100vh - var\(--pet-bubble-room\) - var\(--pet-effects-room\)\)/);
+  assert.match(bubbles.body, /max-height: var\(--pet-bubble-room\)/);
+  assert.match(rule("body.mode-buddy.pet #confirm:not([hidden])").body, /display: flex; flex-direction: column; overflow: hidden/);
+  assert.match(rule("body.mode-buddy.pet #confirm-text").body, /-webkit-line-clamp: 2/);
+  assert.match(rule("body.mode-buddy.pet #confirm-text").body, /display: -webkit-box/);
+  assert.match(rule("body.mode-buddy.pet #confirm-text").body, /min-height: 0/);
+  assert.match(rule("body.mode-buddy.pet #confirm-buttons").body, /flex: none/);
+  const activity = rule("body.mode-buddy.pet #activity");
+  assert.match(activity.body, /white-space: nowrap/);
+  assert.match(activity.body, /overflow: hidden/);
+  assert.match(activity.body, /text-overflow: ellipsis/);
+  assert.match(activity.body, /max-width: 240px/);
+  assert.match(activity.body, /pointer-events: none/);
+  assert.match(activity.body, /bottom: calc\(100vh - var\(--pet-bubble-room\) - var\(--pet-effects-room\)\)/);
+  const effects = rule("body.mode-buddy.pet #effects");
+  assert.match(effects.body, /position: absolute/);
+  assert.match(effects.body, /inset: 0/);
+  assert.match(effects.body, /pointer-events: none/);
+  assert.match(rule("#pet").body, /position: absolute; inset: 0; transform-origin: 50% 100%/);
+  assert.match(css, /#confirm\[hidden\][^{]*\{ display: none; \}/, "a hidden confirmation stays hidden");
+  assert.match(renderer, /confirmText\.title = /);
+
+  const html = readBody("index.html");
+  assert.match(html, /<div id="pet">\s*<div id="sprite">/);
+  assert.match(html, /<div id="activity" hidden><\/div>/);
+  assert.match(html, /<canvas id="effects" aria-hidden="true"><\/canvas>/);
+  for (const id of ["activity", "effects"]) {
+    assert.ok(html.indexOf(`id="${id}"`) > html.indexOf('id="stage"') && html.indexOf(`id="${id}"`) < html.indexOf('id="side"'), `${id} is inside #stage`);
+  }
+  assert.match(html, /script-src 'self'/);
+  assert.ok(!/<script>|onclick=|style=/.test(html), "no inline script or style");
+});
