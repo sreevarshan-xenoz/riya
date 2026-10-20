@@ -29,6 +29,7 @@ SITUATIONAL_KINDS = frozenset({"report", "tool", "game"})  # their facts live in
 DEFAULT_TEACHER = Path("scratch_runs/riya_v1/teacher.jsonl")
 DEFAULT_SFT = Path("scratch_runs/riya_v1/sft.jsonl")
 DEFAULT_REPORT = Path("scratch_runs/riya_v1/filter_report.json")
+LEGACY_TEACHER_KEYS = frozenset({"id", "response"})  # a teacher row from before h: it answers no request
 
 # the same readings RiyaCore's shaping applies at run time (shaping.strip_stage_directions)
 _BOLD = re.compile(r"(?<!\w)\*\*(?=\S)(.+?)\*\*")
@@ -468,14 +469,20 @@ def reasons(request: dict, response: str, style_phrases: list[str]) -> list[str]
 
 
 def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[str]) -> tuple[list[dict], dict]:
-    """(the kept chat rows in request order, the report). The first teacher row per id wins; later ones count as
-    "duplicate", ids that no request has as "unknown_id", and requests without an answer as "missing"."""
+    """(the kept chat rows in request order, the report). An answer pairs with a request only on its id and its h (the
+    request's content hash, echoed by the teacher): a row whose h isn't the request's, or that has none, answered
+    another request built under the same id (another seed, pool or prompt) and counts as "stale_answer", never kept.
+    The first matching row per request wins; later ones count as "duplicate", ids that no request has as
+    "unknown_id", and requests without a matching answer as "missing"."""
     by_id = {r["id"]: r for r in requests}
     answers: dict[str, str] = {}
-    duplicate = unknown_id = 0
+    duplicate = unknown_id = stale = 0
     for row in teacher:
-        if row["id"] not in by_id:
+        request = by_id.get(row["id"])
+        if request is None:
             unknown_id += 1
+        elif row.get("h") != request["h"]:
+            stale += 1
         elif row["id"] in answers:
             duplicate += 1
         else:
@@ -495,7 +502,8 @@ def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[s
                    "flagged": kept_by_kind[k] < MIN_KEPT_PER_KIND} for k, n in totals.items()}
     report = {"total": len(requests), "kept": len(kept), "by_kind": by_kind,
               "reasons": {r: failures[r] for r in REASONS}, "duplicate": duplicate, "unknown_id": unknown_id,
-              "missing": len(requests) - len(answers), "flagged": [k for k, v in by_kind.items() if v["flagged"]]}
+              "stale_answer": stale, "missing": len(requests) - len(answers),
+              "flagged": [k for k, v in by_kind.items() if v["flagged"]]}
     return kept, report
 
 
@@ -508,6 +516,7 @@ def format_report(report: dict) -> str:
     lines.append(f"Rejected for: {rejected}" if rejected else "Rejected for: nothing")
     odd = [f"{report[k]} {label}" for k, label in
            (("duplicate", "duplicate answers"), ("unknown_id", "answers with an unknown id"),
+            ("stale_answer", "answers to an older request (stale h: ignored)"),
             ("missing", "requests without an answer")) if report[k]]
     if odd:
         lines.append("Teacher file: " + ", ".join(odd))
@@ -536,7 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     for row in requests:
         validate_request(row)
     for row in teacher:
-        validate_teacher(row)
+        if not (isinstance(row, dict) and set(row) == LEGACY_TEACHER_KEYS and isinstance(row["id"], str)):
+            validate_teacher(row)  # a legacy row (from before h) is read, and counted stale_answer
     if not args.allow_stale:
         current = build_sft.prompt_fingerprint()
         stale = [r["id"] for r in requests if r["fp"] != current]

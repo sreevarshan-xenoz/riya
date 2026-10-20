@@ -38,7 +38,7 @@ from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_S
                               report_line, report_situation, style_line)
 from riya.core.shaping import CAPS, emoji_limit, is_feelings_question, is_identity_question
 from riya.core.store import open_db
-from riya.train.fmt import validate_request, write_jsonl
+from riya.train.fmt import request_hash, validate_request, write_jsonl
 from riya.train.scenarios import (DEFAULT_N, DEFAULT_SEED, KINDS, Scenario, ask_record, events_of, fact_record,
                                   normalize, overlaps, probe_facts, probe_texts, scenarios, thread_of, tool_result)
 
@@ -82,9 +82,10 @@ def prompt_fingerprint() -> str:
 
 
 def request_for(s: Scenario, fp: str | None = None) -> dict:
-    """The scenario as a request: {id, kind, messages, facts, expect, meta, fp}. messages are what RiyaCore would send
-    for the same inputs, composed step for step as the engine does; facts are the memory block's (the facts, and a greeting's
-    or bid's follow-up thread). fp: the prompt fingerprint to stamp (computed when not given)."""
+    """The scenario as a request: {id, kind, messages, facts, expect, meta, fp, h}. messages are what RiyaCore would
+    send for the same inputs, composed step for step as the engine does; facts are the memory block's (the facts, and a
+    greeting's or bid's follow-up thread). fp: the prompt fingerprint to stamp (computed when not given). h: the
+    request's content hash (fmt.request_hash)."""
     t, kind = s.user_text, s.kind
     # 1. the dials and notes; feedback is read before the reply, as RiyaCore._feedback does
     dials, notes, feedback = dict(s.dials), list(s.notes), False
@@ -170,8 +171,9 @@ def request_for(s: Scenario, fp: str | None = None) -> dict:
     facts = fact_texts + [th.text for th in retrieved.threads]
     # the structured side of the same facts (for the filter), and what an unknown row asked about
     meta = {"facts": [fact_record(f) for f in facts], "asks": ask_record(s.asks) if s.asks else None}
-    return {"id": s.id, "kind": kind, "messages": messages, "facts": facts, "expect": expect, "meta": meta,
-            "fp": prompt_fingerprint() if fp is None else fp}
+    row = {"id": s.id, "kind": kind, "messages": messages, "facts": facts, "expect": expect, "meta": meta,
+           "fp": prompt_fingerprint() if fp is None else fp}
+    return {**row, "h": request_hash(row)}  # the teacher echoes it; the filter pairs an answer only on id and h
 
 
 def messages_for(s: Scenario) -> list[dict]:

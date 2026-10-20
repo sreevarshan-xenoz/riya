@@ -9,7 +9,7 @@ from riya.train.build_sft import prompt_fingerprint
 from riya.train.filter_sft import (DEFAULT_REPORT, DEFAULT_SFT, MIN_KEPT_PER_KIND, REASONS, clean_response,
                                    default_style_phrases, filter_rows, format_report, has_stage_direction, main,
                                    reasons)
-from riya.train.fmt import read_jsonl, validate_sft_row, write_jsonl
+from riya.train.fmt import read_jsonl, request_hash, validate_sft_row, write_jsonl
 from riya.train.scenarios import ask_record, fact_record
 
 STYLE = ["I remember you saying you want a purple dragon for your birthday"]
@@ -20,10 +20,11 @@ def req(kind="small", facts=(), user="hey there", id="r", asks=None, **expect):
     e = {"must_mention": [], "must_not_invent": False, "must_admit_unknown": False, "must_say_ai": False,
          "max_sentences": 3, "max_emoji": 1}
     e.update(expect)
-    return {"id": id, "kind": kind, "messages": [{"role": "system", "content": "sys"},
-                                                 {"role": "user", "content": user}],
-            "facts": list(facts), "expect": e, "fp": FP,
-            "meta": {"facts": [fact_record(f) for f in facts], "asks": ask_record(asks) if asks else None}}
+    row = {"id": id, "kind": kind, "messages": [{"role": "system", "content": "sys"},
+                                                {"role": "user", "content": user}],
+           "facts": list(facts), "expect": e, "fp": FP,
+           "meta": {"facts": [fact_record(f) for f in facts], "asks": ask_record(asks) if asks else None}}
+    return {**row, "h": request_hash(row)}
 
 
 # (reason, the request, a reply that breaks only that rule, a reply that satisfies the rule)
@@ -159,8 +160,10 @@ def test_default_style_phrases_come_from_the_probe_file():
     assert isinstance(phrases, list) and phrases and all(isinstance(p, str) for p in phrases)
 
 
-def teacher(rows):
-    return [{"id": i, "response": r} for i, r in rows]
+def teacher(rows, requests):
+    """Teacher answers to these requests: each row echoes its request's h (an id no request has gets a made-up h)."""
+    h = {r["id"]: r["h"] for r in requests}
+    return [{"id": i, "h": h.get(i, "e" * 64), "response": r} for i, r in rows]
 
 
 def test_filter_rows_report():
@@ -169,13 +172,13 @@ def test_filter_rows_report():
     answers = [(f"s{i}", "Hmph, hi~") for i in range(50)] + [("s50", "Riya: hi~"), ("s51", "you've got this.")]
     answers += [(f"b{i}", "Hmph, hi~") for i in range(3)] + [("b3", "Hi. There."), ("b4", "")]
     answers += [("s0", "a later duplicate that must lose."), ("b0", "Riya: dup"), ("nope", "x"), ("nope2", "y")]
-    kept, report = filter_rows(requests, teacher(answers), STYLE)
+    kept, report = filter_rows(requests, teacher(answers, requests), STYLE)
 
     assert report["total"] == 57 and report["kept"] == len(kept) == 53
     assert report["by_kind"]["small"] == {"total": 52, "kept": 50, "rate": pytest.approx(50 / 52), "flagged": False}
     assert report["by_kind"]["bid"] == {"total": 5, "kept": 3, "rate": pytest.approx(0.6), "flagged": True}
     assert report["flagged"] == ["bid"]
-    assert (report["duplicate"], report["unknown_id"], report["missing"]) == (2, 2, 0)
+    assert (report["duplicate"], report["unknown_id"], report["missing"], report["stale_answer"]) == (2, 2, 0, 0)
     assert report["reasons"]["label"] == 1 and report["reasons"]["generic"] == 1
     assert report["reasons"]["too_many_sentences"] == 1 and report["reasons"]["empty"] == 1
     assert set(report["reasons"]) == set(REASONS)
@@ -188,7 +191,7 @@ def test_filter_rows_report():
 
 def test_missing_teacher_rows_are_counted():
     requests = [req(id="a"), req(id="b"), req("bid", id="c")]
-    kept, report = filter_rows(requests, teacher([("a", "Hi~")]), STYLE)
+    kept, report = filter_rows(requests, teacher([("a", "Hi~")], requests), STYLE)
     assert [k["id"] for k in kept] == ["a"]
     assert report["missing"] == 2 and report["total"] == 3 and report["kept"] == 1
     assert report["by_kind"]["bid"]["kept"] == 0 and "bid" in report["flagged"]
@@ -197,7 +200,7 @@ def test_missing_teacher_rows_are_counted():
 def test_exactly_forty_kept_is_not_flagged():
     requests = [req(id=f"a{i}") for i in range(40)] + [req("bid", id=f"b{i}", max_sentences=1) for i in range(39)]
     answers = [(r["id"], "Hmph~") for r in requests]
-    _, report = filter_rows(requests, teacher(answers), STYLE)
+    _, report = filter_rows(requests, teacher(answers, requests), STYLE)
     assert report["by_kind"]["small"]["flagged"] is False and report["by_kind"]["bid"]["flagged"] is True
     assert report["flagged"] == ["bid"]
 
@@ -205,7 +208,7 @@ def test_exactly_forty_kept_is_not_flagged():
 def test_format_report():
     requests = [req(id=f"a{i}") for i in range(41)] + [req("bid", id="b0", max_sentences=1)]
     answers = [(r["id"], "Hmph~") for r in requests[:-1]] + [("b0", "Riya: hi~")]
-    _, report = filter_rows(requests, teacher(answers), STYLE)
+    _, report = filter_rows(requests, teacher(answers, requests), STYLE)
     text = format_report(report)
     lines = text.splitlines()
     assert lines[0] == f"{'small':10} {41:5}/{41:<5} {1:6.1%}"
@@ -226,7 +229,7 @@ def request_file(tmp_path, n_small, n_bid, fp=None):
 def test_cli(tmp_path, capsys):
     requests, rows = request_file(tmp_path, 45, 3)
     teacher_path = tmp_path / "teacher.jsonl"
-    write_jsonl(teacher([(r["id"], "Hmph, hi~") for r in rows]), teacher_path)
+    write_jsonl(teacher([(r["id"], "Hmph, hi~") for r in rows], rows), teacher_path)
     out, report_path = tmp_path / "out" / "sft.jsonl", tmp_path / "out" / "report.json"
     assert main(["--requests", str(requests), "--teacher", str(teacher_path), "--out", str(out),
                  "--report", str(report_path)]) == 0
@@ -243,7 +246,7 @@ def test_cli(tmp_path, capsys):
 def test_cli_refuses_stale_requests_unless_allowed(tmp_path, capsys):
     requests, rows = request_file(tmp_path, 3, 0, fp="f" * 64)
     teacher_path = tmp_path / "teacher.jsonl"
-    write_jsonl(teacher([(r["id"], "Hmph, hi~") for r in rows]), teacher_path)
+    write_jsonl(teacher([(r["id"], "Hmph, hi~") for r in rows], rows), teacher_path)
     out, report_path = tmp_path / "sft.jsonl", tmp_path / "report.json"
     args = ["--requests", str(requests), "--teacher", str(teacher_path), "--out", str(out),
             "--report", str(report_path)]
@@ -396,7 +399,8 @@ def test_think_blocks_template_tokens_and_whitespace_are_stripped_first():
     assert reasons(r, "\n Hi~<|im_end|>\n", STYLE) == []
     assert reasons(r, "<think>unfinished", STYLE) == ["empty"]
     assert reasons(r, "<|im_start|>assistant\nHi", STYLE) == ["truncated"]  # the token is gone, the cut isn't
-    kept, _ = filter_rows([req(id="a")], teacher([("a", "\n<think>x</think> Hi~<|im_end|> ")]), STYLE)
+    a = [req(id="a")]
+    kept, _ = filter_rows(a, teacher([("a", "\n<think>x</think> Hi~<|im_end|> ")], a), STYLE)
     assert kept[0]["messages"][-1]["content"] == "Hi~"  # the cleaned text is what is trained on
 
 
@@ -687,3 +691,42 @@ def test_a_hand_written_good_reply_sweep_keeps_at_least_90_percent():
                 kept += 1
     assert total >= 30
     assert kept / total >= 0.9, rejected
+
+
+# ---- final fix wave I1: an answer counts only for the request it answered (id and h) ----
+
+def test_old_answers_are_rejected_after_a_rebuild():
+    old, new = build_sft.build(0, 30, ("small",)), build_sft.build(1, 30, ("small",))
+    changed = {r["id"] for r, o in zip(new, old) if r["h"] != o["h"]}
+    assert changed
+    answers = [{"id": r["id"], "h": r["h"], "response": "Hmph, hi~"} for r in old]
+    kept, report = filter_rows(new, answers, STYLE)
+    assert not {k["id"] for k in kept} & changed  # an answer to the old prompt never pairs with the new one
+    assert report["stale_answer"] == len(changed) and report["missing"] == len(changed)
+    assert report["duplicate"] == 0 and report["unknown_id"] == 0
+    fresh = [{"id": r["id"], "h": r["h"], "response": "Hmph, hi~"} for r in new if r["id"] in changed]
+    _, report = filter_rows(new, answers + fresh, STYLE)  # the teacher's regenerated rows are appended after
+    assert report["stale_answer"] == len(changed) and report["missing"] == 0
+    assert "stale" in format_report(report) and f"{len(changed)} answers to an older request" in format_report(report)
+
+
+def test_a_teacher_row_for_another_request_with_the_same_id_is_never_kept():
+    a = req(id="r", user="what's the weather like?")
+    b = req(id="r", user="tell me a joke")
+    assert a["h"] != b["h"]
+    kept, report = filter_rows([b], [{"id": "r", "h": a["h"], "response": "Sunny, I think~"}], STYLE)
+    assert kept == [] and report["stale_answer"] == 1 and report["missing"] == 1
+    kept, report = filter_rows([b], [{"id": "r", "response": "From before h existed~"}], STYLE)
+    assert kept == [] and report["stale_answer"] == 1  # a legacy row (no h) answers nothing
+
+
+def test_cli_counts_legacy_teacher_rows_as_stale(tmp_path, capsys):
+    requests, rows = request_file(tmp_path, 2, 0)
+    teacher_path = tmp_path / "teacher.jsonl"
+    legacy = [{"id": r["id"], "response": "Hmph, hi~"} for r in rows]
+    write_jsonl(legacy + teacher([(rows[0]["id"], "Hmph, hi~")], rows), teacher_path)
+    out, report_path = tmp_path / "sft.jsonl", tmp_path / "report.json"
+    assert main(["--requests", str(requests), "--teacher", str(teacher_path), "--out", str(out),
+                 "--report", str(report_path)]) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["kept"] == 1 and report["stale_answer"] == 2 and report["missing"] == 1

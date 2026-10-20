@@ -2,8 +2,9 @@
 character-level tokenizer (no torch, no transformers)."""
 import pytest
 
-from riya.train.fmt import (BOS, IGNORE_INDEX, MAX_LEN, TEACHER_KEYS, encode_row, render_lfm2, sft_row,
-                            template_matches, validate_request, validate_sft_row, validate_teacher)
+from riya.train.fmt import (BOS, IGNORE_INDEX, MAX_LEN, REQUEST_KEYS, TEACHER_KEYS, encode_row, render_lfm2,
+                            request_hash, sft_row, template_matches, validate_request, validate_sft_row,
+                            validate_teacher)
 
 SYSTEM = {"role": "system", "content": "S"}
 USER = {"role": "user", "content": "Yo"}
@@ -26,15 +27,21 @@ class ToyTok:
         return "".join(chr(i) for i in ids)
 
 
+def stamp(row: dict) -> dict:
+    """The row with its h recomputed (a test that edits messages or meta must restamp it)."""
+    return {**{k: v for k, v in row.items() if k != "h"}, "h": request_hash(row)}
+
+
 def good_request():
-    return {"id": "r1", "kind": "small", "messages": [SYSTEM, USER], "facts": [],
-            "expect": {"must_mention": [], "must_not_invent": False, "must_admit_unknown": False,
-                       "must_say_ai": False, "max_sentences": 3, "max_emoji": 1}, "meta": {"facts": [], "asks": None},
-            "fp": "0" * 64}
+    return stamp({"id": "r1", "kind": "small", "messages": [SYSTEM, USER], "facts": [],
+                  "expect": {"must_mention": [], "must_not_invent": False, "must_admit_unknown": False,
+                             "must_say_ai": False, "max_sentences": 3, "max_emoji": 1},
+                  "meta": {"facts": [], "asks": None}, "fp": "0" * 64})
 
 
 def test_constants():
-    assert (BOS, IGNORE_INDEX, MAX_LEN, TEACHER_KEYS) == ("<|startoftext|>", -100, 2048, ("id", "response"))
+    assert (BOS, IGNORE_INDEX, MAX_LEN, TEACHER_KEYS) == ("<|startoftext|>", -100, 2048, ("id", "h", "response"))
+    assert REQUEST_KEYS == ("id", "kind", "messages", "facts", "expect", "meta", "fp", "h")
 
 
 def test_render_lfm2_golden():
@@ -119,9 +126,12 @@ def test_row_validation():
     assert row == {"id": "r1", "kind": "small", "messages": [SYSTEM, USER, ANSWER]}
     assert request["messages"] == [SYSTEM, USER]  # the request is left alone
     validate_sft_row(row)
-    validate_teacher({"id": "r1", "response": "Hi~"})
+    h = request["h"]
+    validate_teacher({"id": "r1", "h": h, "response": "Hi~"})
 
-    for bad in ({"id": "r1"}, {"id": "r1", "response": 3}, {"id": "r1", "response": "x", "extra": 1}, "r1"):
+    for bad in ({"id": "r1"}, {"id": "r1", "h": h, "response": 3}, {"id": "r1", "h": h, "response": "x", "extra": 1},
+                {"id": "r1", "response": "Hi~"}, {"id": "r1", "h": "x", "response": "Hi~"},
+                {"id": "r1", "h": None, "response": "Hi~"}, "r1"):
         with pytest.raises(ValueError):
             validate_teacher(bad)
     with pytest.raises(ValueError):
@@ -144,10 +154,10 @@ def test_request_meta_validation():
     good = good_request()
     validate_request(good)
     rec = {"attr": "dog", "value_words": ["jessamy"], "species": "dog", "words": ["dog"]}
-    with_fact = {**good, "facts": ["The user has a dog called Jessamy"], "meta": {"facts": [rec], "asks": None}}
+    with_fact = stamp({**good, "facts": ["The user has a dog called Jessamy"], "meta": {"facts": [rec], "asks": None}})
     validate_request(with_fact)
     asks = {"attr": "cat", "words": ["cat"], "values": ["Pim"]}
-    validate_request({**good, "meta": {"facts": [], "asks": asks}})
+    validate_request(stamp({**good, "meta": {"facts": [], "asks": asks}}))
     for bad in ({k: v for k, v in good.items() if k != "meta"},
                 {**good, "meta": {"facts": []}},  # no asks
                 {**good, "meta": {"facts": [rec], "asks": None}},  # a record without a fact
@@ -155,5 +165,25 @@ def test_request_meta_validation():
                 {**with_fact, "meta": {"facts": [{"attr": "dog"}], "asks": None}},
                 {**good, "meta": {"facts": [], "asks": {"attr": "cat"}}},
                 {**good, "meta": None}):
+        with pytest.raises(ValueError):
+            validate_request(bad)
+
+
+def test_request_hash_binds_the_messages_and_meta():
+    good = good_request()
+    h = request_hash(good)
+    assert len(h) == 64 and int(h, 16) >= 0 and good["h"] == h
+    assert request_hash({**good, "id": "other", "fp": "1" * 64, "expect": {}}) == h  # only messages and meta count
+    reordered = {"meta": {"asks": None, "facts": []}, "messages": [{"content": "S", "role": "system"},
+                                                                   {"content": "Yo", "role": "user"}]}
+    assert request_hash(reordered) == h  # canonical: key order doesn't matter
+    changed = [{**good, "messages": [SYSTEM, {"role": "user", "content": "Yo!"}]},
+               {**good, "meta": {"facts": [], "asks": {"attr": "cat", "words": ["cat"], "values": ["Pim"]}}}]
+    for row in changed:
+        assert request_hash(row) != h
+        with pytest.raises(ValueError, match="h"):
+            validate_request({**row, "h": h})  # edited after it was built: its h no longer matches
+        validate_request(stamp(row))
+    for bad in ({k: v for k, v in good.items() if k != "h"}, {**good, "h": "A" * 64}, {**good, "h": None}):
         with pytest.raises(ValueError):
             validate_request(bad)

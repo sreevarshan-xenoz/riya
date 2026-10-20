@@ -2,15 +2,26 @@
 chat rows the trainer reads, the LFM2 chat template and the assistant-only label mask. Pure and CPU-only: stdlib only
 (a tokenizer is passed in, so torch and transformers are never imported here).
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.1, §2.3 and §4."""
+import hashlib
 import json
 import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
-# fp: build_sft.prompt_fingerprint() at build time; meta: the structured facts and the asked attribute
-REQUEST_KEYS = ("id", "kind", "messages", "facts", "expect", "meta", "fp")
+# fp: build_sft.prompt_fingerprint() at build time; meta: the structured facts and the asked attribute; h: the
+# request's own content hash (request_hash), which the teacher echoes so an answer is only ever paired with the request
+# it answered
+REQUEST_KEYS = ("id", "kind", "messages", "facts", "expect", "meta", "fp", "h")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def request_hash(row: dict) -> str:
+    """h: the sha256 (hex) of the request's messages and meta as canonical JSON (sorted keys, no spaces, non-ASCII
+    kept). The same id rebuilt from another seed, pool or prompt has another h."""
+    blob = json.dumps({"messages": row["messages"], "meta": row["meta"]}, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 EXPECT_KEYS = ("must_mention", "must_not_invent", "must_admit_unknown", "must_say_ai", "max_sentences", "max_emoji")
 
 
@@ -54,7 +65,7 @@ def validate_request(row: dict) -> None:
     """ValueError unless row is a request: exactly REQUEST_KEYS; messages a system message, then user/assistant pairs,
     ending with a user message, all with str content; facts a list of str; expect exactly EXPECT_KEYS (list of str,
     bool, bool, bool, int >= 1, int >= 0); meta a record per fact plus the asked attribute; fp a sha256 hex digest (64
-    lowercase hex characters)."""
+    lowercase hex characters); h equal to request_hash(row)."""
     if not isinstance(row, dict) or set(row) != set(REQUEST_KEYS) or len(row) != len(REQUEST_KEYS):
         raise ValueError(f"a request has exactly the keys {REQUEST_KEYS}")
     messages = row["messages"]
@@ -89,9 +100,11 @@ def validate_request(row: dict) -> None:
         raise ValueError(f"{row['id']}: meta.asks is None or {{attr, words, values}}")
     if not isinstance(row["fp"], str) or not _HEX64.fullmatch(row["fp"]):
         raise ValueError(f"{row['id']}: fp must be a sha256 hex digest")
+    if not isinstance(row["h"], str) or row["h"] != request_hash(row):
+        raise ValueError(f"{row['id']}: h must be request_hash(row) (the messages or meta changed after it was built)")
 
 
-TEACHER_KEYS = ("id", "response")
+TEACHER_KEYS = ("id", "h", "response")  # h: the answered request's h, echoed
 SFT_KEYS = ("id", "kind", "messages")
 BOS = "<|startoftext|>"
 IGNORE_INDEX = -100  # the label the loss skips
@@ -99,11 +112,14 @@ MAX_LEN = 2048  # a longer row is skipped, never truncated
 
 
 def validate_teacher(row: dict) -> None:
-    """ValueError unless row is a teacher answer: exactly the keys id and response, both str."""
+    """ValueError unless row is a teacher answer: exactly the keys id, h and response, all str, h a sha256 hex
+    digest (the h of the request it answered)."""
     if not isinstance(row, dict) or set(row) != set(TEACHER_KEYS):
         raise ValueError(f"a teacher row has exactly the keys {TEACHER_KEYS}")
     if not all(isinstance(row[k], str) for k in TEACHER_KEYS):
-        raise ValueError(f"{row.get('id')}: id and response must be str")
+        raise ValueError(f"{row.get('id')}: id, h and response must be str")
+    if not _HEX64.fullmatch(row["h"]):
+        raise ValueError(f"{row['id']}: h must be a sha256 hex digest")
 
 
 def sft_row(request: dict, response: str) -> dict:

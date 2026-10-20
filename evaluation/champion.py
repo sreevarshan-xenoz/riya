@@ -17,11 +17,11 @@ compared. The decision is per metric:
 
 On adopt it installs the candidate as the adopted adapter (riya-v1-lora.gguf) in one atomic rename, writes the
 .champion.json record for the installed file and sets local_adapter to it (through the running core when one answers,
-else in the settings DB). On reject it changes nothing: the adopted file and its record stay. --dry-run writes nothing; --base-vs-base compares the base with itself (a
-sanity check: always "keep the base model") and implies --dry-run. It refuses while a fullscreen window is up or with
-under 2500 MB of free VRAM, before any server starts and again before the candidate, and when the adapter file
-changed during the run. Exit 0 on a decision, 2 when it
-refused or failed.
+else in the settings DB). On reject it changes nothing: the adopted file and its record stay. --dry-run writes
+nothing; --base-vs-base compares the base with itself (a sanity check: always "keep the base model") and implies
+--dry-run. It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server starts and
+again before the candidate, and when the adapter file changed during the run. Exit 0 on a decision, 2 when it refused
+or failed.
 """
 import argparse
 import errno
