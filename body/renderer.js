@@ -16,11 +16,11 @@
   const { isOpaqueAt, toImageCoords, buddyClickable } = RiyaHitTest;
   const { reminderItems, reminderDue } = RiyaHands;
   const { BubbleModel } = RiyaBubble;
-  const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
+  const { agentChip, relativeAge, badgeCount, badgeView, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
   const {
     ExpressionModel, MouthTracker, StatusLine, Motion, cropBox, buddySpriteBox, idleAnimates, nextDeadline, isSettingsError,
   } = RiyaStage;
-  const { PET, petTransformCss, walkFrame, mirrorForFacing, bubbleText } = RiyaPet;
+  const { PET, petTransformCss, walkFrame, mirrorForFacing, waveCurrent, activityText } = RiyaPet;
   const { EFFECT_HZ, EFFECTS, particles, particlesAt, effectDone } = RiyaEffects;
 
   const mode = ["buddy", "panel", "window"].includes(window.riya.mode) ? window.riya.mode : "buddy";
@@ -372,12 +372,23 @@
     ageTimer = setTimeout(() => { ageTimer = null; refreshAges(); scheduleAges(); }, AGE_REFRESH_MS);
   }
 
+  let shownBadge = { hidden: true, text: "", needsYou: false, label: "" };
+
+  /** The buddy badge: the count, and the highlighted "needs you" state while her wave is current (so "needs you" stays on
+   *  screen when her own speech bubble covers the wave's label). Draws only what changed. */
+  function renderBadge() {
+    if (mode !== "buddy") return;
+    const b = badgeView(badgeCount(agents), petActive() && waveCurrent(petView));
+    if (b.hidden !== shownBadge.hidden) els.badge.hidden = b.hidden;
+    if (b.text !== shownBadge.text) els.badge.textContent = b.text;
+    if (b.needsYou !== shownBadge.needsYou) els.badge.classList.toggle("needs-you", b.needsYou);
+    if (b.label !== shownBadge.label) els.badge.setAttribute("aria-label", b.label);
+    shownBadge = b;
+  }
+
   function renderAgents() {
-    const count = badgeCount(agents);
     if (mode === "buddy") {
-      els.badge.hidden = count === 0;
-      els.badge.textContent = count > 9 ? "9+" : String(count);
-      els.badge.setAttribute("aria-label", `${count} agent${count === 1 ? "" : "s"} need${count === 1 ? "s" : ""} you`);
+      renderBadge();
       return;
     }
     ageEls = [];
@@ -489,11 +500,7 @@
    *  It comes from agent activity, so it is text only, clipped again here. */
   function renderActivity(t) {
     if (mode !== "buddy") return;
-    let text = "";
-    if (petActive()) {
-      const b = petView.bubble;
-      if (b && typeof b.text === "string" && Date.now() < b.untilMs && !bubble.visible(t) && !confirmShown()) text = bubbleText(b.text);
-    }
+    const text = petActive() ? activityText(petView, Date.now(), { speaking: bubble.visible(t), confirming: confirmShown() }) : "";
     const visible = text !== "";
     if (text !== shownActivity.text) els.activity.textContent = text;
     if (visible !== shownActivity.visible) els.activity.hidden = !visible;
@@ -582,6 +589,7 @@
     renderBubble(t);
     renderConfirm();
     renderActivity(t);
+    renderBadge();
     renderStatus(t);
     renderFrame(t);
     updateMotionTimer();

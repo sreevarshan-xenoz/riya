@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const {
   ACTIVITY_KINDS, PET_WALKS_WHEN, REDUCED_MOTION, SCALE_RANGE, BUBBLE_MAX, PET, STATES, REACTIONS, POKE, BIG_EFFECTS,
   BIG_MOTIONS, OFF_VIEW, Pet, makeRng, clampScale, petSize, floorY, walkBounds, inQuietHours, reducedMotionOn, gates,
-  bubbleText, petTransformCss, walkFrame, mirrorForFacing,
+  bubbleText, petTransformCss, walkFrame, mirrorForFacing, waveCurrent, activityText,
 } = require("../src/pet-logic");
 
 const AREA = { x: 0, y: 0, width: 1920, height: 1040 };
@@ -824,7 +824,7 @@ const stripComments = (code) => code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^
 test("renderer wiring", () => {
   const src = stripComments(readBody("renderer.js"));
   for (const needle of ["petTransformCss(", "mirrorForFacing(", 'matchMedia("(prefers-reduced-motion: reduce)")', "reportReducedMotion(",
-    "walkFrame(", "bubbleText(", "onPetView(", "petMenu(", "particlesAt("]) {
+    "walkFrame(", "activityText(", "onPetView(", "petMenu(", "particlesAt("]) {
     assert.ok(src.includes(needle), needle);
   }
   // one effects timer, started once, with the path that clears it tied to effectDone and the hidden page
@@ -846,9 +846,8 @@ test("renderer wiring", () => {
   assert.ok(transform.indexOf("petActive()") >= 0 && transform.indexOf("petActive()") < transform.indexOf("petTransformCss("));
   const activity = src.slice(src.indexOf("function renderActivity"), src.indexOf("function renderStatus"));
   assert.ok(activity.indexOf("petActive()") >= 0 && activity.indexOf("petActive()") < activity.indexOf("activity.textContent = "));
-  assert.match(activity, /Date\.now\(\) < b\.untilMs/);
-  assert.match(activity, /!bubble\.visible\(t\)/);
-  assert.match(activity, /!confirmShown\(\)/);
+  // the freshness, speech and question gates live in the pure activityText (tested above); the renderer passes them in
+  assert.match(activity, /activityText\(petView, Date\.now\(\), \{ speaking: bubble\.visible\(t\), confirming: confirmShown\(\) \}\)/);
   // the other view fields: the mirror, the expression, the walk frame and the sleep blink
   assert.match(src, /petActive\(\) && petView\.facing === -1\) p = mirrorForFacing\(/);
   assert.match(src, /\(petActive\(\) \? petView\.expression : null\) \?\? base/);
@@ -967,4 +966,51 @@ test("while gaming she holds her pose: no sit or stand toggle, no fidget, no vie
   const states = new Set();
   run(fid, t0 + 600500, t0 + 600500 + 300000, 1000, (f) => states.add(f.view.state));
   assert.ok(states.has("sit"), "toggles resume");
+});
+
+test("a current wave is known from her view, and its label comes back when her own speech ends", () => {
+  const pet = mk({ rng: HI });
+  pet.step(0);
+  const idle = pet.step(50).view;
+  assert.equal(waveCurrent(idle), false);
+  assert.equal(waveCurrent(OFF_VIEW), false);
+  assert.equal(waveCurrent(null), false);
+  pet.react("done", "all done!", 100);
+  assert.equal(waveCurrent(pet.step(150).view), false, "a happy finish is not a wave");
+  const waving = mk({ rng: HI });
+  waving.step(0);
+  waving.react("wave", "needs you! running rm", 100);
+  const w = waving.step(150).view;
+  assert.equal(waveCurrent(w), true);
+  assert.equal(waveCurrent({ ...w, on: false }), false);
+  assert.equal(waveCurrent(waving.step(150 + 5999).view), true, "still waving inside its pose window");
+  assert.equal(waveCurrent(waving.step(150 + 6000).view), false, "the pose window is over");
+
+  // her own speech covers the label (they share one spot) ...
+  const now = 150;
+  assert.equal(activityText(w, now, { speaking: false, confirming: false }), "needs you! running rm");
+  assert.equal(activityText(w, now, { speaking: true }), "");
+  assert.equal(activityText(w, now, { confirming: true }), "");
+  // ... and when it ends the wave bubble is back, while the wave is still current
+  assert.equal(activityText(w, w.bubble.untilMs - 1, { speaking: false }), "needs you! running rm");
+  assert.equal(activityText(w, w.bubble.untilMs, { speaking: false }), "", "but never past its own deadline");
+  assert.equal(activityText(OFF_VIEW, 0), "");
+  assert.equal(activityText(null, 0), "");
+  assert.equal(activityText({ ...w, bubble: null }, now), "");
+  assert.equal(activityText({ ...w, bubble: { text: "x".repeat(90), untilMs: 1e9 } }, now).length, BUBBLE_MAX, "clipped again");
+});
+
+test("the renderer keeps needs-you visible through her own speech, and draws labels through the pure helpers", () => {
+  const src = stripComments(readBody("renderer.js"));
+  const activity = src.slice(src.indexOf("function renderActivity"), src.indexOf("function renderStatus"));
+  assert.match(activity, /activityText\(petView, Date\.now\(\), \{ speaking: bubble\.visible\(t\), confirming: confirmShown\(\) \}\)/);
+  assert.match(activity, /els\.activity\.textContent = /);
+  const badge = src.slice(src.indexOf("function renderBadge"), src.indexOf("function renderAgents"));
+  assert.match(badge, /badgeView\(badgeCount\(agents\), petActive\(\) && waveCurrent\(petView\)\)/);
+  assert.match(badge, /classList\.toggle\("needs-you", b\.needsYou\)/);
+  assert.match(badge, /els\.badge\.textContent = b\.text/, "text only");
+  // the badge follows her view (the wave starts and ends there) and the agents list
+  assert.match(src.slice(src.indexOf("function refresh()"), src.indexOf("function activityDeadline")), /renderBadge\(\)/);
+  assert.match(src.slice(src.indexOf("function renderAgents")), /^function renderAgents\(\) \{\s*if \(mode === "buddy"\) \{\s*renderBadge\(\);/);
+  assert.match(readBody("styles.css"), /#agent-badge\.needs-you \{/);
 });

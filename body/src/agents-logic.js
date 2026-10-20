@@ -41,6 +41,18 @@ function badgeCount(items) {
   return Array.isArray(items) ? items.filter((a) => isItem(a) && a.needs_attention === true).length : 0;
 }
 
+/** The buddy badge: the count of agents that need the user ("9+" past nine), highlighted as "needs you" while her wave is
+ *  current. A wave the agents list hasn't caught up with yet (count 0) still shows a "!" badge, so "needs you" stays visible
+ *  while her own speech covers the wave bubble. */
+function badgeView(count, waveCurrent) {
+  const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
+  const wave = waveCurrent === true;
+  if (n === 0 && !wave) return { hidden: true, text: "", needsYou: false, label: "" };
+  const text = n === 0 ? "!" : n > 9 ? "9+" : String(n);
+  const label = n === 0 ? "An agent needs you" : `${n} agent${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} you`;
+  return { hidden: false, text, needsYou: wave, label };
+}
+
 /** A sorted copy: needs attention first, then live agents, then ended ones (the view dims those); stable in each group. */
 function sortAgents(items) {
   const rank = (a) => (a.needs_attention === true ? 0 : a.status === "ended" ? 2 : 1);
@@ -122,7 +134,7 @@ function validateAgentLogs(list) {
 
 const agentsExports = {
   AGE_REFRESH_MS, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS, MAX_AGENT_LOGS, MAX_LOG_NAME, MAX_PATTERN_LEN,
-  agentChip, relativeAge, badgeCount, sortAgents, hookStatus, agentTitle, ageRefreshDue, validateAgentLogs,
+  agentChip, relativeAge, badgeCount, badgeView, sortAgents, hookStatus, agentTitle, ageRefreshDue, validateAgentLogs,
   agentsWhileConnected, receiverProblems,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = agentsExports;

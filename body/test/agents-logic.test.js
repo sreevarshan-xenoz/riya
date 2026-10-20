@@ -186,3 +186,15 @@ test("the settings page shows the receiver problems in their own row", () => {
   assert.match(html, /id="agents-receiver"/);
   assert.match(js, /receiverProblems\(/);
 });
+
+test("badgeView: the count, and a highlighted needs-you state while her wave is current", () => {
+  assert.deepEqual(A.badgeView(0, false), { hidden: true, text: "", needsYou: false, label: "" });
+  assert.deepEqual(A.badgeView(1, false), { hidden: false, text: "1", needsYou: false, label: "1 agent needs you" });
+  assert.deepEqual(A.badgeView(3, false), { hidden: false, text: "3", needsYou: false, label: "3 agents need you" });
+  assert.equal(A.badgeView(10, false).text, "9+");
+  assert.deepEqual(A.badgeView(2, true), { hidden: false, text: "2", needsYou: true, label: "2 agents need you" });
+  // the agents list hasn't caught up with the wave yet: the "!" badge still carries "needs you"
+  assert.deepEqual(A.badgeView(0, true), { hidden: false, text: "!", needsYou: true, label: "An agent needs you" });
+  for (const bad of [NaN, -1, 1.5, "2", undefined, null, Infinity]) assert.equal(A.badgeView(bad, false).hidden, true, String(bad));
+  assert.equal(A.badgeView(0, "yes").hidden, true, "only a true wave counts");
+});

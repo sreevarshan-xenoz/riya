@@ -683,6 +683,20 @@ function petTransformCss(view, tMs) {
   return `translate(${px(dx)}px, ${px(dy)}px) rotate(${px(deg)}deg) scale(${n(sign * sx, 1e-3, 3)}, ${n(sy, 1e-3, 3)})`;
 }
 
+/** True while her view is the "needs you!" wave: the pose reaction that waves, still playing. */
+function waveCurrent(view) {
+  return Boolean(view) && view.on === true && view.state === "react" && view.motion === "wave";
+}
+
+/** The activity label to draw ("editing engine.py", "needs you!"): her pet bubble while it is still live, and only while
+ *  neither her own speech bubble nor a question is up (they share one spot). When the speech ends the label comes back,
+ *  so a wave that is still current is shown then. Empty when there is none. `nowMs` is Date.now() time. */
+function activityText(view, nowMs, { speaking = false, confirming = false } = {}) {
+  if (!view || view.on !== true || speaking || confirming) return "";
+  const b = view.bubble;
+  return b && typeof b.text === "string" && nowMs < b.untilMs ? bubbleText(b.text) : "";
+}
+
 /** The art pack's `motions.walk` frame at `tMs` (looping at `fps`), or null with none. */
 function walkFrame(frames, tMs, fps = 8) {
   if (!Array.isArray(frames) || frames.length === 0) return null;
@@ -698,7 +712,7 @@ function mirrorForFacing({ x, y }, width, facing) {
 const petExports = {
   ACTIVITY_KINDS, PET_WALKS_WHEN, REDUCED_MOTION, SCALE_RANGE, BUBBLE_MAX, PET, STATES, REACTIONS, POKE, BIG_EFFECTS,
   BIG_MOTIONS, OFF_VIEW, Pet, makeRng, clampScale, petSize, floorY, walkBounds, inQuietHours, reducedMotionOn, gates,
-  bubbleText, petTransformCss, walkFrame, mirrorForFacing,
+  bubbleText, petTransformCss, walkFrame, mirrorForFacing, waveCurrent, activityText,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = petExports;
 else globalThis.RiyaPet = petExports;
