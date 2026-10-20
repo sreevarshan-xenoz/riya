@@ -193,7 +193,7 @@ def _check(key: str, v) -> None:
     else:
         ok = isinstance(v, bool)
     if not ok:
-        raise ValueError(f"invalid value for setting {key!r}: {v!r}")
+        raise ValueError(f"invalid value for setting {key!r}")  # never the value: the error goes to every connection
 
 
 def apply_patch(s: Settings, patch: dict) -> Settings:

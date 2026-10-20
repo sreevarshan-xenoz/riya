@@ -299,3 +299,21 @@ def test_gate_never_holds_or_replaces_a_wave():
     assert gate.due(1.6) == []
     assert gate.due(1.7) == [run2]  # ...and only ever sent after the wave
     assert gate.offer(Activity("a", "needs you! again", "wave", "Bash", 1.8), 1.8).kind == "wave"
+
+
+def test_gate_drops_only_a_repeat_wave():
+    gate = ActivityGate()
+
+    def wave(label, at):
+        return Activity("a", label, "wave", "Bash", at)
+
+    assert gate.offer(wave("needs you! x", 0), 0) is not None
+    assert gate.offer(wave("needs you! x", 0.1), 0.1) is None  # the same label inside the gap: a repeat
+    assert gate.offer(wave("needs you! y", 0.2), 0.2) is not None  # a new label always goes out
+    assert gate.offer(wave("needs you! y", 1.0), 1.0) is None
+    assert gate.due(5.0) == []  # a dropped repeat is not held either
+    assert gate.offer(wave("needs you! y", 1.7), 1.7) is not None  # 1.5 s since the last wave
+    tool = act("a", 9)
+    assert gate.offer(tool, 1.8) is None  # held (inside the gap), then sent after the gap
+    assert gate.due(3.2) == [tool]
+    assert gate.offer(wave("needs you! y", 3.3), 3.3) is not None  # a non-wave in between: out at once

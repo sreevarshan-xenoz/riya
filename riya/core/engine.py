@@ -1616,7 +1616,8 @@ class RiyaCore:
     def _activity_step(self, now: float) -> None:
         """Drains the pet's inbox (at most DRAIN_MAX payloads), turns each into an activity, rate-limits it per session
         (the latest wins) and sends what the gate lets through, plus whatever was held and is due. Skipped when another
-        thread is in it. Never raises. "Needs you" does not depend on this: the hub's agents message carries it too."""
+        thread is in it. Never raises. "Needs you" does not depend on this: the hub's agents message carries it too. tick() calls it, and so
+        does the riya-activity thread (__main__.run_activity), so it keeps flowing while the tick thread speaks."""
         if not self._activity_lock.acquire(blocking=False):
             return
         try:
@@ -1633,8 +1634,11 @@ class RiyaCore:
                 except Exception:
                     log.exception("couldn't take an activity")
             out += self.activity_gate.due(now)
-            for a in out:
-                self.emit(AgentActivity(session=a.session, label=a.label, kind=a.kind, at=a.at))
+            for a in out:  # one bad item never loses the rest (the gate has already counted them as sent)
+                try:
+                    self.emit(AgentActivity(session=a.session, label=a.label, kind=a.kind, at=a.at))
+                except Exception:
+                    log.exception("couldn't send an activity")
         except Exception:
             log.exception("activity step failed")
         finally:
