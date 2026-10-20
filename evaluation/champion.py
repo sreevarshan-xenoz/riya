@@ -448,12 +448,17 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         if not d.adopt:  # the candidate stays where it is; the adopted file and its record are untouched
             return 0
         install(Path(cand_lora), adopted)  # the adopted file is now the measured candidate, in one rename
+    except RuntimeError as e:  # ChampionError, or a server that never came up: nothing was written
+        print(f"{e} Nothing changed.")
+        return 2
+    try:
         brain.write_record(adopted, {
             "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "targets_base": d.targets_base, "targets_candidate": d.targets_candidate, "repeat": repeat,
             "weak": {c.key: c.status for c in d.weak}})
-    except RuntimeError as e:  # ChampionError, or a server that never came up: nothing was written
-        print(f"{e} Nothing changed.")
+    except OSError as e:  # installed but unrecorded: the wrapper serves only a recorded file, so she stays on base
+        print(f"The candidate is installed as {adopted}, but its champion record couldn't be written ({e}). Riya "
+              "serves the base model until the gate is run again on it (--lora set to that file).")
         return 2
     try:
         where = set_local_adapter(str(adopted), db=Path(args.db), ws_url=args.url, connect=connect,
