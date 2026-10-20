@@ -224,10 +224,10 @@ function resultText(msg) {
 /** Refresh the checklist only while the page is showing and the core is there to answer. */
 const shouldRefresh = ({ hidden, connected }) => !hidden && Boolean(connected);
 
-const api = {
+const healthExports = {
   REFRESH_MS, MAX_KEY, CONFIRM_EXPIRY_MS, CONFIRM_GATED, ROW_LABELS, FIX_LABELS, CONFIRM_TITLES, STATUS_TEXT, healthRows,
   fixRequest, keyRequest, submitKey, saveKeyEnabled, clearKeyEnabled, keySourceText, ConfirmGate, ConfirmFlow, voiceItems, resultText,
   shouldRefresh,
 };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaHealth = api;
+if (typeof module !== "undefined" && module.exports) module.exports = healthExports;
+else globalThis.RiyaHealth = healthExports;
