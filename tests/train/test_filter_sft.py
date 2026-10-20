@@ -260,7 +260,8 @@ def test_cli_refuses_stale_requests_unless_allowed(tmp_path, capsys):
 
 def test_cli_defaults(monkeypatch, tmp_path):
     seen = {}
-    monkeypatch.setattr("riya.train.filter_sft.read_jsonl", lambda p: seen.setdefault("paths", []).append(p) or [])
+    monkeypatch.setattr("riya.train.filter_sft.read_jsonl_checked",
+                        lambda p: seen.setdefault("paths", []).append(p) or ([], 0))
     monkeypatch.setattr("riya.train.filter_sft.write_jsonl", lambda rows, p: seen.setdefault("out", p))
     monkeypatch.setattr("riya.train.filter_sft._write_report", lambda report, p: seen.setdefault("report", p))
     assert main([]) == 0
@@ -761,3 +762,18 @@ def test_the_reviewers_rows_are_rejected():
     assert row["id"] == "small-00000" and not row["facts"]
     for reply in ("Did your mom call again? Hehe~", "Just like old times, remember? We always do this~"):
         assert "invented" in reasons(row, reply, STYLE), reply
+
+
+def test_the_report_shows_dropped_broken_lines(tmp_path, capsys):
+    requests, rows = request_file(tmp_path, 2, 0)
+    teacher_path = tmp_path / "teacher.jsonl"
+    write_jsonl(teacher([(r["id"], "Hmph, hi~") for r in rows], rows), teacher_path)
+    with teacher_path.open("a", encoding="utf-8") as f:
+        f.write('{"id": "s9", "h": "')  # the teacher was killed mid-write
+    out, report_path = tmp_path / "sft.jsonl", tmp_path / "report.json"
+    assert main(["--requests", str(requests), "--teacher", str(teacher_path), "--out", str(out),
+                 "--report", str(report_path)]) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["dropped_lines"] == {"requests": 0, "teacher": 1} and report["kept"] == 2
+    printed = capsys.readouterr()
+    assert "1 broken last line dropped (teacher)" in printed.out and "WARNING" in printed.err

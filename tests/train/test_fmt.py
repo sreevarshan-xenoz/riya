@@ -187,3 +187,53 @@ def test_request_hash_binds_the_messages_and_meta():
     for bad in ({k: v for k, v in good.items() if k != "h"}, {**good, "h": "A" * 64}, {**good, "h": None}):
         with pytest.raises(ValueError):
             validate_request(bad)
+
+
+# ---- final fix wave minors: atomic writes, loud tolerant reads ----
+
+def test_write_jsonl_is_atomic(tmp_path, monkeypatch):
+    from riya.train.fmt import read_jsonl, write_jsonl
+
+    out = tmp_path / "rows.jsonl"
+    write_jsonl([{"a": 1}, {"b": "é~"}], out)
+    before = out.read_bytes()
+
+    def rows():
+        yield {"c": 1}
+        raise KeyboardInterrupt  # killed half-way through the rewrite
+
+    with pytest.raises(KeyboardInterrupt):
+        write_jsonl(rows(), out)
+    assert out.read_bytes() == before and list(tmp_path.iterdir()) == [out]  # untouched, no temp file left
+    replaced = []
+    import riya.train.fmt as fmt_mod
+    real = fmt_mod.os.replace
+    monkeypatch.setattr(fmt_mod.os, "replace", lambda a, b: replaced.append((str(a), str(b))) or real(a, b))
+    write_jsonl([{"d": 1}], out)
+    assert read_jsonl(out) == [{"d": 1}] and len(replaced) == 1 and replaced[0][1] == str(out)
+    assert out.read_bytes().endswith(b"\n") and b"\r" not in out.read_bytes()
+
+
+def test_write_json_is_atomic(tmp_path):
+    import json
+
+    from riya.train.fmt import write_json
+
+    out = tmp_path / "sub" / "report.json"
+    write_json({"a": [1, 2]}, out)
+    assert json.loads(out.read_text(encoding="utf-8")) == {"a": [1, 2]}
+    before = out.read_bytes()
+    with pytest.raises(TypeError):
+        write_json({"bad": object()}, out)  # can't be encoded: nothing half-written
+    assert out.read_bytes() == before and sorted(p.name for p in out.parent.iterdir()) == ["report.json"]
+
+
+def test_a_broken_last_line_is_reported_loudly(tmp_path, capsys):
+    from riya.train.fmt import read_jsonl_checked
+
+    p = tmp_path / "t.jsonl"
+    p.write_text('{"a": 1}\n{"a": 2}\n{"a"', encoding="utf-8")
+    rows, dropped = read_jsonl_checked(p)
+    assert rows == [{"a": 1}, {"a": 2}] and dropped == 1
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "dropped 1 broken last line" in err and str(p) in err

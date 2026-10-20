@@ -4,10 +4,13 @@ chat rows the trainer reads, the LFM2 chat template and the assistant-only label
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.1, §2.3 and §4."""
 import hashlib
 import json
+import os
 import re
 import sys
-from collections.abc import Iterable
+import tempfile
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import TextIO
 
 # fp: build_sft.prompt_fingerprint() at build time; meta: the structured facts and the asked attribute; h: the
 # request's own content hash (request_hash), which the teacher echoes so an answer is only ever paired with the request
@@ -27,8 +30,8 @@ EXPECT_KEYS = ("must_mention", "must_not_invent", "must_admit_unknown", "must_sa
 
 def read_jsonl_checked(path: Path) -> tuple[list[dict], int]:
     """(rows, dropped): one JSON value per line (utf-8), blank lines skipped. A last line that isn't valid JSON, the
-    mark of a run killed mid-write, is dropped and counted (1) and reported on stderr; a broken line anywhere else
-    still raises ValueError (json.JSONDecodeError)."""
+    mark of a run killed mid-write, is dropped and counted (1) and reported loudly on stderr; a broken line anywhere
+    else still raises ValueError (json.JSONDecodeError)."""
     lines = [line for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
     rows, dropped = [], 0
     for i, line in enumerate(lines):
@@ -38,7 +41,8 @@ def read_jsonl_checked(path: Path) -> tuple[list[dict], int]:
             if i != len(lines) - 1:
                 raise
             dropped = 1
-            print(f"{path}: ignoring a broken last line (an interrupted write): {line[:60]!r}", file=sys.stderr)
+            print(f"WARNING: {path}: dropped {dropped} broken last line (an interrupted write or copy; {len(rows)} "
+                  f"rows read): {line[:60]!r}", file=sys.stderr, flush=True)
     return rows, dropped
 
 
@@ -48,13 +52,33 @@ def read_jsonl(path: Path) -> list[dict]:
     return read_jsonl_checked(path)[0]
 
 
-def write_jsonl(rows: Iterable[dict], path: Path) -> None:
-    """One JSON object per line (utf-8, non-ASCII kept, "\\n" endings), making the parent folder first."""
+def _write_atomic(path: Path, write: Callable[[TextIO], None]) -> None:
+    """Writes through a temp file next to path, then os.replace: a reader sees the old file or the whole new one,
+    never a part. A failure (or Ctrl-C) leaves the old file and no temp file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as f:
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            write(f)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def write_jsonl(rows: Iterable[dict], path: Path) -> None:
+    """One JSON object per line (utf-8, non-ASCII kept, "\\n" endings), making the parent folder first; atomic."""
+    def write(f: TextIO) -> None:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    _write_atomic(path, write)
+
+
+def write_json(obj, path: Path) -> None:
+    """One JSON document (utf-8, indented, a final newline), making the parent folder first; atomic."""
+    text = json.dumps(obj, indent=2) + "\n"  # encoded first: a value json can't take raises before anything is written
+    _write_atomic(path, lambda f: f.write(text))
 
 
 def _int(v, lo: int) -> bool:
