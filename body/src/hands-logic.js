@@ -196,9 +196,9 @@ function actionText(a) {
   return outcome ? `${summary} · ${outcome}` : summary;
 }
 
-const api = {
+const handsExports = {
   MAX_PLACE, TIMEOUT_RANGE, TOOLS, DEFAULT_OFF, toolRows, toolsPatch, splitCommandLine, joinCommandLine, validateApps,
   validateCommands, reminderItems, reminderDue, actionText,
 };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaHands = api;
+if (typeof module !== "undefined" && module.exports) module.exports = handsExports;
+else globalThis.RiyaHands = handsExports;
