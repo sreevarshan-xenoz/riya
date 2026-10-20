@@ -126,8 +126,14 @@ GGUF. Never copy it over `riya-v1-lora.gguf` there: that is the adopted adapter,
 
 ```powershell
 Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "~/models/riya/riya-v1-candidate-lora.gguf"
+.venv\Scripts\python -m riya.train.fmt --check-template --server http://127.0.0.1:8090
 .venv\Scripts\python -m evaluation.champion
 ```
+
+The template check (with Riya running) asks your own llama-server to render a test conversation and compares it with
+the template the trainer used. It must print **`TEMPLATE_OK`**; on `TEMPLATE_MISMATCH` your build renders her prompts
+differently, so don't run the gate. The gate repeats this check on its own server before it evaluates, and refuses on
+a mismatch.
 
 The gate runs the persona eval three times for the base and for base + candidate on its own llama-server, then adopts
 the candidate only if it clearly wins and regresses nothing. On adopt it moves the candidate into place as
