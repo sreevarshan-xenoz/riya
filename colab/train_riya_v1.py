@@ -24,7 +24,8 @@ import urllib.request
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
-from riya.train.fmt import (IGNORE_INDEX, MAX_LEN, encode_row, read_jsonl, template_matches, validate_sft_row)
+from riya.train.fmt import (IGNORE_INDEX, MAX_LEN, encode_row, read_jsonl, template_matches, validate_sft_row,
+                            write_json)
 
 DEFAULT_BASE = "huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated"  # the safetensors twin of the GGUF she serves
 OFFICIAL_BASE = "LiquidAI/LFM2.5-1.2B-Instruct"
@@ -232,8 +233,6 @@ def smoke_load(served_gguf: str, lora: str, messages: list[dict], hf_prompt: str
 
 
 def _run(args: argparse.Namespace) -> int:
-    import json
-
     import torch
     from huggingface_hub import snapshot_download
     from peft import LoraConfig, get_peft_model
@@ -344,7 +343,7 @@ def _run(args: argparse.Namespace) -> int:
     # 6. report (before the smoke, so a failed load keeps the loss curve)
     report = make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped, losses=losses,
                          smoke=args.smoke, gpu=gpu, settings=settings)
-    (out_dir / REPORT_NAME).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(report, out_dir / REPORT_NAME)  # atomic: a killed run never leaves half a report
 
     # 7. smoke: llama-server loads the adapter, and the HF template matches llama-server's
     served_gguf = args.served_gguf or download_served_gguf()

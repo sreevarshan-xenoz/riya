@@ -7,7 +7,6 @@ that slips through teaches her the very habit the dataset exists to remove, so a
 
 Pure and CPU-only. See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.3 and §4."""
 import argparse
-import json
 import re
 import sys
 from collections import Counter
@@ -18,7 +17,7 @@ from evaluation.style_metrics import (STOP, about_me_recalls, asserts_value, cou
                                       has_disclaimer, has_generic, invented_memories, says_ai)
 from riya.core.shaping import CODE_BLOCK, EMOJI, STAGE_WORDS, strip_label
 from riya.train import build_sft
-from riya.train.fmt import read_jsonl, sft_row, validate_request, validate_teacher, write_jsonl
+from riya.train.fmt import read_jsonl_checked, sft_row, validate_request, validate_teacher, write_json, write_jsonl
 from riya.train.scenarios import ATTR_WORDS, value_words
 
 MIN_KEPT_PER_KIND = 40
@@ -529,14 +528,15 @@ def format_report(report: dict) -> str:
             ("missing", "requests without an answer")) if report[k]]
     if odd:
         lines.append("Teacher file: " + ", ".join(odd))
+    dropped = [f"{n} broken last line dropped ({name})" for name, n in report.get("dropped_lines", {}).items() if n]
+    if dropped:
+        lines.append("Files: " + ", ".join(dropped) + " (an interrupted write or copy: check it is complete)")
     lines.append(f"Kept {report['kept']} of {report['total']}.")
     return "\n".join(lines)
 
 
 def _write_report(report: dict, path: Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    write_json(report, path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -550,7 +550,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--allow-stale", action="store_true",
                    help="keep requests built under an older prompt (their fingerprint differs from today's)")
     args = p.parse_args(argv)
-    requests, teacher = read_jsonl(args.requests), read_jsonl(args.teacher)
+    (requests, dropped_requests), (teacher, dropped_teacher) = (read_jsonl_checked(args.requests),
+                                                                read_jsonl_checked(args.teacher))
     for row in requests:
         validate_request(row)
     for row in teacher:
@@ -565,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
     kept, report = filter_rows(requests, teacher, default_style_phrases())
+    report["dropped_lines"] = {"requests": dropped_requests, "teacher": dropped_teacher}
     write_jsonl(kept, args.out)
     _write_report(report, args.report)
     print(format_report(report))

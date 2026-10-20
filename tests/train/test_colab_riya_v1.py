@@ -304,7 +304,7 @@ def test_an_interrupt_drops_the_queue_and_keeps_the_flushed_rows(tmp_path, monke
 def test_filter_sft_reads_the_teacher_file_tolerantly():
     from riya.train import filter_sft, fmt
 
-    assert filter_sft.read_jsonl is fmt.read_jsonl  # the one loader that skips a cut-off last line
+    assert filter_sft.read_jsonl_checked is fmt.read_jsonl_checked  # the one loader that skips a cut-off last line
 
 
 def test_the_teacher_regenerates_after_a_rebuild(tmp_path, monkeypatch, capsys):
@@ -337,3 +337,21 @@ def test_the_teacher_regenerates_after_a_rebuild(tmp_path, monkeypatch, capsys):
     assert f"{len(new) - len(changed)} done, {len(changed)} to generate" in capsys.readouterr().out
     fresh = [r for r in fmt.read_jsonl(out) if r.get("h") in {x["h"] for x in new}]
     assert {r["id"] for r in fresh} == {r["id"] for r in new}
+
+
+def test_every_json_write_is_atomic():
+    """Final-review minor: riya/train, the v0.8 Colab scripts and the champion write JSON/JSONL only through
+    fmt.write_jsonl / fmt.write_json (a temp file, then os.replace) or brain.write_record; the teacher's own
+    append-and-flush is the one exception."""
+    files = [*sorted((ROOT / "riya" / "train").glob("*.py")), ROOT / "colab" / "gen_riya_v1.py",
+             ROOT / "colab" / "train_riya_v1.py", ROOT / "evaluation" / "champion.py"]
+    for f in files:
+        src = f.read_text(encoding="utf-8")
+        if f.name == "fmt.py":
+            src = src.split("def _write_atomic", 1)[0] + src.split("def write_json(", 1)[1].split("\ndef ", 1)[1]
+        assert ".write_text(" not in src and "json.dump(" not in src, f.name
+        assert not __import__("re").search(r"""\.open\(\s*["']w""", src), f.name
+    gen_src = (ROOT / "colab" / "gen_riya_v1.py").read_text(encoding="utf-8")
+    assert 'out.open("a"' in gen_src and "f.flush()" in gen_src  # the teacher appends and flushes each row
+    train_src = (ROOT / "colab" / "train_riya_v1.py").read_text(encoding="utf-8")
+    assert "write_json(" in train_src
