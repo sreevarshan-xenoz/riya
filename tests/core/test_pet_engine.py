@@ -3,6 +3,7 @@ agent_window (looked up at click time, never focused by the core) and the pet se
 PeerOS, no real windows, tables or processes."""
 import json
 import pathlib
+import time
 from datetime import datetime
 
 import pytest
@@ -256,17 +257,21 @@ def test_nothing_focuses_without_a_click(monkeypatch):
         raise AssertionError("the core focused a window")
 
     monkeypatch.setattr(peer, "focus", boom)
+    c = TestClient(create_hook_app(TOKEN, core.take_hook, peers=core.peers))
     events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse",
               "PostToolUseFailure", "Stop", "StopFailure", "SubagentStop", "Notification", "SessionEnd"]
-    for i in range(200):
-        sid = f"s{i % 3}"
-        core.take_hook({"hook_event_name": events[i % len(events)], "session_id": sid, "cwd": "E:/riya",
-                        "tool_name": "Bash", "tool_input": {"command": "ls"}, "notification_type": "permission_prompt"})
+    for i in range(200):  # through the real receiver, so the peer is noted (a SessionStart looks it up afresh)
+        body = {"hook_event_name": events[i % len(events)], "session_id": f"s{i % 3}", "cwd": "E:/riya",
+                "tool_name": "Bash", "tool_input": {"command": "ls"}, "notification_type": "permission_prompt"}
+        assert c.post("/hook", content=json.dumps(body), headers={"X-Riya-Token": TOKEN}).status_code == 200
     for _ in range(30):
         core.clock.advance(1)
         core.tick()
     assert not [m for m in emitted if isinstance(m, AgentWindow)]
-    assert set(os_.calls) <= {"tcp_rows"}, os_.calls  # never windows, processes or created
+    assert "tcp_rows" in os_.calls  # the peers really were noted, so this check has teeth
+    assert set(os_.calls) <= {"tcp_rows", "created"}, os_.calls  # never windows or processes without a click
+    core.handle(FocusAgent(id="s0"), reply=lambda m: None)  # a click is what looks the window up
+    assert "windows" in os_.calls and "processes" in os_.calls
     src = pathlib.Path(engine.__file__).read_text(encoding="utf-8")
     assert "SetForegroundWindow" not in src and "peer.focus" not in src and "import focus" not in src
 
@@ -311,3 +316,109 @@ def test_the_hook_receiver_hands_hooks_to_take_hook():
     runner.start_receiver(core, make=Made)
     assert seen["enqueue"] == core.take_hook and seen["peers"] is core.peers
 
+
+
+def test_rejected_pet_settings_never_echo_the_value():
+    for key, bad in (("pet_scale", "SECRET-VALUE-1"), ("reduced_motion", "SECRET-VALUE-2"),
+                     ("pet_walks_when", "SECRET-VALUE-3"), ("pet_enabled", "SECRET-VALUE-4"),
+                     ("mode", "SECRET-VALUE-5"), ("volume", "SECRET-VALUE-6")):
+        with pytest.raises(ValueError) as e:
+            apply_patch(Settings(), {key: bad})
+        assert "SECRET-VALUE" not in str(e.value) and key in str(e.value)
+
+
+def test_a_bad_item_does_not_lose_the_rest_of_the_tick_s_activity():
+    core, emitted, src, clock = started()
+    real = core.emit
+
+    def flaky(m):
+        if isinstance(m, AgentActivity) and m.session == "s1":
+            raise RuntimeError("emit failed")
+        real(m)
+
+    core.emit = flaky
+    for sid in ("s1", "s2", "s3"):
+        core.take_hook(stop(sid))
+    core.tick()
+    assert [a.session for a in activities(emitted)] == ["s2", "s3"]
+
+
+def test_a_repeated_wave_is_dropped_but_a_new_one_or_one_after_a_tool_goes_out():
+    core, emitted, src, clock = started()
+    for _ in range(50):
+        core.take_hook(ask())
+    core.tick()
+    assert [a.kind for a in activities(emitted)] == ["wave"]  # 50 identical waves: one
+    emitted.clear()
+    core.take_hook(ask(cmd="pytest -q"))  # the same label ("running tests"): a repeat inside the gap
+    core.take_hook(ask(cmd="git push"))  # a new label goes out at once
+    core.tick()
+    assert [a.label for a in activities(emitted)] == ["needs you! running git"]
+    emitted.clear()
+    clock.advance(1.6)
+    core.take_hook(ask(cmd="git push"))  # at least 1.5 s since the last wave
+    core.tick()
+    assert [a.label for a in activities(emitted)] == ["needs you! running git"]
+
+
+def test_activity_keeps_flowing_while_the_tick_thread_is_delivering_a_line(monkeypatch):
+    """Review (Task 3, Important 1): run_ticks delivers on its own thread, so the tick-driven step is frozen. The
+    riya-activity thread still sends a "needs you" wave."""
+    import threading
+
+    from riya.core import __main__ as runner
+    core, emitted, src, clock = started()
+    release, in_delivery = threading.Event(), threading.Event()
+    handed = []
+
+    def fake_tick():
+        if not handed:
+            handed.append(1)
+            return iter(["Heads up."])
+        return None
+
+    def blocking_deliver(sents, loop, gaming=False):
+        in_delivery.set()
+        release.wait(10)
+
+    core.tick = fake_tick  # the tick thread never reaches _activity_step: it is busy speaking
+    monkeypatch.setattr(runner, "deliver", blocking_deliver)
+    ticker = threading.Thread(target=runner.run_ticks, args=(core, runner.Speaker(), lambda: True), daemon=True)
+    stop, activity = runner.start_activity(core, every=0.01)
+    try:
+        ticker.start()
+        assert in_delivery.wait(5)
+        core.take_hook(ask())
+        deadline = time.monotonic() + 1.0
+        while not activities(emitted) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert [(a.kind, a.label) for a in activities(emitted)] == [("wave", "needs you! running tests")]
+        assert activity.name == "riya-activity" and activity.daemon
+    finally:
+        release.set()
+        core.quit_requested.set()
+        stop.set()
+        ticker.join(5)
+        activity.join(5)
+    assert not activity.is_alive() and not ticker.is_alive()
+
+
+def test_the_activity_thread_swallows_errors_and_stops_on_its_event():
+    from riya.core import __main__ as runner
+    core = make_core()[0]
+    calls = []
+
+    def broken(now):
+        calls.append(now)
+        raise RuntimeError("step failed")
+
+    core._activity_step = broken
+    stop, thread = runner.start_activity(core, every=0.01)
+    deadline = time.monotonic() + 2
+    while len(calls) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(calls) >= 3 and thread.is_alive()  # an exception never ends it
+    stop.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert runner.ACTIVITY_EVERY_S == 0.25

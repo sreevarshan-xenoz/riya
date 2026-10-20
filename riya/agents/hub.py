@@ -210,29 +210,38 @@ def activity_of(payload, now: float) -> Activity | None:
 class ActivityGate:
     """At most one activity per session every gap_s; what arrives in between is held, and the latest one wins. A "wave"
     (a PermissionRequest: the agent needs the user) is never held and never replaced: it goes out at once and starts
-    the session's gap, so a PreToolUse right behind it can't delay or overwrite it."""
+    the session's gap, so a PreToolUse right behind it can't delay or overwrite it. Only a repeat is dropped: the same
+    wave label again within the gap while the last thing sent for that session was that wave."""
 
     def __init__(self, gap_s: float = ACTIVITY_GAP_S):
         self.gap_s = gap_s
         self._last: dict[str, float] = {}      # session -> its last send (least recent first)
+        self._what: dict[str, tuple[str, str]] = {}  # session -> (kind, label) of that last send
         self._held: dict[str, Activity] = {}   # session -> the activity waiting (in the order first held)
 
     def __len__(self) -> int:
         return len(self._last)
 
-    def _sent(self, sid: str, now: float) -> None:
+    def _sent(self, act: Activity, now: float) -> None:
+        sid = act.session
         self._last.pop(sid, None)
         self._last[sid] = now
+        self._what[sid] = (act.kind, act.label)
         self._held.pop(sid, None)
 
     def offer(self, act: Activity, now: float) -> Activity | None:
         last = self._last.get(act.session)
+        repeat = (act.kind == "wave" and last is not None and now - last < self.gap_s
+                  and self._what.get(act.session) == ("wave", act.label))
+        if repeat:
+            return None  # the same "needs you" again: nothing is lost
         if last is None or now - last >= self.gap_s or act.kind == "wave":
             if last is None and len(self._last) >= MAX_AGENTS:
                 oldest = next(iter(self._last))
                 del self._last[oldest]
+                self._what.pop(oldest, None)
                 self._held.pop(oldest, None)
-            self._sent(act.session, now)
+            self._sent(act, now)
             return act
         self._held[act.session] = act  # replaces a held one in place: the order stays first-held
         return None
@@ -240,7 +249,7 @@ class ActivityGate:
     def due(self, now: float) -> list[Activity]:
         out = [a for sid, a in self._held.items() if self._last[sid] + self.gap_s <= now]
         for a in out:
-            self._sent(a.session, now)
+            self._sent(a, now)
         return out
 
 

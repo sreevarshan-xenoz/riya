@@ -25,6 +25,14 @@ STOP_PROCESSES = frozenset({"explorer.exe", "svchost.exe", "services.exe", "wini
 CONSOLE_HOSTS = frozenset({"conhost.exe", "openconsole.exe"})
 ESTABLISHED = 5  # MIB_TCP_STATE_ESTAB
 TCP_HINT = 16 * 1024  # the first guess at the TCP table's size
+UNKNOWN_TIME = float("nan")  # PeerOS.created for a process that runs but can't be read (access denied): no comparison
+STILL_ACTIVE = 259  # GetExitCodeProcess of a running process
+ERROR_ACCESS_DENIED = 5
+
+
+def known(t: float | None) -> bool:
+    """A real creation time (not None, not UNKNOWN_TIME)."""
+    return t is not None and t == t
 
 
 @dataclass(frozen=True)
@@ -66,13 +74,15 @@ class PeerOS(Protocol):
         """Visible, unowned, uncloaked top-level windows in z-order, topmost first."""
 
     def created(self, pid: int) -> float | None:
-        """The process creation time (seconds, any fixed epoch), or None when that pid isn't running."""
+        """The process creation time (seconds, any fixed epoch); None when that pid isn't running; UNKNOWN_TIME when it
+        runs but its time can't be read (access denied), so a walk passes it without comparing."""
 
 
 class FakePeerOS:
     """A PeerOS from plain data: the core's default off Windows and in tests. calls records each method used; names in
     raises make that method raise OSError. created maps pid -> creation time; a pid in procs without one is alive at
-    0.0, and a pid in neither is not running."""
+    0.0, and a pid in neither is not running. A time of UNKNOWN_TIME stands for a running process whose time is
+    unreadable."""
 
     def __init__(self, rows: Iterable[TcpRow] = (), procs: Iterable[Proc] = (), wins: Iterable[TopWindow] = (),
                  created: Mapping[int, float] | None = None):
@@ -146,6 +156,8 @@ class WindowsPeerOS:
         k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         k.GetProcessTimes.restype = wintypes.BOOL
         k.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k.GetExitCodeProcess.restype = wintypes.BOOL
+        k.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
         u.EnumWindows.argtypes = [self._ENUMPROC, wintypes.LPARAM]
         u.IsWindowVisible.restype = wintypes.BOOL
         u.IsWindowVisible.argtypes = [wintypes.HWND]
@@ -229,20 +241,22 @@ class WindowsPeerOS:
 
 
     def created(self, pid: int) -> float | None:
-        """The creation time of a running process (FILETIME seconds), None when the pid isn't running or can't be
-        opened. A process that has exited (its exit time is set) isn't running even while a handle keeps it listed."""
+        """The creation time of a running process (FILETIME seconds); None when the pid isn't running; UNKNOWN_TIME when
+        it exists but can't be opened (access denied: a protected or other-user process). A process that has exited
+        isn't running even while a handle keeps it listed (GetExitCodeProcess != STILL_ACTIVE)."""
         c, w, k = self._c, self._w, self._kernel32
         if pid <= 0:
             return None
         handle = k.OpenProcess(self.PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
-            return None
+            return UNKNOWN_TIME if c.get_last_error() == ERROR_ACCESS_DENIED else None
         try:
+            code = w.DWORD(0)
+            if k.GetExitCodeProcess(handle, c.byref(code)) and code.value != STILL_ACTIVE:
+                return None
             made, gone, kern, user = (w.FILETIME() for _ in range(4))
             if not k.GetProcessTimes(handle, c.byref(made), c.byref(gone), c.byref(kern), c.byref(user)):
-                return None
-            if gone.dwHighDateTime or gone.dwLowDateTime:
-                return None
+                return UNKNOWN_TIME
             return ((made.dwHighDateTime << 32) | made.dwLowDateTime) / 1e7
         finally:
             k.CloseHandle(handle)
@@ -266,7 +280,8 @@ def owner_pid(local_port: int, remote_port: int, os_: PeerOS, own_pid: int | Non
 def parent_chain(pid: int, procs: Mapping[int, Proc], created: Callable[[int], float | None] | None = None) -> list[int]:
     """[pid, parent, ...], stopping at a missing pid, a repeat, a pid <= 0, MAX_CHAIN entries, or the first system or
     shell process (explorer and friends), which is excluded. With created (pid -> creation time), it also stops at a
-    process that is not running or was created after its child: a parent born later than its child is a reused pid."""
+    process that is not running or was created after its child: a parent born later than its child is a reused pid. A
+    process with UNKNOWN_TIME is walked past, and the next one is compared with the last known time."""
     chain: list[int] = []
     child_at: float | None = None
     while len(chain) < MAX_CHAIN and pid > 0 and pid not in chain:
@@ -275,9 +290,10 @@ def parent_chain(pid: int, procs: Mapping[int, Proc], created: Callable[[int], f
             break
         if created is not None:
             at = created(pid)
-            if at is None or (child_at is not None and at > child_at):
+            if at is None or (known(at) and child_at is not None and at > child_at):
                 break
-            child_at = at
+            if known(at):
+                child_at = at
         chain.append(pid)
         pid = p.ppid
     return chain
@@ -308,9 +324,10 @@ def window_for_pid(pid: int, folder: str, os_: PeerOS) -> int | None:
 
 def peer_alive(p: Peer, os_: PeerOS) -> bool:
     """The agent a Peer names is still that process: running, and (when its creation time was noted) created at that
-    same time, so a pid that was reused since the hook fired never counts."""
+    same time, so a pid that was reused since the hook fired never counts. An unreadable time on either side can't be
+    compared: running is all that can be checked."""
     at = os_.created(p.pid)
-    return at is not None and (p.created is None or at == p.created)
+    return at is not None and (not known(at) or not known(p.created) or at == p.created)
 
 
 def _folder_of(cwd: str) -> str:
@@ -349,6 +366,8 @@ class PeerMap:
             born = self.created(pid) if self.created is not None else None
         except Exception:
             born = None
+        if not known(born):
+            born = None  # an unreadable time is stored as "not noted"
         with self._lock:
             self._peers.pop(session, None)  # re-stored last: the oldest is the first key
             self._peers[session] = Peer(pid, folder, born)

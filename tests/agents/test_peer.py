@@ -271,3 +271,29 @@ def test_peer_map_stores_the_creation_time_and_keeps_it_on_a_folder_refresh():
     broken = PeerMap(lambda p: 7, lambda pid: (_ for _ in ()).throw(OSError("no")))
     broken.note("t", 1, "E:/riya")
     assert broken.get("t") == Peer(7, "riya", None)  # a failed time read never loses the peer
+
+
+def test_an_unreadable_time_is_walked_past_without_a_comparison():
+    """Access denied: the process runs but its creation time can't be read (UNKNOWN_TIME)."""
+    from riya.agents.peer import UNKNOWN_TIME, known, peer_alive
+    assert not known(UNKNOWN_TIME) and not known(None) and known(0.0)
+    table = procs((4242, 4100, "node.exe"), (4100, 4000, "pwsh.exe"), (4000, 10, "wt.exe"), (10, 1, "explorer.exe"))
+    denied = FakePeerOS(procs=table.values(), created={4242: 300.0, 4100: UNKNOWN_TIME, 4000: 100.0})
+    assert parent_chain(4242, table, denied.created) == [4242, 4100, 4000]
+    # the next process is still compared with the last known time (the child's)
+    young = FakePeerOS(procs=table.values(), created={4242: 300.0, 4100: UNKNOWN_TIME, 4000: 900.0})
+    assert parent_chain(4242, table, young.created) == [4242, 4100]
+    # the agent itself unreadable: still walked
+    me = FakePeerOS(procs=table.values(), created={4242: UNKNOWN_TIME, 4100: 200.0, 4000: 100.0})
+    assert parent_chain(4242, table, me.created) == [4242, 4100, 4000]
+    wins = [TopWindow(77, 4000, "riya - Windows Terminal")]
+    walked = FakePeerOS(procs=table.values(), wins=wins, created={4100: UNKNOWN_TIME, 4242: 300.0, 4000: 100.0})
+    assert window_for_pid(4242, "riya", walked) == 77
+    # peer_alive: running is all that can be checked
+    os_ = FakePeerOS(procs=[Proc(5, 0, "a")], created={5: UNKNOWN_TIME})
+    assert peer_alive(Peer(5, "riya", 10.0), os_) is True and peer_alive(Peer(6, "riya", 10.0), os_) is False
+    assert peer_alive(Peer(5, "riya", UNKNOWN_TIME), FakePeerOS(procs=[Proc(5, 0, "a")], created={5: 3.0})) is True
+    # an unreadable time is stored as "not noted"
+    m = PeerMap.for_os(FakePeerOS(rows=[TcpRow(50000, 8766, 5)], procs=[Proc(5, 0, "a")], created={5: UNKNOWN_TIME}))
+    m.note("s", 50000, "E:/riya")
+    assert m.get("s") == Peer(5, "riya", None)

@@ -34,6 +34,7 @@ from riya.voice_candidates import FEMININE, voice_choices
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOGWATCH_EVERY_S = 60.0
+ACTIVITY_EVERY_S = 0.25  # the riya-activity thread (agent_activity flows while the tick thread speaks)
 DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
@@ -184,6 +185,27 @@ def start_logwatch(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thr
     return stop, thread
 
 
+def run_activity(core: RiyaCore, stop: threading.Event, every: float = ACTIVITY_EVERY_S) -> None:
+    """Little Riya's reactions, every 0.25 s until stop is set. The tick thread also calls the step, but it can be busy
+    delivering a line for many seconds; this keeps agent_activity (a "needs you" wave included) flowing. The step takes
+    its own non-blocking lock, so two callers never collide, and it never touches the core lock."""
+    while not stop.is_set():
+        try:
+            core._activity_step(core.clock.now())
+        except Exception:
+            log.exception("the activity step failed")
+        if stop.wait(every):
+            return
+
+
+def start_activity(core: RiyaCore, **kw) -> tuple[threading.Event, threading.Thread]:
+    """The riya-activity daemon thread; set the returned event to stop it."""
+    stop = threading.Event()
+    thread = threading.Thread(target=run_activity, args=(core, stop), kwargs=kw, name="riya-activity", daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def start_receiver(core: RiyaCore, make=None):
     """The hook receiver, kept up (retried while 8766 is busy) and handed to the core for the settings' status."""
     receiver = (make or HookReceiver)(core.take_hook, peers=core.peers).start()
@@ -202,7 +224,7 @@ def main(argv: list[str] | None = None) -> None:
     server = uvicorn.Server(uvicorn.Config(app, host=DEFAULT_HOST, port=args.port, log_level="warning"))
     thread = threading.Thread(target=server.run, name="riya-ws", daemon=True)
     thread.start()
-    hooks = logwatch = None
+    hooks = logwatch = activity = None
     try:
         while not hasattr(app.state, "core"):
             if not thread.is_alive():
@@ -213,6 +235,7 @@ def main(argv: list[str] | None = None) -> None:
         # hook payloads and log lines cross from their own threads into the core's inboxes; the tick drains them
         hooks = start_receiver(core)
         logwatch = start_logwatch(core)
+        activity = start_activity(core)
         if not args.no_voice:
             try:
                 speaker.loop = build_voice(core, app.state.hub.publish)
@@ -234,6 +257,9 @@ def main(argv: list[str] | None = None) -> None:
         if logwatch is not None:
             logwatch[0].set()
             logwatch[1].join(timeout=5)
+        if activity is not None:
+            activity[0].set()
+            activity[1].join(timeout=5)
         server.should_exit = True
         thread.join(timeout=5)
 
