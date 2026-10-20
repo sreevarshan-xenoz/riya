@@ -179,15 +179,20 @@ function isClick({ dx, dy, ms }) {
 
 const RECENT_ACTIVITY_MS = 600000; // the latest activity names a click target for this long
 
-/** The session a click brings forward: the first Claude session (in the core's order) that needs the user, else the
- *  session of the latest activity if it is recent, listed and not ended, else null. */
-function focusTarget(agents, lastActivity, nowMs) {
+/** The session a click brings forward: the first Claude session (in the core's order) that needs the user; else the
+ *  session of the latest wave; else the session of the latest activity. The last two count while they are recent and the
+ *  session is not listed as ended, and also while it is not listed at all: the activity reaches the body at once, the
+ *  agents list only with the core's next tick, so a click on a fresh wave must not be lost. The core still checks the id
+ *  (an unknown one answers hwnd null, which opens the agents list). */
+function focusTarget(agents, lastActivity, nowMs, lastWave = null) {
   const items = Array.isArray(agents) ? agents.filter((a) => a !== null && typeof a === "object") : [];
   const waiting = items.find((a) => a.kind === "claude" && a.needs_attention === true);
   if (waiting) return waiting.id;
-  if (lastActivity && nowMs - lastActivity.atMs <= RECENT_ACTIVITY_MS) {
-    const known = items.find((a) => a.id === lastActivity.session);
-    if (known && known.status !== "ended") return known.id;
+  for (const seen of [lastWave, lastActivity]) {
+    if (!seen || typeof seen.session !== "string" || !(nowMs - seen.atMs <= RECENT_ACTIVITY_MS)) continue;
+    const known = items.find((a) => a.id === seen.session);
+    if (!known) return seen.session;
+    if (known.status !== "ended") return known.id;
   }
   return null;
 }
@@ -246,6 +251,21 @@ function petVisibilityAction(paused, visible) {
   return null;
 }
 
+/** A wave that is still current is worth showing when her window shows again: it is as old as her wave pose lasts. */
+const HELD_WAVE_MS = 6000;
+
+/** What is kept of a reaction that arrives while her window is hidden: only a wave (the badge carries the rest). Anything
+ *  else is dropped, so nothing stale replays when she shows again. Returns the new held wave. */
+function holdWhileHidden(held, kind, label, nowMs) {
+  return kind === "wave" ? { label, atMs: nowMs } : held;
+}
+
+/** On show: the held wave as a `{ kind, label }` reaction while it is still current, else null. */
+function heldReactionOnShow(held, nowMs) {
+  if (!held || !(nowMs - held.atMs <= HELD_WAVE_MS)) return null;
+  return { kind: "wave", label: held.label };
+}
+
 /** Start the focus helper through the injected `spawn` (execFile in main) with fixed options. A failure (a non-zero exit, a
  *  spawn error or a throw) calls onFailed, but only while isCurrent() says this is still the current click's helper, so a
  *  stale one opens nothing. Returns false, spawning nothing, without a command. */
@@ -268,6 +288,7 @@ function moveRect(frame, size) {
 module.exports = {
   MAIN_ONLY, rendererMayRequest, CLICK_SLOP_DIP, CLICK_MS, isClick, RECENT_ACTIVITY_MS, focusTarget, clickAction,
   FOCUS_WAIT_MS, decideFocus, focusCommand, petMenuItems, reducedMotionPatch, moveRect, petVisibilityAction, runFocusHelper,
+  HELD_WAVE_MS, holdWhileHidden, heldReactionOnShow,
   MODES, REPLAY_TYPES, NOW_ONLY, FORGET_ON_DISCONNECT, DONT_LOOK_HOTKEYS, QUIT_FLUSH_MS, pickHotkey, modeToApply, repositionTarget, shouldSendToCore,
   quitDelay, rememberForReplay, forgetOnDisconnect, toPhysical, toDip, displayConverter, KEY_URL, shouldOpenWelcome,
   welcomeClosedMessage, ipcAllowed, welcomeWebPreferences, QUIT_EVENTS, isQuitEvent,
