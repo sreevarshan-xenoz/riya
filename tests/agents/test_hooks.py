@@ -319,3 +319,36 @@ def test_a_free_port_serves_at_once_with_no_retry_thread(tmp_path):
         assert receiver.ok and receiver._retry is None
     finally:
         receiver.stop()
+
+
+def test_a_pre_tool_use_post_is_an_empty_fast_200_even_when_it_is_the_hot_path(tmp_path):
+    """PreToolUse fires before every tool call: the receiver must still answer an empty 200 at once."""
+    got, port = [], free_port()
+    started = start_hook_receiver(got.append, token_path=tmp_path / "tok", port=port)
+    assert started is not None
+    server, thread = started
+    payload = {"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": "E:/riya", "tool_name": "Bash",
+               "tool_input": {"command": "git status"}}
+    try:
+        token = (tmp_path / "tok").read_text().strip()
+        url = f"http://127.0.0.1:{port}/hook"
+        for _ in range(50):
+            try:
+                httpx.post(url, content=json.dumps(payload), headers={"X-Riya-Token": token}, timeout=2)
+                break
+            except httpx.TransportError:
+                time.sleep(0.1)
+        else:
+            pytest.fail("receiver never answered")
+        with httpx.Client(timeout=2) as client:
+            took = []
+            for _ in range(10):
+                t = time.perf_counter()
+                r = client.post(url, content=json.dumps(payload), headers={"X-Riya-Token": token})
+                took.append(time.perf_counter() - t)
+                assert r.status_code == 200 and r.content == b""
+        assert max(took) < 0.5 and sorted(took)[len(took) // 2] < 0.1
+        assert got and all(g == payload for g in got) and len(got) == 11
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
