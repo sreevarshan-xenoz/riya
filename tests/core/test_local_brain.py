@@ -213,9 +213,36 @@ def test_engine_withholds_the_switch_without_a_record(tmp_path):
     assert core.settings.local_adapter is None
 
 
-@pytest.mark.parametrize("fix", ["use_base", "use_riya_v1"])
-def test_the_fixes_are_listed(fix):
-    assert fix in health.FIXES
+def test_the_fixes_are_listed():
+    assert health.FIXES[-2:] == ("use_base", "use_riya_v1")  # appended last, in this order (the v0.7 order holds)
+    assert health.FIXES[:-2] == ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect",
+                                 "hooks_disconnect", "autostart")
+    assert len(set(health.FIXES)) == len(health.FIXES)
+
+
+@pytest.mark.parametrize("action", ["use_base", "use_riya_v1"])
+@pytest.mark.parametrize("args", [{"path": "C:/evil/other.gguf"}, {"local_adapter": "C:/evil/other.gguf"},
+                                  {"adapter_path": "C:/evil/other.gguf"}, {"on": True}, {"local_adapter": None}])
+def test_crafted_args_are_rejected(tmp_path, action, args):
+    """The switch takes no arguments: a crafted one can never pick the adapter path (or anything else)."""
+    from riya.core.setup import ARGS, SetupError
+
+    assert action not in ARGS
+    s, host, deps, results = make_setup(tmp_path)
+    adapter(tmp_path, ADOPT)  # a vetted adapter is there, so only the args could make it fail
+    with pytest.raises(SetupError, match=f"bad arguments for {action}"):
+        s.request(action, args)
+    assert host.patches == [] and results == []
+
+
+def test_crafted_args_through_the_core_change_nothing(tmp_path):
+    deps = SetupDeps.sandboxed(tmp_path)
+    core, emitted, *_ = make_core(setup_deps=deps)
+    adapter(tmp_path, ADOPT)
+    mark = len(emitted)
+    core.handle(SetupRequest(action="use_riya_v1", args={"path": "C:/evil/other.gguf"}))
+    assert not [m for m in emitted[mark:] if isinstance(m, (SettingsMsg, SetupResult))]
+    assert core.settings.local_adapter is None
 
 
 def test_local_row_names_an_unvetted_wanted_adapter(tmp_path):
