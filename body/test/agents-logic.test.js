@@ -117,7 +117,7 @@ test("an agents fixture is a valid shape for the helpers", () => {
 
 test("agent text only reaches the DOM through textContent: no HTML sinks in the body scripts, and the scripts load in order", () => {
   const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
-  for (const f of ["renderer.js", "settings.js", "welcome.js", "src/agents-logic.js", "src/settings-logic.js", "src/hands-logic.js", "src/learning-logic.js", "src/health-logic.js", "src/welcome-logic.js", "src/bubble.js"]) {
+  for (const f of ["renderer.js", "settings.js", "welcome.js", "src/agents-logic.js", "src/settings-logic.js", "src/hands-logic.js", "src/learning-logic.js", "src/health-logic.js", "src/welcome-logic.js", "src/bubble.js", "src/pet-logic.js", "src/effects-logic.js"]) {
     assert.doesNotMatch(read(f), /innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment/, f);
   }
   const before = (html, a, b) => html.indexOf(a) !== -1 && html.indexOf(a) < html.indexOf(b);
@@ -125,6 +125,12 @@ test("agent text only reaches the DOM through textContent: no HTML sinks in the 
   assert.ok(before(read("settings.html"), "src/agents-logic.js", "src/settings-logic.js"));
   assert.ok(before(read("index.html"), "src/hands-logic.js", "renderer.js"));
   assert.ok(before(read("index.html"), "src/bubble.js", "renderer.js"));
+  assert.ok(before(read("index.html"), "src/stage-logic.js", "src/pet-logic.js"));
+  assert.ok(before(read("index.html"), "src/pet-logic.js", "src/effects-logic.js"), "effects-logic reads RiyaPet at load");
+  assert.ok(before(read("index.html"), "src/effects-logic.js", "renderer.js"), "renderer.js reads RiyaEffects at load");
+  // agent activity labels reach the DOM as text only, never as markup
+  assert.match(read("renderer.js"), /activity\.textContent = /);
+  assert.doesNotMatch(read("renderer.js"), /activity\.(innerHTML|outerHTML)/);
   assert.ok(before(read("settings.html"), "src/hands-logic.js", "settings.js"));
   assert.ok(before(read("settings.html"), "src/hands-logic.js", "src/settings-logic.js"), "settings-logic reads RiyaHands at load");
   assert.ok(before(read("settings.html"), "src/learning-logic.js", "settings.js"), "settings.js reads RiyaLearning at load");
@@ -179,4 +185,16 @@ test("the settings page shows the receiver problems in their own row", () => {
   const js = fs.readFileSync(path.join(__dirname, "..", "settings.js"), "utf8");
   assert.match(html, /id="agents-receiver"/);
   assert.match(js, /receiverProblems\(/);
+});
+
+test("badgeView: the count, and a highlighted needs-you state while her wave is current", () => {
+  assert.deepEqual(A.badgeView(0, false), { hidden: true, text: "", needsYou: false, label: "" });
+  assert.deepEqual(A.badgeView(1, false), { hidden: false, text: "1", needsYou: false, label: "1 agent needs you" });
+  assert.deepEqual(A.badgeView(3, false), { hidden: false, text: "3", needsYou: false, label: "3 agents need you" });
+  assert.equal(A.badgeView(10, false).text, "9+");
+  assert.deepEqual(A.badgeView(2, true), { hidden: false, text: "2", needsYou: true, label: "2 agents need you" });
+  // the agents list hasn't caught up with the wave yet: the "!" badge still carries "needs you"
+  assert.deepEqual(A.badgeView(0, true), { hidden: false, text: "!", needsYou: true, label: "An agent needs you" });
+  for (const bad of [NaN, -1, 1.5, "2", undefined, null, Infinity]) assert.equal(A.badgeView(bad, false).hidden, true, String(bad));
+  assert.equal(A.badgeView(0, "yes").hidden, true, "only a true wave counts");
 });

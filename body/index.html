@@ -11,11 +11,15 @@
 <div id="app">
   <div id="stage">
     <div id="sprite-box">
-      <div id="sprite">
-        <img class="layer" id="layer-a" alt="">
-        <img class="layer" id="layer-b" alt="">
+      <div id="pet">
+        <div id="sprite">
+          <img class="layer" id="layer-a" alt="">
+          <img class="layer" id="layer-b" alt="">
+        </div>
       </div>
     </div>
+    <canvas id="effects" aria-hidden="true"></canvas>
+    <div id="activity" hidden></div>
     <div id="bubble" hidden></div>
     <div id="confirm" hidden role="alertdialog" aria-labelledby="confirm-text">
       <p id="confirm-text"></p>
@@ -47,6 +51,8 @@
 <script src="src/hit-test.js"></script>
 <script src="src/bubble.js"></script>
 <script src="src/stage-logic.js"></script>
+<script src="src/pet-logic.js"></script>
+<script src="src/effects-logic.js"></script>
 <script src="src/agents-logic.js"></script>
 <script src="src/hands-logic.js"></script>
 <script src="renderer.js"></script>

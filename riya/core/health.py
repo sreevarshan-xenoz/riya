@@ -324,6 +324,9 @@ def check_claude_code(ctx: HealthCtx) -> HealthItem:
         return HealthItem("claude_code", "off", "Not connected.", "hooks_connect")
     if blocked := install_hooks.blockers(data):  # only the user changes those keys: no fix button
         return HealthItem("claude_code", "warn", f"Hooks are blocked by your Claude Code settings: {'; '.join(blocked)}")
+    # a pre-v0.9 install holds all but PreToolUse: Connect (confirm-gated, it adds only what is missing) is the fix
+    if missing := [e for e, _ in install_hooks.EVENTS if e not in install_hooks.riya_events(data)]:
+        return HealthItem("claude_code", "warn", f"Partly connected: missing {', '.join(missing)}", "hooks_connect")
     seen = ctx.hooks_seen_at
     if seen is not None and ctx.now - seen <= CONNECTED_S:
         return HealthItem("claude_code", "ok", f"Connected · last event {_t(ctx, seen)}", "hooks_disconnect")

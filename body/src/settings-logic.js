@@ -9,14 +9,18 @@ const Hands = typeof require === "function" ? require("./hands-logic") : globalT
 const MODES = ["buddy", "panel", "window"];
 const VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 const BOOL_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-  "eyes_enabled", "hands_online", "learning_enabled"];
+  "eyes_enabled", "hands_online", "learning_enabled", "pet_enabled"];
 const DENY_PATTERN_KEYS = ["eyes_deny_titles", "eyes_deny_processes"];
 const INT_RANGES = { glance_daily_cap: [1, 1000], glance_min_gap_s: [10, 3600] }; // tighter than the core's limits
 const MAX_PATTERNS = 100; // the core's limits
 const MAX_DENY_PATTERN_LEN = 300;
+const PET_SCALE_RANGE = [0.4, 1.0];
+const PET_SCALE_ERROR = "Pick a size from 0.4 to 1.0.";
+const REDUCED_MOTION_CHOICES = ["system", "on", "off"];
+const PET_WALKS_CHOICES = ["idle", "always_but_focus"];
 const HANDS_KEYS = ["tools_enabled", "tools_ask", "apps", "commands", "weather_place"];
 const SETTING_KEYS = ["mode", "voice", "volume", "quiet_hours", ...BOOL_KEYS, ...Object.keys(INT_RANGES), ...DENY_PATTERN_KEYS, "agent_logs",
-  ...HANDS_KEYS];
+  ...HANDS_KEYS, "pet_scale", "reduced_motion", "pet_walks_when"];
 const QUIET_RE = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const QUIET_ERROR = "Use HH:MM-HH:MM (24-hour), like 23:30-08:00, or leave it empty to turn quiet hours off.";
 const DATE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -110,6 +114,19 @@ function settingPatch(key, raw) {
     const r = Agents.validateAgentLogs(raw);
     return r.ok ? { ok: true, patch: { agent_logs: r.logs } } : r;
   }
+  if (key === "pet_scale") {
+    const n = typeof raw === "string" ? (raw.trim() ? Number(raw) : NaN) : typeof raw === "number" ? raw : NaN;
+    if (!Number.isFinite(n) || n < PET_SCALE_RANGE[0] || n > PET_SCALE_RANGE[1]) return { ok: false, error: PET_SCALE_ERROR };
+    return { ok: true, patch: { pet_scale: Math.round(n * 20) / 20 } }; // steps of 0.05
+  }
+  if (key === "reduced_motion") {
+    return REDUCED_MOTION_CHOICES.includes(raw) ? { ok: true, patch: { reduced_motion: raw } }
+      : { ok: false, error: "Pick follow Windows, keep her still or let her move." };
+  }
+  if (key === "pet_walks_when") {
+    return PET_WALKS_CHOICES.includes(raw) ? { ok: true, patch: { pet_walks_when: raw } }
+      : { ok: false, error: "Pick when she may walk." };
+  }
   if (key === "weather_place") {
     const place = typeof raw === "string" ? raw.trim() : null;
     if (place === null) return { ok: false, error: "Enter a place name." };
@@ -125,6 +142,19 @@ function settingPatch(key, raw) {
     return r.ok ? { ok: true, patch: { commands: r.commands } } : r;
   }
   return { ok: false, error: `${key} can't be changed here.` };
+}
+
+/** What the Little Riya controls show for the core's settings: the size (number and "NN%" text) and the two choices,
+ *  each null when the core sent nothing usable (the control is then left alone). */
+function petControls(s) {
+  const o = s && typeof s === "object" ? s : {};
+  const scale = typeof o.pet_scale === "number" && Number.isFinite(o.pet_scale) ? o.pet_scale : null;
+  return {
+    scale,
+    scaleText: scale === null ? null : `${Math.round(scale * 100)}%`,
+    reducedMotion: REDUCED_MOTION_CHOICES.includes(o.reduced_motion) ? o.reduced_motion : null,
+    walksWhen: PET_WALKS_CHOICES.includes(o.pet_walks_when) ? o.pet_walks_when : null,
+  };
 }
 
 /** Options for the voice <select>: the core's voice `list` (the static VOICES until a non-empty list of names arrives),
@@ -235,7 +265,7 @@ class ErrorRouter {
 }
 
 const settingsExports = {
-  MODES, VOICES, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
+  MODES, VOICES, REDUCED_MOTION_CHOICES, PET_WALKS_CHOICES, petControls, QUIET_ERROR, NO_HOTKEY, sourceLabel, formatWhen, validateQuietHours, settingPatch, voiceOptions, hotkeyText,
   episodeText, dueText, memoryLists, ErrorRouter, DeferWhileFocused, parsePatternLines, eyesCountText, eyesStatusText, glanceRows,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = settingsExports;

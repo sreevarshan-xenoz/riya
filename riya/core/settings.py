@@ -22,6 +22,9 @@ MAX_APPS, MAX_COMMANDS, MAX_HANDS_NAME, MAX_TARGET, MAX_ARGV, MAX_PLACE = 50, 20
 COMMAND_KEYS = ("name", "argv", "cwd", "timeout_s")
 TIMEOUT_RANGE = (1, 60)  # seconds
 MAX_ADAPTER_PATH = 260
+PET_SCALE_RANGE = (0.4, 1.0)
+REDUCED_MOTION = ("system", "on", "off")
+PET_WALKS_WHEN = ("idle", "always_but_focus")
 
 
 def _default_tools() -> dict[str, bool]:
@@ -58,6 +61,10 @@ class Settings:
     learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
     onboarded: bool = False  # the welcome was finished or skipped (true for users from before v0.7)
     local_adapter: str | None = None  # her fine-tuned LoRA (.gguf) for the local model; None serves the base model
+    pet_enabled: bool = True  # Little Riya in buddy mode; off is exactly the v0.8 buddy
+    pet_scale: float = 0.6
+    reduced_motion: str = "system"  # follows the renderer's prefers-reduced-motion, or "on" / "off"
+    pet_walks_when: str = "idle"  # idle: after 30 s without input; always_but_focus: after 5 s
 
 
 def load_settings(kv: KV) -> Settings:
@@ -175,12 +182,18 @@ def _check(key: str, v) -> None:
         ok = _check_commands(v)
     elif key == "local_adapter":
         ok = v is None or _check_adapter_path(v)
+    elif key == "pet_scale":
+        ok = (_is_int(v) or isinstance(v, float)) and PET_SCALE_RANGE[0] <= v <= PET_SCALE_RANGE[1]
+    elif key == "reduced_motion":
+        ok = v in REDUCED_MOTION
+    elif key == "pet_walks_when":
+        ok = v in PET_WALKS_WHEN
     elif key == "weather_place":
         ok = v is None or _text(v, MAX_PLACE)
     else:
         ok = isinstance(v, bool)
     if not ok:
-        raise ValueError(f"invalid value for setting {key!r}: {v!r}")
+        raise ValueError(f"invalid value for setting {key!r}")  # never the value: the error goes to every connection
 
 
 def apply_patch(s: Settings, patch: dict) -> Settings:

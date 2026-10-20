@@ -16,7 +16,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from riya.agents.hub import AgentEvent, AgentHub, summarize
+from riya.agents.hub import ActivityGate, AgentEvent, AgentHub, activity_of, summarize
+from riya.agents.peer import FakePeerOS, PeerMap, PeerOS, peer_alive, window_for_pid
 from riya.core import games, health
 from riya.core import secrets as keystore
 from riya.core.appraise import SENTENCE_END
@@ -44,15 +45,15 @@ from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_S
                               agents_block, bid_situation, build_messages, cant_see_situation, eyes_block,
                               greeting_reports, greeting_situation, hands_situation, likes_block, remember_situation,
                               reminders_block, report_bubble, report_line, report_situation, style_line, tool_turn)
-from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentInfo,
-                                AgentsMsg, Confirm, ConfirmDone, ConfirmRequest, DialInfo, DontLook, EpisodeDelete,
-                                ErrorMsg, ExpressionMsg, EyesMsg, GetMemories, GlanceDelete, GlanceInfo, HealthGet,
-                                HealthItemInfo, HealthMsg, Hello, LearningMsg, LearningReset, Look, MemoriesMsg,
-                                MemoryCorrect, MemoryDelete, NoteDelete, NoteInfo, OnboardingDone, QuitCore,
-                                ReminderCancel, ReminderInfo, RemindersMsg, Say, SayEnd, SetSettings, SettingsMsg,
-                                SetupAction, SetupConfirm, SetupRequest, SetupResult, StateMsg, StyleNoteDelete,
-                                StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo, TranscriptDelete, TwinInfo,
-                                TwinReset, VoicesMsg)
+from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentActivity,
+                                AgentInfo, AgentsMsg, AgentWindow, Confirm, ConfirmDone, ConfirmRequest, DialInfo,
+                                DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg, EyesMsg, FocusAgent, GetMemories,
+                                GlanceDelete, GlanceInfo, HealthGet, HealthItemInfo, HealthMsg, Hello, LearningMsg,
+                                LearningReset, Look, MemoriesMsg, MemoryCorrect, MemoryDelete, NoteDelete, NoteInfo,
+                                OnboardingDone, PresenceMsg, QuitCore, ReminderCancel, ReminderInfo, RemindersMsg, Say,
+                                SayEnd, SetSettings, SettingsMsg, SetupAction, SetupConfirm, SetupRequest, SetupResult,
+                                StateMsg, StyleNoteDelete, StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo,
+                                TranscriptDelete, TwinInfo, TwinReset, VoicesMsg)
 from riya.core.router import Router, needs_thinking
 from riya.core.secrets import KeyInfo
 from riya.core.settings import (Settings, apply_patch, default_startup_dir, in_quiet_hours, load_settings,
@@ -230,14 +231,15 @@ class RiyaCore:
                  window_source: WindowSource | None = None, grab: Callable[[WindowInfo], bytes] = grab_jpeg,
                  body_present: Callable[[], bool] = lambda: True, effects=None, http=None,
                  riya_dir: str | Path | None = None, tz=None, setup_deps: SetupDeps | None = None,
-                 local_url: str | None = None):
+                 local_url: str | None = None, peer_os: PeerOS | None = None):
         """vision: the online model instance her eyes use (glances and screen questions); None means she can't see.
         window_source and grab: the foreground window and its pixels (JPEG bytes, in memory only). body_present: a
         body is connected (her eyes stay shut without one). effects and http: her hands on the OS and the network
         (None: she has none, and every such tool fails kindly; the runner passes the real ones). riya_dir: the only
         folder write_file writes into. tz: the zone for times she parses and for quiet hours (None: the machine's).
         setup_deps: what the Health page's actions touch (the key file, Claude Code's settings, the installer's runner,
-        the voice list); None sandboxes them all under riya_dir. local_url: llama-server's base URL, for Health."""
+        the voice list); None sandboxes them all under riya_dir. local_url: llama-server's base URL, for Health. peer_os:
+        the process, TCP and window tables behind the agents' windows (None: a fake with nothing in it)."""
         self.clock, self.local, self.online, self.emit = clock, local, online, emit
         self.effects, self.http, self.tz = effects, http, tz
         self.riya_dir = Path(riya_dir) if riya_dir is not None else default_riya_dir()
@@ -315,6 +317,12 @@ class RiyaCore:
         self.agents = AgentHub(clock)
         self.agent_inbox: queue.SimpleQueue = queue.SimpleQueue()  # Claude Code hook payloads (dicts)
         self.colab_inbox: queue.SimpleQueue = queue.SimpleQueue()  # (run name, kind, line) from LogWatch.poll
+        # Little Riya's reactions: the same hook payloads (take_hook), drained by _activity_step before the core lock is
+        # tried, so a long reply never delays one. The gate and the drain are under _activity_lock, never _lock
+        self.activity_inbox: queue.SimpleQueue = queue.SimpleQueue()
+        self.activity_gate = ActivityGate()
+        self._activity_lock = threading.Lock()
+        self._presence_sent: str = self.presence.state
         self._reports = self._load_reports()  # pending, per agent only the newest: {agent_id: (event, at)}
         self._reports_saved = self._report_rows()
         self._greet_reports: list[tuple[AgentEvent, float]] = []  # folded into the greeting about to be said
@@ -331,6 +339,8 @@ class RiyaCore:
         self._expression = self._face()
         # v0.7: Health and setup. Checks and actions run on their own threads, never under the core lock
         self.local_url = local_url or ""
+        self.peer_os = peer_os if peer_os is not None else FakePeerOS()
+        self.peers = PeerMap.for_os(self.peer_os)  # session -> its agent's pid, noted by the hook receiver
         self.voice_sampler: Callable[[str, str], None] | None = None  # the voice loop's sample, set by the runner
         self.mic_prober: Callable[[], tuple[bool, str]] | None = None  # riya.voice.probe_mic, set by the runner
         self.health_http = health.default_http_get
@@ -1211,7 +1221,13 @@ class RiyaCore:
             log.exception("couldn't send the reminders")
 
     # ---- time ---------------------------------------------------------------------------------------
+    def take_hook(self, payload: dict) -> None:
+        """The hook receiver's enqueue: one payload to the agents hub's inbox and to the pet's. Never blocks."""
+        self.agent_inbox.put(payload)
+        self.activity_inbox.put(payload)
+
     def tick(self) -> Utterance | None:
+        self._activity_step(self.clock.now())  # before the lock: activity flows while she speaks
         if not self._lock.acquire(blocking=False):  # a reply or greeting is running: catch up on the next tick
             return None
         try:
@@ -1226,6 +1242,7 @@ class RiyaCore:
         """Each step is guarded on its own, so one failing step can't starve the others."""
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
+        self._step("presence msg", self._emit_presence)
         self._step("agents", lambda: self._agents_step(now))
         self._step("confirm", self._confirm_step)
         action = self._step("greeting", lambda: self._greeting(events, now))
@@ -1595,6 +1612,57 @@ class RiyaCore:
             self._reports[ev.agent_id] = (ev, now)
         self._reports = {k: v for k, v in self._reports.items() if now - v[1] < REPORT_MAX_AGE_S}
         self._emit_agents()
+
+    def _activity_step(self, now: float) -> None:
+        """Drains the pet's inbox (at most DRAIN_MAX payloads), turns each into an activity, rate-limits it per session
+        (the latest wins) and sends what the gate lets through, plus whatever was held and is due. Skipped when another
+        thread is in it. Never raises. "Needs you" does not depend on this: the hub's agents message carries it too. tick() calls it, and so
+        does the riya-activity thread (__main__.run_activity), so it keeps flowing while the tick thread speaks."""
+        if not self._activity_lock.acquire(blocking=False):
+            return
+        try:
+            out = []
+            for _ in range(DRAIN_MAX):
+                try:
+                    payload = self.activity_inbox.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    act = activity_of(payload, now)
+                    if act is not None and (sent := self.activity_gate.offer(act, now)) is not None:
+                        out.append(sent)
+                except Exception:
+                    log.exception("couldn't take an activity")
+            out += self.activity_gate.due(now)
+            for a in out:  # one bad item never loses the rest (the gate has already counted them as sent)
+                try:
+                    self.emit(AgentActivity(session=a.session, label=a.label, kind=a.kind, at=a.at))
+                except Exception:
+                    log.exception("couldn't send an activity")
+        except Exception:
+            log.exception("activity step failed")
+        finally:
+            self._activity_lock.release()
+
+    def _emit_presence(self) -> None:
+        """presence, only when it changed since the last one sent."""
+        state = self.presence.state
+        if state != self._presence_sent:
+            self._presence_sent = state
+            self.emit(PresenceMsg(state=state))
+
+    def _agent_window(self, session: str) -> int | None:
+        """The agent's window now (the click just happened), or None: unknown session, the process is gone or its pid
+        was reused, no window in its chain, or any failure. Touches only PeerMap and peer_os, so it needs no lock. It
+        looks the window up and nothing else: only the body's own helper ever focuses."""
+        try:
+            p = self.peers.get(session)
+            if p is None or not peer_alive(p, self.peer_os):
+                return None
+            return window_for_pid(p.pid, p.folder, self.peer_os)
+        except Exception:
+            log.exception("couldn't find the agent's window")
+            return None
 
     def _report_step(self, now: float) -> "Utterance | bool | None":
         """Delivers the pending agent reports with manners, everything pending merged into one line, at most one
@@ -2008,6 +2076,9 @@ class RiyaCore:
                 self.memory.delete_glance(msg.id)
             elif isinstance(msg, NoteDelete):
                 self.hands.delete_note(msg.id)
+            elif isinstance(msg, FocusAgent):
+                send(AgentWindow(id=msg.id, hwnd=self._agent_window(msg.id)))
+                return
             elif isinstance(msg, Confirm):
                 self._confirm_button(msg.id, msg.yes)
                 return

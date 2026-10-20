@@ -4,16 +4,24 @@
  *
  *  Nothing runs per display frame: breathing and lean are a 15 Hz timer that only writes a changed transform, and
  *  frames, bubble and status update on core messages plus one timer for the next deadline (blink start or end, mouth
- *  silence, bubble or error expiry). Everything pauses while the page is hidden; gaming freezes the idle motion. */
+ *  silence, bubble or error expiry). Everything pauses while the page is hidden; gaming freezes the idle motion.
+ *
+ *  Little Riya (buddy mode with the pet on): main owns her state machine and sends a view (pose, facing, walk motion,
+ *  activity bubble, effect). The renderer only draws it: the pose transform on #pet, the pose's expression, the walk
+ *  frames, the activity label (textContent only: it comes from agent activity) and one 30 Hz effects timer that exists
+ *  only while an effect is playing. Every use of a view sits behind petActive(); without a view she is the v0.8 buddy.
+ *  Reduced motion draws static poses: no walking animation, no bounce, no confetti. */
 (() => {
   const { frameFor, leanFor, BlinkScheduler } = RiyaSprite;
   const { isOpaqueAt, toImageCoords, buddyClickable } = RiyaHitTest;
   const { reminderItems, reminderDue } = RiyaHands;
   const { BubbleModel } = RiyaBubble;
-  const { agentChip, relativeAge, badgeCount, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
+  const { agentChip, relativeAge, badgeCount, badgeView, sortAgents, agentTitle, ageRefreshDue, AGE_REFRESH_MS, agentsWhileConnected } = RiyaAgents;
   const {
     ExpressionModel, MouthTracker, StatusLine, Motion, cropBox, buddySpriteBox, idleAnimates, nextDeadline, isSettingsError,
   } = RiyaStage;
+  const { PET, petTransformCss, walkFrame, mirrorForFacing, waveCurrent, activityText } = RiyaPet;
+  const { EFFECT_HZ, EFFECTS, particles, particlesAt, effectDone } = RiyaEffects;
 
   const mode = ["buddy", "panel", "window"].includes(window.riya.mode) ? window.riya.mode : "buddy";
   const MAX_LOG_ENTRIES = 300;
@@ -25,8 +33,12 @@
   const $ = (id) => document.getElementById(id);
 
   document.body.classList.add(`mode-${mode}`);
+  // her window's room above the sprite is written once, here, for every pet rule in styles.css
+  document.documentElement.style.setProperty("--pet-bubble-room", `${PET.BUBBLE_ROOM}px`);
+  document.documentElement.style.setProperty("--pet-effects-room", `${PET.EFFECTS_ROOM}px`);
   const els = {
-    box: $("sprite-box"), sprite: $("sprite"), bubble: $("bubble"), status: $("status"),
+    box: $("sprite-box"), pet: $("pet"), sprite: $("sprite"), bubble: $("bubble"), status: $("status"),
+    activity: $("activity"), effects: $("effects"),
     log: $("log"), form: $("composer"), input: $("input"), layers: [$("layer-a"), $("layer-b")],
     agents: $("agents"), agentList: $("agents-list"), badge: $("agent-badge"),
     confirm: $("confirm"), confirmText: $("confirm-text"), reminders: $("reminders"), reminderList: $("reminders-list"),
@@ -40,6 +52,12 @@
   const blink = new BlinkScheduler();
   const motion = new Motion();
   const feelings = { presence: null, curiosity: 0 };
+  let petView = null; // main's latest view of her (pose, facing, motion, bubble, effect); OFF_VIEW when she is off
+  /** Her view is in use only while it says she is on: an OFF_VIEW, or no view yet, draws exactly as the v0.8 buddy. */
+  function petActive() {
+    return Boolean(petView && petView.on);
+  }
+  const petLayout = () => mode === "buddy" && document.body.classList.contains("pet");
   let look = null; // the core's latest `look`: which side her window is on, and whether she is watching it
   let connected = false;
   expression.setConnected(false);
@@ -78,6 +96,13 @@
     if (!manifest) return;
     const { width, height } = manifest.canvas;
     els.box.style.setProperty("--ar", String(width / height));
+    if (petLayout()) {
+      // her window is the sprite under PET.BUBBLE_ROOM + PET.EFFECTS_ROOM DIP of bubble and effects room (main's petSize)
+      const spriteH = Math.max(1, window.innerHeight - (PET.BUBBLE_ROOM + PET.EFFECTS_ROOM));
+      els.box.style.width = `${(spriteH * width) / height}px`;
+      els.box.style.height = `${spriteH}px`;
+      return;
+    }
     if (mode === "buddy") {
       // the bubble grows upward from its anchored bottom (styles.css), so her face stays below a 40vh bubble
       const bubbleBottom = window.innerHeight - (parseFloat(getComputedStyle(els.bubble).bottom) || 0);
@@ -100,12 +125,13 @@
   }
 
   function preload(pack) {
-    for (const frames of Object.values(pack.expressions)) {
-      for (const url of Object.values(frames)) {
-        const img = new Image();
-        img.src = url;
-        preloaded.push(img);
-      }
+    const urls = [];
+    for (const frames of Object.values(pack.expressions)) urls.push(...Object.values(frames));
+    if (mode === "buddy") for (const frames of Object.values(pack.motions || {})) urls.push(...frames);
+    for (const url of urls) {
+      const img = new Image();
+      img.src = url;
+      preloaded.push(img);
     }
   }
 
@@ -138,8 +164,9 @@
   function overSprite(clientX, clientY) {
     if (!manifest) return false;
     const rect = els.box.getBoundingClientRect();
-    const p = toImageCoords(rect, hit.w || 1, hit.h || 1, clientX, clientY);
+    let p = toImageCoords(rect, hit.w || 1, hit.h || 1, clientX, clientY);
     if (!p) return false;
+    if (petActive() && petView.facing === -1) p = mirrorForFacing(p, hit.w || 1, -1); // #pet is mirrored, so is her mask
     if (hit.blocked) return p.x >= 0 && p.y >= 0 && p.x < (hit.w || 1) && p.y < (hit.h || 1);
     return hit.data ? isOpaqueAt(hit.data, hit.w, p.x, p.y) : false;
   }
@@ -182,6 +209,11 @@
       window.riya.dragStart();
     });
     document.addEventListener("mouseup", endDrag);
+    document.addEventListener("contextmenu", (e) => { // her menu (main builds and pops it), only over her own pixels
+      if (!petActive() || !overSprite(e.clientX, e.clientY)) return;
+      e.preventDefault();
+      window.riya.petMenu();
+    });
     window.addEventListener("blur", () => { endDrag(); setClickable(false); });
     document.documentElement.addEventListener("mouseleave", () => { if (!dragging) setClickable(false); });
   }
@@ -229,6 +261,7 @@
     if ((c && c.id) === (shownConfirm && shownConfirm.id) && (c && c.summary) === (shownConfirm && shownConfirm.summary)) return;
     shownConfirm = c;
     els.confirmText.textContent = c ? c.summary : "";
+    els.confirmText.title = c ? c.summary : ""; // an attribute, never HTML: her pet bubble clamps the text to two lines
     els.confirm.hidden = !c;
     document.body.classList.toggle("confirming", c !== null);
     if (c === null && mode === "buddy" && lastPointer && !dragging) { // its buttons are gone: don't leave their spot clickable
@@ -339,12 +372,23 @@
     ageTimer = setTimeout(() => { ageTimer = null; refreshAges(); scheduleAges(); }, AGE_REFRESH_MS);
   }
 
+  let shownBadge = { hidden: true, text: "", needsYou: false, label: "" };
+
+  /** The buddy badge: the count, and the highlighted "needs you" state while her wave is current (so "needs you" stays on
+   *  screen when her own speech bubble covers the wave's label). Draws only what changed. */
+  function renderBadge() {
+    if (mode !== "buddy") return;
+    const b = badgeView(badgeCount(agents), petActive() && waveCurrent(petView));
+    if (b.hidden !== shownBadge.hidden) els.badge.hidden = b.hidden;
+    if (b.text !== shownBadge.text) els.badge.textContent = b.text;
+    if (b.needsYou !== shownBadge.needsYou) els.badge.classList.toggle("needs-you", b.needsYou);
+    if (b.label !== shownBadge.label) els.badge.setAttribute("aria-label", b.label);
+    shownBadge = b;
+  }
+
   function renderAgents() {
-    const count = badgeCount(agents);
     if (mode === "buddy") {
-      els.badge.hidden = count === 0;
-      els.badge.textContent = count > 9 ? "9+" : String(count);
-      els.badge.setAttribute("aria-label", `${count} agent${count === 1 ? "" : "s"} need${count === 1 ? "s" : ""} you`);
+      renderBadge();
       return;
     }
     ageEls = [];
@@ -381,6 +425,9 @@
         expression.onState(msg);
         feelings.presence = msg.presence;
         feelings.curiosity = Number(msg.feelings && msg.feelings.curiosity) || 0;
+        break;
+      case "settings":
+        if (mode === "buddy") setPetMode(Boolean(msg.settings) && msg.settings.pet_enabled !== false);
         break;
       case "look":
         look = { side: msg.side, watching: msg.watching === true };
@@ -447,6 +494,19 @@
     shownBubble = { visible, text, kind };
   }
 
+  let shownActivity = { visible: false, text: "" };
+
+  /** The activity label ("editing engine.py"): only while it is fresh and neither her reply nor a question is showing.
+   *  It comes from agent activity, so it is text only, clipped again here. */
+  function renderActivity(t) {
+    if (mode !== "buddy") return;
+    const text = petActive() ? activityText(petView, Date.now(), { speaking: bubble.visible(t), confirming: confirmShown() }) : "";
+    const visible = text !== "";
+    if (text !== shownActivity.text) els.activity.textContent = text;
+    if (visible !== shownActivity.visible) els.activity.hidden = !visible;
+    shownActivity = { visible, text };
+  }
+
   function renderStatus(t) {
     const text = connected ? errorLine.text(t) : "connecting…";
     if (text === shownStatus) return;
@@ -458,11 +518,21 @@
   /** Breathing, blink and lean: only while visible and not gaming. Mouth frames don't depend on this. */
   const animating = () => idleAnimates({ presence: feelings.presence, hidden: document.hidden });
 
+  /** The art pack's walk cycle frame for her current walk, or null: no cycle in the pack, not walking, or reduced motion
+   *  (an older pack without `motions.walk` just slides her idle frames along). */
+  function walkUrl() {
+    if (!petActive() || petView.motion !== "walk" || petView.reduced === true) return null;
+    const frames = manifest && manifest.motions && manifest.motions.walk;
+    return walkFrame(frames, Date.now() - (Number(petView.motionAt) || 0));
+  }
+
   function renderFrame(t) {
     if (!manifest) return;
-    const name = expression.current(bubble.visible(t));
-    const blinking = animating() && blink.isClosed(t);
-    const url = frameFor({ manifest, expression: name, mouthOpen: connected && mouth.isOpen(t), blinking });
+    const base = expression.current(bubble.visible(t));
+    const name = (petActive() ? petView.expression : null) ?? base;
+    const asleep = petActive() && petView.state === "sleep";
+    const blinking = asleep || (animating() && blink.isClosed(t));
+    const url = walkUrl() || frameFor({ manifest, expression: name, mouthOpen: connected && mouth.isOpen(t), blinking });
     if (url && url !== wantedUrl) {
       showFrame(url, lastExpression !== null && name !== lastExpression);
       wantedUrl = url;
@@ -471,19 +541,34 @@
   }
 
   let shownTransform = "";
+  let shownPose = "";
   let motionTimer = null;
   let wakeTimer = null;
 
+  /** Reduced motion: no breathing, lean, bounce or walk animation, only her static pose. */
+  const calm = () => petActive() && petView.reduced === true;
+
+  /** Her pose transform on #pet (the facing flip, the walk bob, a squash...); written only when the rounded text changed. */
+  function movePet() {
+    const css = petActive() ? petTransformCss(petView, Date.now()) : "";
+    if (css === shownPose) return;
+    shownPose = css;
+    els.pet.style.transform = css;
+  }
+
   /** One breathing/lean step; the DOM is written only when the rounded transform changed. */
   function moveSprite() {
-    const css = motion.step(now(), leanFor({ presence: feelings.presence, curiosity: feelings.curiosity, look }));
-    if (css === shownTransform) return;
-    shownTransform = css;
-    els.sprite.style.transform = css;
+    const css = calm() ? "" : motion.step(now(), leanFor({ presence: feelings.presence, curiosity: feelings.curiosity, look }));
+    if (css !== shownTransform) {
+      shownTransform = css;
+      els.sprite.style.transform = css;
+    }
+    movePet();
+    if (walkUrl() !== null) renderFrame(now()); // the walk cycle advances on this timer, never per display frame
   }
 
   function updateMotionTimer() {
-    const run = manifest !== null && animating();
+    const run = manifest !== null && animating() && !calm();
     if (run && motionTimer === null) {
       motion.resume(); // the first step after a pause eases the lean instead of snapping it
       moveSprite();
@@ -492,6 +577,10 @@
       clearInterval(motionTimer);
       motionTimer = null;
     }
+    if (calm() && shownTransform !== "") { // reduced motion came on: the breathing goes back to rest
+      shownTransform = "";
+      els.sprite.style.transform = "";
+    }
   }
 
   /** Bubble, status and frame for now; then a single timer for whichever of them changes next. */
@@ -499,6 +588,8 @@
     const t = now();
     renderBubble(t);
     renderConfirm();
+    renderActivity(t);
+    renderBadge();
     renderStatus(t);
     renderFrame(t);
     updateMotionTimer();
@@ -511,8 +602,14 @@
       bubble.hidesAt(t),
       errorLine.clearsAt(t),
       confirmDeadline(t),
+      activityDeadline(t),
     ]);
     if (next !== null) wakeTimer = setTimeout(refresh, next - t + 1);
+  }
+
+  /** When her activity label expires, on the performance clock (its deadline is a Date.now() time). */
+  function activityDeadline(t) {
+    return petActive() && petView.bubble ? t + (Number(petView.bubble.untilMs) - Date.now()) : null;
   }
 
   /** When the shown confirmation expires, on the performance clock the other deadlines use (it expires on Date.now()). */
@@ -521,10 +618,129 @@
     return at === null ? null : t + (at - Date.now());
   }
 
+  // ---- Little Riya: her view from main, and the effects canvas ----------------------------------------------------------
+
+  const fx = { ctx: null, timer: null, kind: null, list: [], startedAt: 0 };
+  let lastEffectSeq = 0; // the effect already played (or skipped), so a replayed view never plays one twice
+
+  /** Stop the effects timer and wipe the canvas. Safe to call at any time. */
+  function stopEffects() {
+    if (fx.timer !== null) {
+      clearInterval(fx.timer);
+      fx.timer = null;
+    }
+    fx.kind = null;
+    fx.list = [];
+    if (fx.ctx) fx.ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  }
+
+  /** One small shape per particle, by effect: confetti rectangles, sparkle diamonds, a sweat drop, a heart. */
+  function drawParticle(ctx, kind, p) {
+    ctx.globalAlpha = p.alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    if (kind === "confetti") {
+      ctx.rect(p.x - p.r, p.y - p.r / 2, p.r * 2, p.r);
+    } else if (kind === "sparkle") {
+      ctx.moveTo(p.x, p.y - p.r * 2);
+      ctx.lineTo(p.x + p.r, p.y);
+      ctx.lineTo(p.x, p.y + p.r * 2);
+      ctx.lineTo(p.x - p.r, p.y);
+      ctx.closePath();
+    } else if (kind === "sweat") {
+      ctx.moveTo(p.x, p.y - p.r * 1.8);
+      ctx.quadraticCurveTo(p.x + p.r * 1.2, p.y, p.x, p.y + p.r);
+      ctx.quadraticCurveTo(p.x - p.r * 1.2, p.y, p.x, p.y - p.r * 1.8);
+    } else {
+      const k = p.r / 2;
+      ctx.moveTo(p.x, p.y + k * 1.6);
+      ctx.bezierCurveTo(p.x - k * 3, p.y - k * 0.4, p.x - k * 1.4, p.y - k * 2.2, p.x, p.y - k * 0.8);
+      ctx.bezierCurveTo(p.x + k * 1.4, p.y - k * 2.2, p.x + k * 3, p.y - k * 0.4, p.x, p.y + k * 1.6);
+    }
+    ctx.fill();
+  }
+
+  /** One effects frame. The effect ends on its own time (effectDone) or when the page is hidden: the timer is cleared
+   *  and the canvas wiped, and nothing runs after that. */
+  function drawEffects() {
+    const kind = fx.kind;
+    const t = Date.now() - fx.startedAt;
+    if (kind === null || document.hidden || effectDone(kind, t)) {
+      stopEffects();
+      return;
+    }
+    fx.ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    for (const p of particlesAt(fx.list, t)) if (p.alpha > 0) drawParticle(fx.ctx, kind, p);
+    fx.ctx.globalAlpha = 1;
+  }
+
+  function startEffects(kind, seq) {
+    stopEffects();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    els.effects.width = Math.max(1, Math.round(window.innerWidth * dpr));
+    els.effects.height = Math.max(1, Math.round(window.innerHeight * dpr));
+    fx.ctx = fx.ctx || els.effects.getContext("2d");
+    if (!fx.ctx) return;
+    fx.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fx.kind = kind;
+    fx.list = particles(kind, seq, window.innerWidth, window.innerHeight); // a capped, seeded handful (EFFECTS)
+    fx.startedAt = Date.now();
+    drawEffects();
+    if (fx.kind !== null) fx.timer = setInterval(drawEffects, 1000 / EFFECT_HZ);
+  }
+
+  /** Start the view's effect once (a new effectSeq), and stop whatever runs when it no longer applies. */
+  function syncEffects() {
+    if (!petActive()) {
+      lastEffectSeq = 0; // a restarted pet counts from 1 again
+      stopEffects();
+      return;
+    }
+    const seq = Number(petView.effectSeq) || 0;
+    if (!petView.effect || petView.reduced === true) {
+      lastEffectSeq = seq;
+      stopEffects();
+      return;
+    }
+    if (seq === lastEffectSeq) return;
+    lastEffectSeq = seq;
+    if (document.hidden || !Object.hasOwn(EFFECTS, petView.effect)) {
+      stopEffects();
+      return;
+    }
+    startEffects(petView.effect, seq);
+  }
+
+  function onPetView(view) {
+    if (!view || typeof view !== "object" || typeof view.on !== "boolean") return;
+    petView = view;
+    syncEffects();
+    movePet();
+    refresh();
+  }
+
+  /** The pet window layout (body.pet) follows settings.pet_enabled; off is exactly the v0.8 buddy. */
+  function setPetMode(on) {
+    if (document.body.classList.contains("pet") === on) return;
+    document.body.classList.toggle("pet", on);
+    if (!on) stopEffects();
+    layoutSprite();
+    refresh();
+  }
+
+  if (mode === "buddy") {
+    window.riya.onPetView(onPetView);
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const reportReduced = () => window.riya.reportReducedMotion(reduced.matches);
+    reportReduced();
+    reduced.addEventListener("change", reportReduced);
+  }
+
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && mode === "buddy") {
       endDrag();
       setClickable(false);
+      stopEffects();
     }
     if (mode !== "buddy") {
       if (!document.hidden) refreshDue();
@@ -537,7 +753,10 @@
 
   // ---- start ---------------------------------------------------------------------------------------------------
 
-  window.addEventListener("resize", layoutSprite);
+  window.addEventListener("resize", () => {
+    layoutSprite();
+    stopEffects(); // the canvas is sized to the window when an effect starts
+  });
   window.riya.hotkey().then((key) => {
     if (key && mode !== "buddy") els.input.placeholder = `Say something… (or press ${key} to talk)`;
   }).catch(() => {});

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from riya.agents.hooks import (MAX_BODY, HookReceiver, RejectCounter, create_hook_app, load_or_create_token,
                                start_hook_receiver)
+from riya.agents.peer import Peer, PeerMap
 
 TOKEN = "t" * 64
 OK = {"hook_event_name": "Stop", "session_id": "s1", "cwd": "E:/riya"}
@@ -319,3 +320,105 @@ def test_a_free_port_serves_at_once_with_no_retry_thread(tmp_path):
         assert receiver.ok and receiver._retry is None
     finally:
         receiver.stop()
+
+
+def test_a_pre_tool_use_post_is_an_empty_fast_200_even_when_it_is_the_hot_path(tmp_path):
+    """PreToolUse fires before every tool call: the receiver must still answer an empty 200 at once."""
+    got, port = [], free_port()
+    started = start_hook_receiver(got.append, token_path=tmp_path / "tok", port=port)
+    assert started is not None
+    server, thread = started
+    payload = {"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": "E:/riya", "tool_name": "Bash",
+               "tool_input": {"command": "git status"}}
+    try:
+        token = (tmp_path / "tok").read_text().strip()
+        url = f"http://127.0.0.1:{port}/hook"
+        for _ in range(50):
+            try:
+                httpx.post(url, content=json.dumps(payload), headers={"X-Riya-Token": token}, timeout=2)
+                break
+            except httpx.TransportError:
+                time.sleep(0.1)
+        else:
+            pytest.fail("receiver never answered")
+        with httpx.Client(timeout=2) as client:
+            took = []
+            for _ in range(10):
+                t = time.perf_counter()
+                r = client.post(url, content=json.dumps(payload), headers={"X-Riya-Token": token})
+                took.append(time.perf_counter() - t)
+                assert r.status_code == 200 and r.content == b""
+        assert max(took) < 1.0 and sorted(took)[len(took) // 2] < 0.1
+        assert got and all(g == payload for g in got) and len(got) >= 11
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_the_receiver_records_the_peer_and_stays_fast():
+    ports, got = [], []
+
+    def lookup(port):
+        ports.append(port)
+        return 4242
+
+    peers = PeerMap(lookup)
+    c = TestClient(create_hook_app(TOKEN, got.append, peers=peers))
+    pre = {"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": "E:/riya", "tool_name": "Read"}
+    for _ in range(5):
+        r = post(c, pre)
+        assert r.status_code == 200 and r.content == b""
+    assert len(got) == 5 and peers.get("s1") == Peer(4242, "riya")
+    assert ports == [50000]  # the test client's side of the connection
+    post(c, {**pre, "hook_event_name": "SessionStart"})
+    assert len(ports) == 2 and len(got) == 6
+
+
+def test_the_peer_is_not_recorded_for_a_bad_session_id():
+    ports = []
+    peers = PeerMap(lambda p: ports.append(p) or 4242)
+    c = TestClient(create_hook_app(TOKEN, lambda p: None, peers=peers))
+    for sid in (None, 7, "", "x" * 129):
+        assert post(c, {"hook_event_name": "Stop", "session_id": sid, "cwd": "E:/riya"}).status_code == 200
+    assert ports == []
+
+
+def test_a_forwarded_for_header_cannot_change_the_peer_port(tmp_path):
+    """Over a real loopback socket: the port noted is the socket's own, whatever X-Forwarded-For claims."""
+    ports, port = [], free_port()
+    started = start_hook_receiver(lambda p: None, token_path=tmp_path / "tok", port=port, warn=False,
+                                  peers=PeerMap(lambda p: ports.append(p) or 4242))
+    assert started is not None
+    server, thread = started
+    try:
+        body = json.dumps(OK).encode()
+        token = (tmp_path / "tok").read_text().strip()
+        head = ["POST /hook HTTP/1.1", "Host: x", f"X-Riya-Token: {token}", "X-Forwarded-For: 203.0.113.9:9999",
+                f"Content-Length: {len(body)}", "Connection: close", "", ""]
+        req = "\r\n".join(head).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+            mine = c.getsockname()[1]
+            c.sendall(req + body)
+            assert c.recv(64).startswith(b"HTTP/1.1 200")
+        assert ports == [mine]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_a_failing_peer_lookup_never_breaks_the_200():
+    got = []
+
+    class Boom:
+        def note(self, *a, **k):
+            raise RuntimeError("peer table exploded")
+
+    c = TestClient(create_hook_app(TOKEN, got.append, peers=Boom()))
+    r = post(c)
+    assert r.status_code == 200 and r.content == b"" and got == [OK]
+
+
+def test_the_peers_pass_through_the_receiver_classes():
+    peers = PeerMap(lambda p: None)
+    assert HookReceiver(lambda p: None, peers=peers).peers is peers
+    assert HookReceiver(lambda p: None).peers is None

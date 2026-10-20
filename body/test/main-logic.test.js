@@ -280,6 +280,13 @@ test("health is never replayed and is forgotten on disconnect; setup messages ar
   }
 });
 
+test("agent_activity, presence and agent_window are never replayed; focus_agent is never queued", () => {
+  for (const t of ["agent_activity", "presence", "agent_window"]) assert.ok(!REPLAY_TYPES.includes(t), t);
+  assert.ok(NOW_ONLY.includes("focus_agent"));
+  assert.equal(shouldSendToCore({ type: "focus_agent", id: "a" }, false), false);
+  assert.equal(shouldSendToCore({ type: "focus_agent", id: "a" }, true), true);
+});
+
 const M = require("../src/main-logic");
 const readBody = (f) => require("node:fs").readFileSync(require("node:path").join(__dirname, "..", f), "utf8");
 
@@ -404,4 +411,290 @@ test("a logoff query that is then cancelled leaves quitting false: Riya keeps re
   fire("window", "session-end"); // the session really ends
   assert.equal(state.quitting, true);
   assert.equal(M.welcomeClosedMessage({ quitting: state.quitting, onboarded: false }), null);
+});
+
+// ---- v0.9 Little Riya: main-process wiring -------------------------------------------------------------------------
+
+test("isClick: a short press that barely moved", () => {
+  assert.equal(M.CLICK_SLOP_DIP, 4);
+  assert.equal(M.CLICK_MS, 500);
+  assert.equal(M.isClick({ dx: 3, dy: -4, ms: 499 }), true);
+  assert.equal(M.isClick({ dx: 4, dy: 4, ms: 500 }), true);
+  assert.equal(M.isClick({ dx: 5, dy: 0, ms: 100 }), false);
+  assert.equal(M.isClick({ dx: 0, dy: 0, ms: 501 }), false);
+  assert.equal(M.isClick({ dx: 0, dy: -5, ms: 100 }), false);
+});
+
+test("focusTarget prefers the session that needs you", () => {
+  const agents = [
+    { id: "a", kind: "claude", needs_attention: false, status: "busy" },
+    { id: "b", kind: "claude", needs_attention: true, status: "waiting" },
+  ];
+  assert.equal(M.RECENT_ACTIVITY_MS, 600000);
+  assert.equal(M.focusTarget(agents, null, 0), "b");
+  assert.equal(M.focusTarget(agents, { session: "a", atMs: 0 }, 1000), "b", "attention beats recent activity");
+  const colab = [{ id: "c", kind: "colab", needs_attention: true, status: "busy" }, agents[0]];
+  assert.equal(M.focusTarget(colab, null, 0), null, "a colab item needing attention is skipped");
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "a", atMs: 0 }, 600000), "a");
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "a", atMs: 0 }, 601000), null, "601 s old");
+  assert.equal(M.focusTarget([{ ...agents[0], status: "ended" }], { session: "a", atMs: 0 }, 1000), null);
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "zz", atMs: 0 }, 1000), "zz", "not listed yet: the core checks it");
+  assert.equal(M.focusTarget(agents.slice(0, 1), { session: "zz", atMs: 0 }, 601000), null, "but only while recent");
+  assert.equal(M.focusTarget([], { session: "a", atMs: 0 }, 1000), "a", "an empty list has not caught up either");
+  assert.equal(M.focusTarget(undefined, undefined, 0), null);
+  assert.equal(M.focusTarget([null, 3, { id: "a", kind: "claude", needs_attention: true }], null, 0), "a");
+});
+
+test("a click on a fresh wave reaches its session before the agents list has it", () => {
+  const listed = [{ id: "a", kind: "claude", needs_attention: false, status: "busy" }];
+  const wave = { session: "new", atMs: 1000 };
+  const later = { session: "a", atMs: 2000 };
+  // the wave's session is not in the list yet: still the target, and a later activity of another session doesn't steal it
+  assert.equal(M.focusTarget(listed, later, 3000, wave), "new");
+  assert.equal(M.focusTarget([], null, 3000, wave), "new");
+  assert.equal(M.focusTarget(listed, later, 3000, null), "a", "no wave: the latest activity");
+  // a session needing attention in the list still wins, and so does nothing once everything is old
+  assert.equal(M.focusTarget([{ ...listed[0], needs_attention: true }], later, 3000, wave), "a");
+  assert.equal(M.focusTarget(listed, { ...later, atMs: 1000 }, 1000 + M.RECENT_ACTIVITY_MS + 1, wave), null);
+  // a wave for a session the list says has ended falls through to the activity
+  const ended = [{ id: "new", kind: "claude", status: "ended" }, listed[0]];
+  assert.equal(M.focusTarget(ended, later, 3000, wave), "a");
+  assert.equal(M.focusTarget(listed, null, 3000, { session: 7, atMs: 1000 }), null, "a bad session is never a target");
+  // the id is the core's to validate: an unknown one answers hwnd null, which opens the agents list
+  assert.deepEqual(M.decideFocus({ id: "new", atMs: 3000 }, { type: "agent_window", id: "new", hwnd: null }, 3100), { list: true });
+  assert.deepEqual(M.clickAction("new", true), { focus: "new" });
+  const main = readBody("main.js");
+  assert.match(main, /if \(msg\.kind === "wave"\) state\.lastWave = state\.lastActivity/);
+  assert.match(fnSlice(main, "petClick"), /focusTarget\(state\.agents, state\.lastActivity, now, state\.lastWave\)/);
+});
+
+test("reactions that arrive while her window is hidden are dropped, except a wave that is still current", () => {
+  assert.equal(M.HELD_WAVE_MS, 6000);
+  assert.equal(M.holdWhileHidden(null, "done", "all done!", 1000), null);
+  assert.equal(M.holdWhileHidden(null, "edit", "editing a.py", 1000), null);
+  const wave = M.holdWhileHidden(null, "wave", "needs you! running rm", 1000);
+  assert.deepEqual(wave, { label: "needs you! running rm", atMs: 1000 });
+  assert.equal(M.holdWhileHidden(wave, "fail", "oops", 2000), wave, "another kind never replaces or clears the wave");
+  assert.deepEqual(M.holdWhileHidden(wave, "wave", "needs you!", 2000), { label: "needs you!", atMs: 2000 }, "the latest wave");
+  assert.deepEqual(M.heldReactionOnShow(wave, 1000 + 6000), { kind: "wave", label: "needs you! running rm" });
+  assert.equal(M.heldReactionOnShow(wave, 1000 + 6001), null, "an hour-old wave is stale");
+  assert.equal(M.heldReactionOnShow(null, 0), null);
+  assert.equal(M.heldReactionOnShow({ label: "x", atMs: NaN }, 0), null);
+  const main = readBody("main.js");
+  const react = fnSlice(main, "petReact");
+  assert.ok(react.indexOf("state.petPaused") > 0 && react.indexOf("state.petPaused") < react.indexOf("state.pet.react("));
+  assert.match(react, /holdWhileHidden\(/);
+  assert.match(fnSlice(main, "setPetVisible"), /heldReactionOnShow\([\s\S]*state\.pet\.react\(held\.kind/);
+  assert.match(fnSlice(main, "stopPet"), /state\.heldWave = null/);
+});
+
+test("a focus only follows its own fresh click", () => {
+  const msg = (id, hwnd) => ({ type: "agent_window", id, hwnd });
+  assert.equal(M.FOCUS_WAIT_MS, 3000);
+  assert.equal(M.decideFocus(null, msg("a", 77), 0), null);
+  const pending = { id: "a", atMs: 1000 };
+  assert.deepEqual(M.decideFocus(pending, msg("a", 77), 3000), { spawn: 77 });
+  assert.deepEqual(M.decideFocus(pending, msg("a", 77), 4000), { spawn: 77 });
+  assert.equal(M.decideFocus(pending, msg("a", 77), 4001), null);
+  assert.equal(M.decideFocus(pending, msg("b", 77), 3000), null);
+  for (const hwnd of [null, 0, -5, 1.5, "77", undefined, NaN, 2 ** 60]) {
+    assert.deepEqual(M.decideFocus(pending, msg("a", hwnd), 3000), { list: true }, String(hwnd));
+  }
+});
+
+test("a click with no answer opens the agents list", () => {
+  assert.deepEqual(M.clickAction(null, true), { poke: true });
+  assert.deepEqual(M.clickAction(null, false), { poke: true });
+  assert.deepEqual(M.clickAction("a", false), { list: true });
+  assert.deepEqual(M.clickAction("a", true), { focus: "a" });
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "petClick"), /setTimeout\(focusTimedOut, FOCUS_WAIT_MS\)/);
+  assert.match(fnSlice(main, "focusTimedOut"), /openAgentsList\(/);
+  const branch = main.slice(main.indexOf('msg.type === "agent_window"'));
+  assert.match(branch.slice(0, 900), /decideFocus\([\s\S]*clearTimeout\(/);
+});
+
+test("renderers can never send focus_agent", () => {
+  assert.deepEqual(M.MAIN_ONLY, ["focus_agent"]);
+  assert.equal(M.rendererMayRequest({ type: "focus_agent", id: "a" }), false);
+  assert.equal(M.rendererMayRequest({ type: "user_text", text: "hi" }), true);
+  assert.equal(M.rendererMayRequest(null), false);
+  assert.equal(M.rendererMayRequest({}), false);
+});
+
+test("the focus helper command is fixed", () => {
+  const path = require("node:path");
+  const venv = path.join("E:\\riya", ".venv", "Scripts", "python.exe");
+  assert.deepEqual(M.focusCommand("E:\\riya", 77, () => true), {
+    file: venv, args: ["-m", "riya.agents.peer", "focus", "77"],
+  });
+  assert.deepEqual(M.focusCommand("E:\\riya", 77, (p) => p !== venv), {
+    file: "python", args: ["-m", "riya.agents.peer", "focus", "77"],
+  });
+  for (const bad of ["77; calc", 0, -1, NaN, 1.5, null, undefined, Infinity]) {
+    assert.equal(M.focusCommand("E:\\riya", bad, () => true), null, String(bad));
+  }
+});
+
+test("petMenuItems and the reduced-motion toggle", () => {
+  const items = M.petMenuItems({ mode: "buddy", dontLook: false, reducedMotion: false });
+  assert.deepEqual(items.map((i) => i.id),
+    ["mode:buddy", "mode:panel", "mode:window", "sep", "dont_look", "reduced_motion", "sleep", "settings", "quit"]);
+  assert.deepEqual(items.slice(0, 3).map((i) => [i.type, i.checked]), [["radio", true], ["radio", false], ["radio", false]]);
+  assert.equal(items.find((i) => i.id === "sep").type, "separator");
+  assert.equal(items.find((i) => i.id === "dont_look").type, "checkbox");
+  assert.equal(items.find((i) => i.id === "reduced_motion").type, "checkbox");
+  assert.equal(items.find((i) => i.id === "sleep").label, "Go to sleep");
+  assert.equal(items.find((i) => i.id === "settings").label, "Settings\u2026");
+  const panel = M.petMenuItems({ mode: "panel", dontLook: true, reducedMotion: false });
+  assert.equal(panel.filter((i) => i.type === "radio").map((i) => i.checked).join(), "false,true,false");
+  assert.equal(panel.find((i) => i.id === "dont_look").checked, true);
+  assert.equal(M.petMenuItems({ mode: "buddy", dontLook: false, reducedMotion: true }).find((i) => i.id === "reduced_motion").checked, true);
+  assert.deepEqual(M.reducedMotionPatch(true), { reduced_motion: "on" });
+  assert.deepEqual(M.reducedMotionPatch(false), { reduced_motion: "off" });
+  assert.match(readBody("main.js"), /reducedMotionPatch\(\s*menuItem\.checked\s*\)/);
+});
+
+test("moveRect is integer with a fixed size", () => {
+  assert.deepEqual(M.moveRect({ x: 10.6, y: 695.5 }, { width: 240, height: 344 }), { x: 11, y: 696, width: 240, height: 344 });
+});
+
+test("repositionTarget takes the pet size", () => {
+  assert.deepEqual(M.repositionTarget({ ...base, size: { buddy: [240, 344] } }), { x: 100, y: 200, width: 240, height: 344 });
+  assert.deepEqual(M.repositionTarget({ ...base, savedPos: [5000, 5000], size: { buddy: [240, 344] } }),
+    { x: 1680, y: 696, width: 240, height: 344 });
+});
+
+test("DEFAULT_SIZE is exported from geometry", () => {
+  assert.deepEqual(require("../src/geometry").DEFAULT_SIZE, { buddy: [300, 520] });
+});
+
+test("presence comes from both state and presence messages and is forgotten on disconnect", () => {
+  const main = readBody("main.js");
+  assert.match(main, /msg\.type === "presence"[\s\S]{0,200}state\.presence = /);
+  assert.match(main, /msg\.type === "state"[\s\S]{0,300}state\.presence/);
+  assert.match(fnSlice(main, "onCoreStatus"), /if \(!connected\)[\s\S]{0,300}state\.presence = null/);
+});
+
+test("the pet steps at once on every feed and reads idle fresh", () => {
+  const main = readBody("main.js");
+  assert.match(main, /function stepPet\(\)[\s\S]{0,400}getSystemIdleTime\(\)/);
+  assert.match(main, /setTimeout\(stepPet, Math\.max\(0, /);
+  const step = fnSlice(main, "stepPet");
+  const outside = main.replace(step, "");
+  assert.equal((outside.match(/schedulePet\(/g) || []).length, 1, "only its own definition remains outside stepPet");
+  assert.match(step, /schedulePet\(\)/);
+  for (const call of ["pet.react(", "pet.setContext(", "pet.setArea(", "pet.setSize(", "pet.poke(", "pet.sleepNow(", "pet.grab(", "pet.drop("]) {
+    let from = 0;
+    let seen = 0;
+    for (;;) {
+      const at = outside.indexOf(call, from);
+      if (at < 0) break;
+      seen += 1;
+      assert.match(outside.slice(at, at + 400), /stepPet\(\)/, `${call} at ${at} is followed by stepPet()`);
+      from = at + 1;
+    }
+    assert.ok(seen > 0, `${call} is used`);
+  }
+});
+
+test("a new window gets the current view, and stopping sends the whole OFF_VIEW", () => {
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "createStageWindow"), /did-finish-load[\s\S]{0,500}"pet:view", state\.lastPetView/);
+  const stop = fnSlice(main, "stopPet");
+  assert.match(stop, /state\.lastPetView = OFF_VIEW/);
+  assert.match(stop, /"pet:view", OFF_VIEW/);
+  assert.doesNotMatch(main, /[{,]\s*on: false\b/, "never a partial view");
+});
+
+test("main spawns the helper only through decideFocus", () => {
+  const main = readBody("main.js");
+  assert.equal((main.match(/\bexecFile\b/g) || []).length, 2, "the require and the one use");
+  assert.equal((main.match(/runFocusHelper\(/g) || []).length, 1, "the helper starts in one place");
+  const branch = main.slice(main.indexOf('msg.type === "agent_window"'));
+  assert.ok(branch.indexOf("decideFocus(") >= 0 && branch.indexOf("decideFocus(") < branch.indexOf("runFocusHelper("));
+  assert.match(branch, /runFocusHelper\(\{[^}]*spawn: execFile/);
+  assert.match(main, /focusCommand\(REPO_ROOT, /);
+  assert.equal((main.match(/"focus_agent"/g) || []).length, 1, "focus_agent is named once");
+  assert.ok(fnSlice(main, "petClick").includes('"focus_agent"'), "and only in petClick");
+  assert.match(main, /ipcMain\.on\("core:send"[\s\S]{0,400}rendererMayRequest\(msg\)/);
+  assert.match(main, /getDisplayMatching\(/);
+  assert.equal((main.match(/setInterval\(stepPet/g) || []).length, 1);
+  assert.ok(fnSlice(main, "schedulePet").includes("setInterval(stepPet"));
+  const end = main.slice(main.indexOf('ipcMain.on("drag-end"'));
+  const handler = end.slice(0, end.indexOf("\n});"));
+  const area = handler.indexOf("pet.setArea(");
+  const drop = handler.indexOf("pet.drop(");
+  assert.ok(area >= 0 && drop >= 0 && area < drop, "the monitor is re-read before the first drop");
+  assert.ok(handler.indexOf("getDisplayMatching(") >= 0 && handler.indexOf("getDisplayMatching(") < drop);
+  const click = handler.slice(handler.indexOf("isClick("));
+  assert.ok(click.indexOf("pet.drop(") >= 0 && click.indexOf("pet.drop(") < click.indexOf("petClick("));
+  assert.match(click.slice(click.indexOf("pet.drop("), click.indexOf("petClick(")), /save: false/);
+});
+
+test("the windows stay sandboxed, and the preload gains the pet's narrow surface", () => {
+  const main = readBody("main.js");
+  assert.ok((main.match(/sandbox: true/g) || []).length >= 2);
+  assert.doesNotMatch(main, /sandbox: false|contextIsolation: false|nodeIntegration: true/);
+  const preload = readBody("preload.js");
+  assert.match(preload, /onPetView: \(cb\) => ipcRenderer\.on\("pet:view"/);
+  assert.match(preload, /reportReducedMotion: \(on\) => ipcRenderer\.send\("pet:reduced-motion", Boolean\(on\)\)/);
+  assert.match(preload, /petMenu: \(\) => ipcRenderer\.send\("pet:menu"\)/);
+  assert.match(preload, /onShowSection: \(cb\) => ipcRenderer\.on\("settings:show"/);
+});
+
+// ---- round 1 fixes -------------------------------------------------------------------------------------------------
+
+test("the pet pauses while its window is hidden and resumes when it shows", () => {
+  assert.equal(M.petVisibilityAction(false, false), "pause");
+  assert.equal(M.petVisibilityAction(true, false), null, "already paused");
+  assert.equal(M.petVisibilityAction(true, true), "resume");
+  assert.equal(M.petVisibilityAction(false, true), null, "already running");
+  const main = readBody("main.js");
+  assert.match(main, /function stepPet\(\)[\s\S]{0,120}state\.petPaused/);
+  assert.match(fnSlice(main, "setPetVisible"), /petVisibilityAction\(/);
+  assert.match(fnSlice(main, "createStageWindow"), /win\.on\("hide", \(\) => setPetVisible\(win, false\)\)/);
+  assert.match(fnSlice(main, "createStageWindow"), /win\.on\("show", \(\) => setPetVisible\(win, true\)\)/);
+});
+
+test("a late settings message leaves her alone once she has moved this session", () => {
+  const moved = { ...base, moved: true };
+  assert.equal(M.repositionTarget(moved), null);
+  assert.deepEqual(M.repositionTarget({ ...base, moved: false }), { x: 100, y: 200, width: 300, height: 520 });
+  assert.deepEqual(M.repositionTarget(base), { x: 100, y: 200, width: 300, height: 520 }, "the flag is optional");
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "applyLateSavedPosition"), /moved: state\.petMoved/);
+  assert.match(fnSlice(main, "stepPet"), /f\.moved[\s\S]{0,200}state\.petMoved = true/);
+  const end = main.slice(main.indexOf('ipcMain.on("drag-end"'));
+  assert.match(end.slice(0, end.indexOf("\n});")), /state\.petMoved = true/, "a drop counts too");
+});
+
+test("a failed focus helper opens the agents list, only for the current click", () => {
+  const cmd = { file: "python", args: ["-m", "riya.agents.peer", "focus", "77"] };
+  const run = (outcome, current = () => true) => {
+    const calls = [];
+    const opened = [];
+    const spawn = (file, args, opts, cb) => {
+      calls.push({ file, args, opts });
+      if (outcome === "throw") throw new Error("EINVAL");
+      cb(outcome);
+    };
+    const started = M.runFocusHelper({ cmd, spawn, cwd: "E:\riya", isCurrent: current, onFailed: () => opened.push(1) });
+    return { calls, opened, started };
+  };
+  const ok = run(null);
+  assert.equal(ok.started, true);
+  assert.deepEqual(ok.calls, [{ file: "python", args: cmd.args, opts: { cwd: "E:\riya", windowsHide: true, timeout: 5000 } }]);
+  assert.equal(ok.opened.length, 0, "success: nothing more");
+  assert.equal(run(Object.assign(new Error("exit 1"), { code: 1 })).opened.length, 1, "non-zero exit");
+  assert.equal(run(Object.assign(new Error("spawn python ENOENT"), { code: "ENOENT" })).opened.length, 1, "spawn error");
+  assert.equal(run("throw").opened.length, 1, "a synchronous throw");
+  assert.equal(run(new Error("exit 1"), () => false).opened.length, 0, "a stale click opens nothing");
+  assert.equal(run("throw", () => false).opened.length, 0);
+  const none = M.runFocusHelper({ cmd: null, spawn: () => assert.fail("never spawns"), cwd: "x", isCurrent: () => true, onFailed() {} });
+  assert.equal(none, false);
+  const main = readBody("main.js");
+  assert.match(fnSlice(main, "petClick"), /state\.focusToken \+= 1/);
+  assert.match(fnSlice(main, "stopPet"), /state\.focusToken \+= 1/);
+  assert.match(main, /isCurrent: \(\) => token === state\.focusToken/);
 });

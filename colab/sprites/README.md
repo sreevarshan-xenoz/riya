@@ -104,3 +104,26 @@ Expect `missing frames: none`. The face box comes from `run.json` (`--face-box` 
 - The panel crop shows her head and shoulders, and the chat still fits beside it.
 - Her mouth moves when she talks, blinks close only her eyes, and her face doesn't shimmer on those swaps.
 - `covering_eyes` shows both hands over her eyes, with no cut-off fingers at the mask edge.
+
+## 8. A walk cycle (optional, your step)
+
+Little Riya walks along the bottom of your screen in buddy mode. Without a walk cycle she slides her idle frames along with a
+small step bob and sway, which already works, so skip this unless you want real steps.
+
+1. Make 2 to 16 frames of her walking, facing right (her natural side; the body mirrors the frames when she walks left). Keep
+   the same canvas as the other frames (768 x 1344 for `riya-v1`), a transparent background, and her feet at the same height
+   in every frame so she doesn't hover or sink. Name them `walk_01.png`, `walk_02.png` and so on, and put them in
+   `sprites/riya-v1/`, next to the other frames.
+2. List them, in order, in `sprites/riya-v1/manifest.json` under a new top-level `motions` key. The cycle loops at 8 frames a
+   second:
+
+   ```json
+   "motions": { "walk": ["walk_01.png", "walk_02.png", "walk_03.png", "walk_04.png"] }
+   ```
+
+   `motions` may also hold `sit` and `sleep` the same way (the body ignores them for now). Only those three names are allowed, each with 1 to 16 file names
+   (`body/sprite-manifest.schema.json` is the contract), and every name must be a plain relative path inside the pack: a
+   missing or escaping file is skipped.
+3. Restart the body. `build_pack.py` never writes `motions`, so if you rebuild the pack, add the key again afterwards.
+
+Under reduced motion (Settings, or Windows' own switch) she doesn't walk at all, so the cycle never plays.

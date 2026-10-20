@@ -290,7 +290,7 @@ def test_hooks_disconnect_on_temp_paths(tmp_path):
     s.answer(s.request("hooks_connect", {}).nonce, True)
     assert results[-1].ok
     ask = s.request("hooks_disconnect", {})
-    assert "remove her hook from 10 Claude Code event(s)" in ask.text
+    assert "remove her hook from 11 Claude Code event(s)" in ask.text
     assert s.answer(ask.nonce, True) is True
     assert results[-1] == Outcome("hooks_disconnect", True,
                                   "Disconnected. Restart Claude Code (and open a new terminal).")
