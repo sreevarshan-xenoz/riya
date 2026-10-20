@@ -126,7 +126,8 @@ def test_broken_adapter_falls_back_to_base(tmp_path, adapter, capsys):
     srv, popen = make(tmp_path, Popen(1, None), lora=str(adapter))
     srv.start()
     assert len(popen.cmds) == 2 and lora_of(popen.cmds[0]) == os.path.abspath(adapter) and lora_of(popen.cmds[1]) is None
-    assert srv.lora is None and srv.lora_failed == os.path.abspath(adapter) and srv.wanted == str(adapter)
+    assert srv.serving is None and srv.lora_failed == os.path.abspath(adapter) and srv.wanted == str(adapter)
+    assert srv.lora == os.path.abspath(adapter)  # still wanted: base was for that launch only
     assert popen.procs[0].calls[:2] == ["terminate", "wait"]  # the failed one was stopped
     assert slot_of(popen.cmds[1]).endswith("base")
     assert "didn't load; serving the base model" in capsys.readouterr().out
@@ -177,7 +178,7 @@ def test_step_follows_the_setting_without_retry_loops(tmp_path, adapter):
     policy = GameModePolicy()
     step = lambda desired: srv.step(policy, desired, free_mb=lambda: 4000, now=lambda: 0.0)  # noqa: E731
     step(lambda: str(broken))
-    assert len(popen.cmds) == 3 and srv.lora is None and srv.lora_failed == os.path.abspath(broken)
+    assert len(popen.cmds) == 3 and srv.serving is None and srv.lora_failed == os.path.abspath(broken)
     for _ in range(3):
         step(lambda: str(broken))
     assert len(popen.cmds) == 3  # tried once, not every tick
@@ -186,7 +187,7 @@ def test_step_follows_the_setting_without_retry_loops(tmp_path, adapter):
         raise sqlite3.OperationalError("database is locked")
 
     step(boom)
-    assert len(popen.cmds) == 3 and srv.lora is None and srv.lora_failed == os.path.abspath(broken)  # no change
+    assert len(popen.cmds) == 3 and srv.serving is None and srv.lora_failed == os.path.abspath(broken)  # no change
     step(lambda: None)  # back to None: she is already on base
     assert len(popen.cmds) == 3 and srv.wanted is None and srv.lora_failed is None
 
@@ -432,7 +433,7 @@ class MutatingPopen(Popen):
 def test_an_adapter_that_vanishes_while_loading_falls_back_to_base(tmp_path, adapter):
     srv, popen = make(tmp_path, MutatingPopen(adapter.unlink), lora=str(adapter))
     srv.start()  # never a FileNotFoundError
-    assert len(popen.cmds) == 2 and lora_of(popen.cmds[1]) is None and srv.lora is None
+    assert len(popen.cmds) == 2 and lora_of(popen.cmds[1]) is None and srv.serving is None
     assert srv.lora_failed == os.path.abspath(adapter) and slot_of(popen.cmds[1]).endswith("base")
     assert popen.procs[0].calls[:2] == ["terminate", "wait"]
 
@@ -519,7 +520,7 @@ def test_a_fallback_in_the_middle_of_a_move_does_not_restore(tmp_path, adapter, 
     monkeypatch.setattr(srv, "_post", lambda path, body: posts.append(path) or {})
     srv.start()
     srv.move(False)
-    assert srv.lora is None and srv.lora_failed == os.path.abspath(adapter) and len(popen.cmds) == 3
+    assert srv.serving is None and srv.lora_failed == os.path.abspath(adapter) and len(popen.cmds) == 3
     assert posts == ["/slots/0?action=save"]  # the base variant's slot dir never gets this conversation
     assert lora_of(popen.cmds[2]) is None and popen.cmds[2][popen.cmds[2].index("-ngl") + 1] == "0"
 
@@ -562,7 +563,7 @@ def test_switch_to_a_broken_adapter_after_a_working_one_ends_on_base(tmp_path, a
     assert srv.lora == os.path.abspath(adapter)
     srv.switch(str(broken))
     assert len(popen.cmds) == 3 and lora_of(popen.cmds[1]) == os.path.abspath(broken) and lora_of(popen.cmds[2]) is None
-    assert srv.lora is None and srv.lora_failed == os.path.abspath(broken) and srv.wanted == str(broken)  # not adapter
+    assert srv.serving is None and srv.lora_failed == os.path.abspath(broken) and srv.wanted == str(broken)  # not adapter
     assert popen.procs[0].calls[:2] == ["terminate", "wait"] and popen.procs[1].calls[:2] == ["terminate", "wait"]
     policy = GameModePolicy()
     for _ in range(2):
@@ -704,3 +705,23 @@ def test_main_serves_base_for_an_unvetted_adapter(tmp_path, monkeypatch, capsys,
     assert len(popen.cmds) == 1 and lora_of(popen.cmds[0]) is None
     out = capsys.readouterr().out
     assert "no passing champion check" in out and "base model" in out
+
+
+# ---- final fix wave minor: a failed adapter launch means base for that launch only ----
+
+def test_a_failed_move_keeps_the_adapter_for_the_next_move(tmp_path, adapter, monkeypatch):
+    # the GPU launch works; the move's launch dies (VRAM taken by a game); the base relaunch works; the next move works
+    srv, popen = make(tmp_path, Popen(None, 1, None, None), lora=str(adapter))
+    monkeypatch.setattr(srv, "_post", lambda path, body: {})
+    srv.start()
+    srv.move(False)
+    assert len(popen.cmds) == 3 and lora_of(popen.cmds[2]) is None and srv.serving is None
+    assert srv.lora == os.path.abspath(adapter) and srv.lora_failed == os.path.abspath(adapter)  # still wanted
+    policy = GameModePolicy()
+    policy.on_gpu = False  # in game mode, with the VRAM still taken: no move
+    for _ in range(3):  # no retry loop between moves
+        srv.step(policy, lambda: str(adapter), free_mb=lambda: 600, now=lambda: 0.0)
+    assert len(popen.cmds) == 3
+    srv.move(True)  # the next move tries the adapter again, and it loads
+    assert len(popen.cmds) == 4 and lora_of(popen.cmds[3]) == os.path.abspath(adapter)
+    assert srv.serving == os.path.abspath(adapter) and srv.lora_failed is None
