@@ -120,10 +120,10 @@ function validateAgentLogs(list) {
   return { ok: true, logs };
 }
 
-const api = {
+const agentsExports = {
   AGE_REFRESH_MS, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS, MAX_AGENT_LOGS, MAX_LOG_NAME, MAX_PATTERN_LEN,
   agentChip, relativeAge, badgeCount, sortAgents, hookStatus, agentTitle, ageRefreshDue, validateAgentLogs,
   agentsWhileConnected, receiverProblems,
 };
-if (typeof module !== "undefined" && module.exports) module.exports = api;
-else globalThis.RiyaAgents = api;
+if (typeof module !== "undefined" && module.exports) module.exports = agentsExports;
+else globalThis.RiyaAgents = agentsExports;
