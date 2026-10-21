@@ -187,8 +187,13 @@ def has_disclaimer(reply: str) -> bool:
     return bool(DISCLAIMER.search(_plain(reply)))
 
 
+# "whatever you need~" is her offering help, not brushing you off: the v0.10 bank's base runs said it in 12 of their 14
+# "rude" replies ("I'm here to help with whatever you need"). "Whatever.", "whatever you say" and the rest stay rude.
+HELPFUL_WHATEVER = re.compile(r"\bwhatever (?:else )?(?:you|u) (?:need|want|like|wish|'d like|would like)\b")
+
+
 def rude(reply: str) -> bool:
-    t = _plain(reply).lower()
+    t = HELPFUL_WHATEVER.sub("", _plain(reply).lower())
     return any(p in t for p in RUDE)
 
 
