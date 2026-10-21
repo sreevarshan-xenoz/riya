@@ -42,7 +42,9 @@ def row(kind: str, n: int, i: int, reply: str = "Hmph, fine~", text: str = "hey"
             "facts": list(facts), "error": error, "pass": n}
 
 
-def transcript(unknown_per_pass=(3, 3, 2), generic_in_pass1=False) -> list[dict]:
+def transcript(unknown_per_pass=None, generic_in_pass1=False) -> list[dict]:
+    """A run_probes-shaped transcript with gate.REPEAT passes (a verdict holds exactly its repeat's passes)."""
+    unknown_per_pass = unknown_per_pass or (3, 3, 2, *[3] * (gate.REPEAT - 3))[:gate.REPEAT]
     rows = []
     for n, unknown in enumerate(unknown_per_pass, start=1):
         rows.append(row("small", n, 1, "How can I help you today?" if generic_in_pass1 and n == 1 else "Hmph~"))
@@ -63,7 +65,7 @@ def scored_of(t: list[dict]) -> gate.Scored:
 
 
 def test_scored_keeps_the_transcript_and_counts_failed_turns():
-    t = transcript(generic_in_pass1=True)
+    t = transcript((3, 3, 2), generic_in_pass1=True)  # the scorer's own arithmetic: three passes, whatever REPEAT is
     s = scored_of(t)
     assert (s.failed, s.k) == (3, 3) and s.transcript == tuple(t)
     assert s.pooled == score([r for r in t if not r["error"]], [])  # pooled over the answered rows
@@ -71,7 +73,7 @@ def test_scored_keeps_the_transcript_and_counts_failed_turns():
 
 
 def test_rows_and_probes_are_printed():
-    s = scored_of(transcript())
+    s = scored_of(transcript((3, 3, 2)))
     text = champion.format_decision(s, s, champion.decide(s, s))
     assert re.search(r"^unknown_honesty .*\(8 rows, 3 probes\)$", text, re.M)
     assert re.search(r"^ai_honesty .*\(3 rows, 1 probes\)$", text, re.M)
@@ -607,7 +609,7 @@ def test_a_template_mismatch_refuses(adapter, tmp_db, capsys, dry):
 # ---- final fix wave: carried T6 M2-M4 ----
 
 def test_failed_turns_are_counted_from_the_transcript(candidate, capsys):
-    t = transcript()
+    t = transcript((3, 3, 2))  # three passes, three timed-out turns: the counts below are for this fixture
     assert scored_of(t).failed == 3  # one timed-out turn per pass
     rig = Rig(transcripts=[t, t + [row("small", 1, 99, "", error="timed out")]])
     assert go(rig, ["--dry-run"]) == 0
@@ -731,7 +733,7 @@ def test_verdict_out_writes_a_checked_verdict_and_nothing_else(adapter, tmp_db, 
     assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
     for side in ("base", "candidate"):
         assert v["transcripts"][side] and all("pass" in r for r in v["transcripts"][side])
-    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": 3, "candidate": 3}
+    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": gate.REPEAT, "candidate": gate.REPEAT}
     assert v["decision"]["adopt"] is False and len(v["decision"]["weak"]) == 4
     assert v["timings"] == {"base_s": 60.0, "candidate_s": 90.0, "total_s": 151.5}  # from the fake clock
     assert nothing_written(adapter, tmp_db)
@@ -858,7 +860,7 @@ def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, c
         combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
                    ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run"),
                    ([mode, str(v), "--port", "8097"], "--port"),  # I1: the CPU check is fixed at 8091
-                   ([mode, str(v), "--repeat", "4"], "--repeat")]  # M6: a verdict's repeat is the verdict's own
+                   ([mode, str(v), "--repeat", str(gate.REPEAT + 1)], "--repeat")]  # M6: a verdict's repeat is the verdict's own
     for args, named in combos:
         rig = Rig()
         with pytest.raises(SystemExit) as e:

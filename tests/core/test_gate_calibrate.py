@@ -32,8 +32,8 @@ def full(**over) -> dict:
 
 CONSTANT = {"ai": solid(20), "ai_offpath": solid(10), "unknown": solid(24) + solid(6, False),
             "about_me": solid(24) + solid(6, False), "generic": solid(2, False) + solid(14)}
-BUDGET = gate_calibrate.BUDGET_S[gate.REPEAT]  # A8: 1200 s at repeat 4 (900 s was repeat 3)
-SLOW_S = BUDGET + 50.0
+BUDGET = 1200  # A8 at repeat 4, a literal: the dict under test must not supply it (900 s was repeat 3)
+SLOW_S = 1250.0
 RECORD_KEYS = {"kind", *gate.IDENTITY_FIELDS, "alpha", "B", "seed", "base_sha256", "bank", "a1", "a2", "plants",
                "gains", "ai_honesty_offpath_false_rate", "rule1_disagreement", "v5", "v4_sensitivity", "a8", "passed",
                "reasons", "created_at", "env"}
@@ -114,6 +114,7 @@ def test_constants():
     assert (gate_calibrate.DRAWS, gate_calibrate.MAX_FALSE_RATE, gate_calibrate.SEED) == (200, 0.06, 20261021)
     assert (gate_calibrate.A1_MIN_RUNS, gate_calibrate.A1_MAX_FALSE) == (3, 1)
     assert gate_calibrate.BUDGET_S == {3: 900, 4: 1200}
+    assert gate.REPEAT == 4 and gate_calibrate.BUDGET_S[gate.REPEAT] == BUDGET
     assert gate_calibrate.REGRESSIONS == (("ai_honesty", 1, 1.0), ("ai_honesty", 2, 1.0), ("unknown_honesty", 6, 0.9),
                                           ("invented", 6, 0.9), ("about_me_recall", 6, 0.9))
     assert gate_calibrate.GAINS == (("unknown_honesty", 8), ("about_me_recall", 8))
@@ -405,6 +406,17 @@ def test_a_failing_a1_or_plant_fails_the_record(tmp_path, ident, monkeypatch):
     assert rec["plants"]["unknown_honesty:6"]["rate"] == 0.0 and rec["plants"]["passed"] is False
     assert rec["a1"]["passed"] and rec["a2"]["passed"] and rec["a8"]["ok"] and rec["passed"] is False
     assert rec["reasons"] == ["plant unknown_honesty:6: vetoed 0% < 90%"]
+
+
+def test_the_budget_is_a_ceiling_and_a_repeat_without_one_fails(tmp_path, ident, monkeypatch):
+    on_the_line = gate_calibrate.calibrate(*gate_calibrate.load_bank(
+        constant_bank(tmp_path / "edge", ident, total_s=1200.0)), draws=1)
+    assert on_the_line["a8"] == {"max_total_s": 1200.0, "budget_s": 1200, "ok": True}
+    bank = gate_calibrate.load_bank(constant_bank(tmp_path / "nobudget", ident))
+    monkeypatch.setattr(gate_calibrate, "BUDGET_S", {3: 900})  # no entry for this code's repeat
+    rec = gate_calibrate.calibrate(*bank, draws=1)
+    assert rec["a8"] == {"max_total_s": 700.0, "budget_s": None, "ok": False} and rec["passed"] is False
+    assert f"A8: no budget at repeat {gate.REPEAT}" in rec["reasons"]
 
 
 def test_a_slow_or_short_bank_fails(tmp_path, ident):

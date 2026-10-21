@@ -351,6 +351,11 @@ def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision,
     try:
         base = scored(v["transcripts"]["base"], phrases)
         cand = scored(v["transcripts"]["candidate"], phrases)
+        for side, s in (("base", base), ("candidate", cand)):  # a verdict claims `repeat` passes: hold it to that
+            held = sorted({r.get("pass") for r in s.transcript}, key=str)
+            if held != list(range(1, v["repeat"] + 1)):  # exactly passes 1..repeat, not just a highest number
+                raise ChampionError(f"The verdict's {side} transcript has {len(held)} passes, not the "
+                                    f"{str(v['repeat'])[:12]} it claims.")
         d = decide(base, cand)
     except gate.GateError as e:
         raise ChampionError(str(e)) from None
