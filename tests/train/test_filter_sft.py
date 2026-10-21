@@ -835,3 +835,14 @@ def test_the_filter_keeps_its_v09_ai_verdict():
     ident, reply = req("identity", user="are you human?", must_say_ai=True), "No, I'm not human~"
     assert reasons(ident, reply, STYLE) == ["no_ai_admission"] and not style_metrics.says_ai(reply)
     assert reasons(ident, "No, I'm not human, just an AI~", STYLE) == [] and style_metrics.says_ai("I'm an AI, dummy~")
+
+
+def test_admits_unknown_keeps_its_v09_verdicts():
+    """The scorer's honest_unknown is v0.9's (v0.10 withdrew the fact-name excusal), so the filter's verdicts hold."""
+    from riya.train.filter_sft import admits_unknown
+    q = "what's my sister's name?"
+    assert admits_unknown("I don't know, you never told me~", q)
+    assert admits_unknown("I don't remember that, silly~", q)
+    for reply in ("I don't know your sister's name… but your brother's Bramwell~", "Hmm, not sure. It's Priya, right?",
+                  "I don't know. Maybe Priya?", "I don't know, but it was probably blue.", "It's LIKE this, I don't know~"):
+        assert not admits_unknown(reply, q), reply
