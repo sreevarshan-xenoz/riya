@@ -321,3 +321,78 @@ Every decision taken on the user's behalf while executing the three plans. Each 
   - Cost if wrong: small UX differences; M4 falls back to the agents list.
 - Ruling: accepted fix-wave calls — focusTarget(…, lastWave) targets an unlisted wave session (core validates); gaming also holds sleep/wake; badge "!" during a current wave; installer merge unchanged (pinned by test) — cost if wrong: none.
 - Ruling: merge v0.9 via a PR handled by Claude. User checks: the pet on the real desktop, click-to-focus (M4), Connect Claude Code from Health (adds PreToolUse), optional walk frames and the pet_cpu check — cost if wrong: main carries v0.9 (revertable).
+
+## v0.10 A gate that can see
+
+- Ruling: the tone veto (V5) stays absolute. Riya v1 is never adopted while she sounds rude, and clear false positives are fixed as scorer bugs. Cost if wrong: a candidate is blocked where the base is just as rude. The user can relax it.
+- Ruling: the builder-check decisions are spec §4.6 (items 1–11). Rule 1 (the targets-met count) is unchanged, and its base-vs-base disagreement rate is reported. Whether to change it is the user's call. Cost if wrong: an equal candidate may be blocked by rule 1.
+- Ruling: accepted the plan's 27 ambiguity resolutions as written. §4.6 wins over §5, and the spec has a precedence note. Cost if wrong: none.
+- Ruling: base GGUFs verified byte-identical on the laptop and Colab (sha256 11731cb4…530a). Cost if wrong: none.
+- Ruling: preflight CONFLICTs C1–C15 are accepted with the scan's suggested fixes. Additional calls:
+  - C9: the filter keeps its old `no_ai_admission` behaviour via a keyword (`strict=True`) so the training mix is unchanged (spec §3);
+  - C10: verdict reuses `champion._sha256` (or a shared helper);
+  - C11: shared test fixtures go in a conftest or helper module;
+  - C14: C1 runs bank-1 alone first, then bank-2 and bank-3.
+  - Notes adopted: the calibration record is also bound to the base GGUF's sha256 (stricter), and the plan prints `gate.identity()` on Colab before the first run.
+  - The plan is amended in place and the briefs regenerated.
+  - Cost if wrong: none.
+- Ruling: all findings promoted to fix round 1, using the reviewer's fixes.
+  - C1: the NOT_HUMAN acceptance is narrowed. It needs no AI denial, no retraction, no realness claim anywhere and no rhetorical framing.
+  - I1: a fact name is excused only alongside its own fact's relation word. This tightens §4.6.4, since the old wording let a near-miss misattribution pass.
+  - M1: answer particles (no/nope/nah) and "im".
+  - M2: the A4 test checks against independently counted values.
+  - Anti-goalpost: every change is stricter or fixes a symmetric false negative.
+  - Cost if wrong: a few honest replies are scored dishonest, which is the safe direction.
+- Ruling: C1 is resolved by withdrawing the NOT_HUMAN widening, and spec §4.6.3 is amended. says_ai keeps v0.9 semantics, which is strict, safe and symmetric. I1 uses a clause-level rule: the relation word must be in the name's clause, and the clause must have no question-only word. M2 adds a facts-bearing unknown row. N3: names are not STOP-filtered. Cost if wrong: an honest "not human" is scored dishonest for both models, which only thins V4's probe count.
+- Ruling: I1 is resolved by withdrawing the §4.6.4 excusal (the spec is amended). honest_unknown and its helpers revert to main byte for byte, B1 goes with them (plus a regression test), and the training filter keeps its v0.9 verdicts. B2: the plan is updated and briefs 3–9 are regenerated. Pattern: a scorer widening that can't be proven safe is withdrawn; v0.9 strictness errs safely and symmetrically. Cost if wrong: less statistical power on near-miss unknown probes.
+- Ruling (pre-review): the A8 drop order must keep every coverage minimum. Order the about-me probes so the last 6 (the ones dropped) are direct-recall probes, and test the coverage after a drop. Cost if wrong: none.
+- Ruling: corrects my pre-review ruling. Use the reviewer's reorder (g_about_26 before g_about_21), which keeps every minimum after the drop, and add a test for it. I2: no fact content word in an about-me question, with a test (otherwise an echo of the question scores as recall). M1, M3, M4, M5 and M6 are fixed as the review suggests. M2 is accepted: on-path AI is in-distribution by design (it measures her contract path, for both models). Cost if wrong: none.
+- Ruling: the new minor (a category word can pass recall on probes 01/04/08/23 with a wrong name) is parked. It is symmetric across models and errs toward recall. Cost if wrong: a little extra noise on about-me.
+- Ruling: the Monte Carlo min-p ranking counts the observed assignment among B+1 (standard, valid). Task 5 passes a per-metric `key` so the metrics' draw streams are independent; carried to Task 5. Cost if wrong: none.
+- Ruling: I1, M1 and M2 promoted. Add the review's exact cases, and the min-p test must fail when S₂ is dropped. Cost if wrong: none.
+- Ruling: scorer_sha256 normalises CRLF to LF (accepted), and probe_sha256 must do the same: the laptop checkout is CRLF, so raw bytes would refuse every adopt. Folded into the review fix round.
+- Ruling: accepted the other calls. A probe missing from the candidate counts as flipped for V4 (strict). Refusing without a calibration record until Task 8 is by design. gate.py is inside scorer_sha256, so any edit invalidates a record; that is the intended strictness. Cost if wrong: none.
+- Ruling: I1 and M1–M6 promoted, plus the probe_sha256 CRLF normalisation; each test is mutation-verified. Cost if wrong: none.
+- Ruling (deferred): considered tightening V4 to "candidate dishonest in ≥ 2 of 3 passes". Not done: at a per-probe base honesty of about 0.9, a base-vs-base false veto would be about 40%. Revisit with the A1 bank's per-probe base honesty. Meanwhile the AI honesty target (100%) still binds through rule 1. Cost if wrong: a scattered AI-honesty regression with compensating gains could adopt; it is flagged to the user.
+- Ruling: accepted the T6 calls. verdict.py imports gate (numpy is fine in evaluation/). The hash-order test was moved to file_identity. A plain base-vs-base doesn't hash the base. Cost if wrong: none.
+- Ruling: everything is promoted. I1/I2: per-check and per-field mutant-killing tests. M1: an empty --verdict-out path is refused. M2 is decided now rather than passed to Task 7: load_verdict refuses a candidate verdict with no adapter sha. M3: docstring and line wrap. M4: atomicity is pinned. Cost if wrong: none.
+- Ruling: --port given with --adopt-verdict or --check-verdict is refused as a usage error (the CPU check is fixed at 8091); folded into the review fix round. Concerns 2 and 3 are accepted: the timing excludes the record write, and a failed post-install hash falls back to the base, the same as v0.8. Cost if wrong: none.
+- Ruling: all promoted.
+  - I1: --port with a verdict mode is a usage error.
+  - M1: a single-stat and re-stat guard around the hash and the record.
+  - M2: the CPU ready timeout is 90 s, keeping A10 within 2 minutes.
+  - M3: a missing binary gives a clean refusal.
+  - M4: the injectable temp dir is used in tests.
+  - Plus a test pinning the v0.8 order of the port and gaming checks.
+  - Cost if wrong: none.
+- Ruling (pre-review, for the fix round):
+  - Replace the runtime monkeypatch cache (_scored_once) with an explicit, injectable outcome cache that gate.decide accepts, for example `score=` or `outcomes=`. No calibration record exists yet, so the scorer_sha256 change is free.
+  - Veto labels come from structured veto ids in decide's result, not from matching text order.
+  - The extra record keys are accepted.
+  - Cost if wrong: none.
+- Ruling: everything is promoted, together with the pre-review design changes.
+  - An explicit injectable scoring hook in gate.decide replaces the monkeypatch.
+  - Structured veto ids.
+  - I1/I2: failing-direction tests for A2, A1 and the plants.
+  - I3: distinct live runs only.
+  - M1: a pre-registered seed constant.
+  - M2: calibrate refuses bank verdicts from another identity.
+  - M3: the noisy bank is used for determinism.
+  - M4: trim the redundant run.
+  - Cost if wrong: none.
+- Ruling: the champion's Colab launch passes `extra=["--cache-ram","0"]` when it detects Colab (or via an env flag), instead of trusting the unverified LLAMA_ARG_CACHE_RAM env var; folded into the final fix wave. Cost if wrong: a gate run OOM-killed on Colab.
+- Ruling: on Colab, use the prebuilt llama.cpp release (b11780, ubuntu-cuda-13.4-x64, plus cudart) via scratch_runs/colab_llamabin.py, instead of a 1.5 h source build. Colab's torch is cu130, and the verdict records the server version. Cost if wrong: a fallback to the source build.
+- Ruling: the fix wave makes this impossible.
+  - tests/conftest.py autouse-redirects brain's default model and adapter paths (and DEFAULT_MODEL) to tmp for EVERY test.
+  - A session-level guard fails the run if anything under %USERPROFILE%\models changes.
+  - A contract rule for future plans: probe tests run only under pytest from the repo, never from copies.
+- Ruling: also in the fix wave:
+  - I1: a tests/core/test_runbook_flow.py e2e test, champion verdict → calibrate → check → adopt, all offline.
+  - M1, M2: README.
+  - M3: gate_calibrate writes the record only on PASS; a failing or diagnostic run writes to a separate path.
+  - M4: verdicts and records carry python and numpy versions (informational, not identity).
+  - M6: --repeat with the verdict modes is refused.
+  - The queued item: the champion passes `--cache-ram 0` when on Colab.
+  - M5 is parked until the A1 transcripts are read (§3 path).
+  - Cost if wrong: none.
+- Ruling: merge v0.10 via a PR handled by Claude. The gate refuses every candidate until evaluation/gate_calibration.json exists, so nothing can adopt before calibration. C0–C3 (bank runs, calibration, round-2 verdict) follow on Colab when a T4 is available, and the record lands in a follow-up PR. The user adopts (C4) — cost if wrong: main carries v0.10 (revertable).

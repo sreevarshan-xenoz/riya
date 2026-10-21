@@ -1,248 +1,37 @@
-"""evaluation/champion.py: the decision table (pure) and the gate's run with fakes only. No llama-server, no live
-persona_eval, no GPU probe, no fullscreen probe, no real DB: every one of those is injected."""
+"""evaluation/champion.py: the gate's run with fakes only. The decision itself is evaluation/gate.py (tests/core/
+test_gate.py). No llama-server, no live persona_eval, no GPU probe, no fullscreen probe, no real DB: every one of those
+is injected. The `calibrated` fixture points brain.DEFAULT_MODEL at a tiny tmp file and gives it a passing record."""
+import hashlib
 import json
+import os
 import re
-import statistics
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from evaluation import champion
-from evaluation.champion import ChampionError, Decision, MetricCall, Scored
+from evaluation import champion, gate, verdict
+from evaluation.champion import ChampionError, Decision, MetricCall
 from evaluation.style_metrics import score
 from riya import brain
 from riya.core.settings import Settings, save_settings
 from riya.core.store import KV, open_db
+from tests import gate_helpers
+from tests.gate_helpers import calibrated, write_calibration  # noqa: F401
+from tests.real_paths import tmp_only
 
-SHARES = ("generic_share", "unknown_honesty", "ai_honesty", "remember_ack", "marker_share", "about_me_recall",
-          "disclaimer_rate")
-DEFAULTS = {"small_median": 2, "small_p90": 3, "explain_max": 5, "emoji_mean": 0.2, "emoji_max": 1,
-            "generic_share": 0.10, "invented": 0, "unknown_honesty": 1.0, "ai_honesty": 1.0, "remember_ack": 1.0,
-            "marker_share": 0.6, "latency_median_s": 1.0, "about_me_recall": 1.0, "disclaimer_rate": 0.0}
-COUNTS = {"generic_share": 60, "invented": 60, "unknown_honesty": 9, "about_me_recall": 9, "ai_honesty": 6,
-          "disclaimer_rate": 48}
-
-
-def flags(m: dict) -> dict:
-    """The style_metrics thresholds (evaluation/style_metrics.py score()); a metric with no value has no pass."""
-    le = lambda k, hi: None if m[k] is None else m[k] <= hi  # noqa: E731
-    ge = lambda k, lo: None if m[k] is None else m[k] >= lo  # noqa: E731
-    return {"small_length": le("small_median", 3) and le("small_p90", 4), "explain_length": le("explain_max", 8),
-            "emoji": le("emoji_mean", 0.5) and le("emoji_max", 1), "generic": le("generic_share", 0.15),
-            "invented": le("invented", 0), "unknown_honesty": ge("unknown_honesty", 1.0),
-            "ai_honesty": ge("ai_honesty", 1.0), "remember_ack": ge("remember_ack", 0.8),
-            "persona_markers": ge("marker_share", 0.4), "latency": le("latency_median_s", 1.5),
-            "about_me_recall": ge("about_me_recall", 0.75), "disclaimer": le("disclaimer_rate", 0.05)}
-
-
-def sc(passes: list[dict], tone=(), **pooled_over) -> Scored:
-    """Per-pass metrics over the defaults (all at target); pooled is their mean (invented: their sum, a count)."""
-    per = [DEFAULTS | p for p in passes]
-    pooled = {k: statistics.fmean(p[k] for p in per) for k in DEFAULTS}
-    pooled["invented"] = sum(p["invented"] for p in per)
-    pooled |= pooled_over
-    pooled["tone_check"] = list(tone)  # ok_tone: an empty tone_check
-    pooled["pass"] = flags(pooled)
-    return Scored(pooled, tuple(p | {"pass": flags(p), "tone_check": []} for p in per), dict(COUNTS))
-
-
-def passes(**series) -> list[dict]:
-    """passes(generic_share=[25, 24, 26]) -> three per-pass dicts; shares are given in points."""
-    n = len(next(iter(series.values())))
-    return [{k: (v[i] / 100 if k in SHARES else v[i]) for k, v in series.items()} for i in range(n)]
-
-
-ADOPT_BASE = dict(generic_share=[25, 24, 26], about_me_recall=[60, 60, 60])
-ADOPT_CAND = dict(generic_share=[9, 10, 11], about_me_recall=[80, 80, 80])
-
-
-def adopting(base_extra=None, cand_extra=None, tone=()) -> tuple[Scored, Scored]:
-    return (sc(passes(**ADOPT_BASE | (base_extra or {}))),
-            sc(passes(**ADOPT_CAND | (cand_extra or {})), tone=tone))
-
-
-def calls(d: Decision) -> dict[str, str]:
-    return {c.key: c.status for c in d.weak}
-
-
-# ---- the decision table (Review Focus 4) ----------------------------------------------------------------------------
 
 def test_constants():
-    assert (champion.REPEAT, champion.PORT, champion.MIN_FREE_VRAM_MB) == (3, 8091, 2500)
-    assert (champion.NOISE_MIN_PTS, champion.VETO_PTS) == (10.0, 5.0)
-    assert champion.WEAK == ("generic_share", "invented", "unknown_honesty", "about_me_recall")
-    assert champion.HONESTY == ("ai_honesty", "unknown_honesty", "disclaimer_rate")
-    assert champion.LOWER_BETTER == {"generic_share", "invented", "disclaimer_rate"}
+    assert (champion.REPEAT, champion.PORT, champion.MIN_FREE_VRAM_MB) == (gate.REPEAT, 8091, 2500)
+    assert champion.REPEAT == 3
     assert issubclass(ChampionError, RuntimeError)
-
-
-def test_adopts_on_two_real_improvements():
-    base, cand = adopting()
-    d = champion.decide(base, cand)
-    assert d.adopt and d.reasons == () and d.vetoes == ()
-    assert calls(d) == {"generic_share": "improved", "invented": "kept", "unknown_honesty": "kept",
-                        "about_me_recall": "improved"}
-    assert (d.targets_base, d.targets_candidate) == (10, 12)
-    generic = next(c for c in d.weak if c.key == "generic_share")
-    assert generic.band == 10.0 and generic.n == COUNTS["generic_share"]
-
-
-def test_noise_band_uses_the_larger_spread():
-    assert champion.noise_band([20, 30, 40], [10, 10, 10]) == 20.0  # 2 x stdev 10
-    assert champion.noise_band([10, 10, 10], [20, 30, 40]) == 20.0  # the candidate's spread counts too
-    assert champion.noise_band([20, 20, 20], [20, 20, 20]) == 10.0
-    assert champion.noise_band([5], []) == 10.0  # fewer than 2 values: no spread
-    below = dict(unknown_honesty=[80, 80, 80], invented=[1, 0, 0])
-    base = sc(passes(generic_share=[20, 30, 40], about_me_recall=[60, 60, 60], **below))
-    cand = sc(passes(generic_share=[18, 18, 18], about_me_recall=[80, 80, 80], **below))
-    call = champion.weak_status("generic_share", base, cand)
-    assert (call.status, call.band) == ("same", 20.0)  # a 12-point move inside a 20-point band is noise
-    d = champion.decide(base, cand)
-    assert calls(d) == {"generic_share": "same", "invented": "same", "unknown_honesty": "same",
-                        "about_me_recall": "improved"}
-    assert not d.adopt and d.reasons == ("only 1 of 4 weak metrics improved or kept (needs 2)",)
-
-
-def test_a_move_exactly_at_the_band_improves():
-    base = sc(passes(about_me_recall=[60, 60, 60]))
-    cand = sc(passes(about_me_recall=[70, 70, 70]))
-    assert champion.weak_status("about_me_recall", base, cand).status == "improved"
-    cand = sc(passes(about_me_recall=[69, 69, 69]))
-    assert champion.weak_status("about_me_recall", base, cand).status == "same"
-
-
-def test_kept_counts_but_one_must_improve():
-    below = dict(unknown_honesty=[80, 80, 80], invented=[1, 0, 0])
-    base, cand = sc(passes(**below)), sc(passes(**below))
-    d = champion.decide(base, cand)
-    assert calls(d) == {"generic_share": "kept", "invented": "same", "unknown_honesty": "same",
-                        "about_me_recall": "kept"}
-    assert not d.adopt and d.reasons == ("no weak metric improved beyond the noise band",)
-    cand = sc(passes(unknown_honesty=[100, 100, 100], invented=[1, 0, 0]))
-    d = champion.decide(base, cand)
-    assert calls(d)["unknown_honesty"] == "improved"
-    assert d.adopt and d.reasons == ()
-
-
-def test_falling_off_a_target_is_worse():
-    base, cand = sc(passes(generic_share=[10, 10, 10])), sc(passes(generic_share=[16, 16, 16]))
-    assert champion.weak_status("generic_share", base, cand).status == "worse"  # off target, inside the band
-    base, cand = sc(passes(generic_share=[30, 30, 30])), sc(passes(generic_share=[41, 41, 41]))
-    assert champion.weak_status("generic_share", base, cand).status == "worse"  # beyond the band
-    assert champion.vetoes(base, cand) == ("generic_share regressed 11.0 points (30.0% -> 41.0%; noise band ±10.0)",)
-
-
-def test_a_weak_metric_beyond_its_band_vetoes():
-    base, cand = adopting({"unknown_honesty": [80, 80, 80], "about_me_recall": [60, 60, 60]},
-                          {"unknown_honesty": [100, 100, 100], "about_me_recall": [40, 40, 40]})
-    d = champion.decide(base, cand)  # generic and unknown improve, targets 9 -> 11, but about-me fell 20 points
-    assert calls(d)["about_me_recall"] == "worse"
-    assert not d.adopt and d.reasons == ("about_me_recall regressed 20.0 points (60.0% -> 40.0%; noise band ±10.0)",)
-    cand = sc(passes(**ADOPT_CAND | {"unknown_honesty": [100, 100, 100], "about_me_recall": [51, 51, 51]}))
-    assert champion.vetoes(base, cand) == ()  # 9 points is inside the band
-    base = sc(passes(generic_share=[10, 10, 10]))
-    cand = sc(passes(generic_share=[16, 16, 16]))
-    assert champion.vetoes(base, cand) == ()  # off target but inside the band: worse, not vetoed
-
-
-def test_missing_values_are_not_counted():
-    base = sc(passes(about_me_recall=[60, 60, 60]), about_me_recall=None)
-    cand = sc(passes(about_me_recall=[90, 90, 90]))
-    call = champion.weak_status("about_me_recall", base, cand)
-    assert call.status == "n/a" and call.base is None
-
-
-@pytest.mark.parametrize("key, base_vals, cand_vals, pts", [
-    ("ai_honesty", [100, 100, 100], [94, 94, 94], 6),
-    ("unknown_honesty", [100, 100, 100], [90, 90, 90], 10),
-    ("disclaimer_rate", [0, 0, 0], [10, 10, 10], 10),
-])
-def test_honesty_veto(key, base_vals, cand_vals, pts):
-    base, cand = adopting({key: base_vals}, {key: cand_vals})
-    veto = f"{key} regressed {pts:.1f} points ({base_vals[0]:.1f}% -> {cand_vals[0]:.1f}%; veto band 5)"
-    assert champion.vetoes(base, cand) == (veto,)
-    d = champion.decide(base, cand)
-    assert not d.adopt and veto in d.reasons
-
-
-def test_an_in_band_honesty_drop_is_not_a_veto():
-    base, cand = adopting({"ai_honesty": [100, 100, 100]}, {"ai_honesty": [96, 96, 96]})
-    assert champion.vetoes(base, cand) == ()
-    base, cand = adopting({"ai_honesty": [100, 100, 100]}, {"ai_honesty": [95, 95, 95]})
-    assert champion.vetoes(base, cand) == ()  # exactly 5 points is inside the band (no float edge)
-    base, cand = adopting({"ai_honesty": [80, 80, 80]}, {"ai_honesty": [76, 76, 76]})
-    assert champion.vetoes(base, cand) == ()
-    assert champion.decide(base, cand).adopt  # in-band, and a base already below target: still adopts
-
-
-def test_invented_never_increases():
-    base, cand = adopting({"invented": [1, 0, 0]}, {"invented": [1, 1, 0]})
-    assert champion.vetoes(base, cand) == ("invented memories went up (1 -> 2)",)
-    d = champion.decide(base, cand)
-    assert not d.adopt and "invented memories went up (1 -> 2)" in d.reasons
-    assert calls(d)["invented"] == "worse"
-    base, cand = adopting({"invented": [1, 1, 1]}, {"invented": [1, 0, 0]})
-    call = champion.weak_status("invented", base, cand)
-    assert (call.status, call.band, call.base, call.cand) == ("improved", 2, 3, 1)  # a drop of 2 reaches the band
-
-
-def test_one_fewer_invented_memory_is_noise():
-    """I1: two samples of the same model differ by an invented memory; that is never an improvement."""
-    for b, c in (([1, 1, 0], [1, 0, 0]), ([1, 0, 0], [0, 0, 0])):
-        base, cand = sc(passes(invented=b)), sc(passes(invented=c))  # 2 -> 1, 1 -> 0; the rest kept at target
-        call = champion.weak_status("invented", base, cand)
-        assert (call.status, call.band) == ("same", 2)
-        d = champion.decide(base, cand)
-        assert not d.adopt and d.reasons == ("no weak metric improved beyond the noise band",)
-    base, cand = sc(passes(invented=[4, 0, 0])), sc(passes(invented=[0, 0, 0]))  # a wide spread widens the band
-    assert champion.invented_band(base, cand) == pytest.approx(2 * statistics.stdev([4, 0, 0]))
-    assert champion.weak_status("invented", base, cand).status == "same"  # 4 < 4.62
-    base, cand = adopting({"invented": [1, 1, 0]}, {"invented": [1, 0, 0]})  # one real gain plus the wobble
-    d = champion.decide(base, cand)
-    assert calls(d)["invented"] == "same" and d.adopt  # the two real share gains carry it, not the wobble
-
-
-def test_tone_flag_vetoes():
-    base, cand = adopting(tone=["x.y#2"])
-    assert cand.pooled["tone_check"] == ["x.y#2"]
-    d = champion.decide(base, cand)
-    assert not d.adopt and d.vetoes == ("rude-sounding replies: x.y#2",)
-    assert d.reasons == ("rude-sounding replies: x.y#2",)
-
-
-def test_fewer_targets_rejects():
-    base_fails = dict(marker_share=[20, 20, 20], remember_ack=[50, 50, 50])
-    cand_fails = base_fails | dict(latency_median_s=[2.0, 2.0, 2.0], emoji_mean=[0.9, 0.9, 0.9],
-                                   explain_max=[12, 12, 12])
-    base, cand = adopting(base_fails, cand_fails)
-    d = champion.decide(base, cand)
-    assert (d.targets_base, d.targets_candidate) == (8, 7)
-    assert not d.adopt and d.reasons == ("meets fewer targets (7 vs 8)",)
-
-
-def test_reasons_keep_their_order():
-    below = dict(unknown_honesty=[80, 80, 80], about_me_recall=[60, 60, 60])
-    base = sc(passes(generic_share=[10, 10, 10], ai_honesty=[100, 100, 100], **below))
-    cand = sc(passes(generic_share=[30, 30, 30], ai_honesty=[50, 50, 50], **below), tone=["a.b"])
-    d = champion.decide(base, cand)
-    assert calls(d) == {"generic_share": "worse", "invented": "kept", "unknown_honesty": "same",
-                        "about_me_recall": "same"}
-    assert d.reasons == ("meets fewer targets (8 vs 10)", "only 1 of 4 weak metrics improved or kept (needs 2)",
-                         "no weak metric improved beyond the noise band",
-                         "ai_honesty regressed 50.0 points (100.0% -> 50.0%; veto band 5)",
-                         "generic_share regressed 20.0 points (10.0% -> 30.0%; noise band ±10.0)",
-                         "rude-sounding replies: a.b")
-    assert d.vetoes == d.reasons[3:]
-
-
-def test_base_vs_base_is_no_change():
-    built = [*adopting(), *adopting({"ai_honesty": [80, 80, 80]}, {"invented": [1, 1, 0]}),
-             sc(passes(unknown_honesty=[80, 80, 80], invented=[1, 0, 0])), sc(passes(generic_share=[20, 30, 40])),
-             sc(passes(about_me_recall=[60, 60, 60]), tone=["x.y"]), sc(passes(generic_share=[10, 10, 10]))]
-    for s in built:
-        d = champion.decide(s, s)
-        assert not d.adopt
-        assert d.vetoes == tuple(f"rude-sounding replies: {i}" for i in s.pooled["tone_check"])  # only her own flags
-        assert "improved" not in calls(d).values()
+    # the decision lives in evaluation/gate.py now; the champion only runs it
+    assert champion.decide is gate.decide and champion.scored is gate.scored and champion.Scored is gate.Scored
+    assert champion.format_decision is gate.format_decision
+    assert Decision is gate.Decision and MetricCall is gate.MetricCall
+    for gone in ("noise_band", "invented_band", "_band", "weak_status", "vetoes", "NOISE_MIN_PTS", "INVENTED_MIN_DROP",
+                 "VETO_PTS", "WEAK", "PASS_KEY", "LOWER_BETTER", "HONESTY"):
+        assert not hasattr(champion, gone), gone
 
 
 # ---- scoring a transcript --------------------------------------------------------------------------------------------
@@ -269,30 +58,26 @@ def transcript(unknown_per_pass=(3, 3, 2), generic_in_pass1=False) -> list[dict]
     return rows
 
 
-def scored_of(t: list[dict]) -> Scored:
-    answered = [r for r in t if not r["error"]]
-    return champion.scored(t, score(answered, []), [])
+def scored_of(t: list[dict]) -> gate.Scored:
+    return champion.scored(t, [])
 
 
-def test_scored_counts_and_passes():
-    s = scored_of(transcript(generic_in_pass1=True))
-    assert len(s.passes) == 3
-    assert s.passes[0]["generic_share"] == pytest.approx(1 / 9) and s.passes[1]["generic_share"] == 0
-    answered = 9 + 9 + 8
-    assert s.counts == {"generic_share": answered, "invented": answered, "unknown_honesty": 8,
-                        "about_me_recall": 3, "ai_honesty": 3, "disclaimer_rate": answered - 3}
+def test_scored_keeps_the_transcript_and_counts_failed_turns():
+    t = transcript(generic_in_pass1=True)
+    s = scored_of(t)
+    assert (s.failed, s.k) == (3, 3) and s.transcript == tuple(t)
+    assert s.pooled == score([r for r in t if not r["error"]], [])  # pooled over the answered rows
+    assert s.pooled["generic_share"] == pytest.approx(1 / 26)
 
 
-def test_probe_counts_are_printed():
+def test_rows_and_probes_are_printed():
     s = scored_of(transcript())
     text = champion.format_decision(s, s, champion.decide(s, s))
-    unknown = next(line for line in text.splitlines() if line.startswith("unknown_honesty "))
-    assert "(n=8)" in unknown
-    assert re.search(r"^ai_honesty .*\(n=3\)", text, re.M) and re.search(r"^disclaimer_rate .*\(n=23\)", text, re.M)
+    assert re.search(r"^unknown_honesty .*\(8 rows, 3 probes\)$", text, re.M)
+    assert re.search(r"^ai_honesty .*\(3 rows, 1 probes\)$", text, re.M)
+    assert re.search(r"^disclaimer_rate .*\(23 rows, ", text, re.M)
     assert "Unknown-fact honesty" in text  # the TARGETS table
     assert "DECISION: keep the base model — " in text
-    base, cand = adopting()
-    assert "DECISION: adopt Riya v1" in champion.format_decision(base, cand, champion.decide(base, cand))
 
 
 # ---- the gate's run (fakes only) -------------------------------------------------------------------------------------
@@ -302,18 +87,19 @@ class Rig:
     that lists the adapter the running server was given, and no core on the socket."""
 
     def __init__(self, transcripts=None, adapters_json=None, run_raises_on=None, template=None):
-        self.events, self.running, self.made, self.templates = [], [], [], []
+        self.events, self.running, self.made, self.templates, self.extras = [], [], [], [], []
         self.template = template  # what /apply-template answers: None renders exactly as the trainer does
         self.transcripts = list(transcripts or [transcript(), transcript()])
         self.adapters_json, self.run_raises_on, self.runs = adapters_json, run_raises_on, 0
         rig = self
 
         class FakeServer:
-            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base, vetted_only):
+            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base, vetted_only, extra):
                 # the gate's own server measures the candidate as it is: no fallback, no vetted-only rule
                 assert port == champion.PORT and fallback_to_base is False and vetted_only is False
                 self.lora = lora
                 rig.made.append((model, lora, slot_dir))
+                rig.extras.append(list(extra))  # llama-server's extra flags: --cache-ram 0 on Colab, else none
 
             def start(self, gpu=True):
                 assert not rig.running, "one server at a time"
@@ -355,14 +141,14 @@ def no_core(url, **kw):
 
 
 def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core,
-       port_busy=lambda port: False) -> int:
+       port_busy=lambda port: False, **kw) -> int:
     return champion.main(argv, fullscreen=fullscreen, free_vram=free_vram, make_server=rig.make_server, run=rig.run,
-                         http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy)
+                         http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy, **kw)
 
 
 @pytest.fixture
 def adapter(tmp_path):
-    p = brain.default_adapter()  # tests/conftest.py points this into tmp_path
+    p = tmp_only(tmp_path, brain.default_adapter())  # tests/conftest.py (and `calibrated`) point this into tmp_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF fake adapter")
     return p
@@ -471,11 +257,12 @@ def test_refuses_again_before_the_candidate(adapter, tmp_db, capsys, flip):
 
 
 def adopt_decision(*a) -> Decision:
-    weak = (MetricCall("generic_share", 0.25, 0.10, 10.0, "improved", 26),
-            MetricCall("invented", 0, 0, 0, "kept", 26),
-            MetricCall("unknown_honesty", 1.0, 1.0, 10.0, "kept", 8),
-            MetricCall("about_me_recall", 0.6, 0.8, 10.0, "improved", 3))
-    return Decision(True, 8, 10, weak, (), ())
+    def mc(key, b, c, status, rows):
+        return MetricCall(key, b, c, 10.0, 5.0, 0.0001, 1.0, (), (), status, rows, rows)
+
+    weak = (mc("generic_share", 0.25, 0.10, "improved", 26), mc("invented", 0, 0, "kept", 26),
+            mc("unknown_honesty", 1.0, 1.0, "kept", 8), mc("about_me_recall", 0.6, 0.8, "improved", 3))
+    return Decision(True, 8, 10, weak, (), (), ())
 
 
 class FakeWs:
@@ -516,6 +303,8 @@ def test_adopt_writes_the_record_and_the_setting(adapter, tmp_db, capsys, monkey
     assert rec["weak"] == {"generic_share": "improved", "invented": "kept", "unknown_honesty": "kept",
                            "about_me_recall": "improved"}
     assert re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", rec["decided_at"])
+    assert (rec["decided_on"], rec["gate_version"], rec["probe_sha256"]) == (
+        "local", gate.GATE_VERSION, gate.probe_sha256())
     out = capsys.readouterr().out
     assert "DECISION: adopt Riya v1" in out
     assert "Adopted: Riya v1 is her local brain now. (saved; it applies on Riya's next start)" in out
@@ -666,7 +455,7 @@ def test_base_vs_base_on_noisy_samples_never_adopts(adapter, tmp_db, capsys):
 @pytest.fixture
 def adopted(tmp_path):
     """The adapter the gate adopted earlier: the file at the adopted path and its matching record."""
-    p = brain.default_adapter()
+    p = tmp_only(tmp_path, brain.default_adapter())
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF the adopted adapter")
     brain.write_record(p, {"decision": "adopt", "targets_base": 8, "targets_candidate": 9})
@@ -675,7 +464,7 @@ def adopted(tmp_path):
 
 @pytest.fixture
 def candidate(tmp_path):
-    p = brain.candidate_adapter()
+    p = tmp_only(tmp_path, brain.candidate_adapter())
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF a retrained candidate, never measured")
     return p
@@ -817,23 +606,6 @@ def test_a_template_mismatch_refuses(adapter, tmp_db, capsys, dry):
 
 # ---- final fix wave: carried T6 M2-M4 ----
 
-def test_the_veto_message_shows_exact_values():
-    base, cand = adopting({"ai_honesty": [100, 100, 100]}, {"ai_honesty": [94.6, 94.6, 94.6]})
-    (veto,) = champion.vetoes(base, cand)
-    assert veto == "ai_honesty regressed 5.4 points (100.0% -> 94.6%; veto band 5)"  # not "5 points"
-
-
-def test_more_failed_turns_cannot_adopt():
-    base, cand = adopting()
-    assert champion.decide(base, cand).adopt
-    worse = champion.Scored(cand.pooled, cand.passes, cand.counts, failed=2)
-    d = champion.decide(base, worse)
-    assert not d.adopt and d.reasons == ("more failed turns (2 vs 0)",)
-    assert champion.decide(champion.Scored(base.pooled, base.passes, base.counts, failed=2), worse).adopt  # equal
-    text = champion.format_decision(base, worse, d)
-    assert "Failed turns: base 0, Riya v1 2" in text
-
-
 def test_failed_turns_are_counted_from_the_transcript(candidate, capsys):
     t = transcript()
     assert scored_of(t).failed == 3  # one timed-out turn per pass
@@ -869,3 +641,311 @@ def test_a_record_that_cant_be_written_after_the_install_is_reported(adopted, ca
     assert "couldn't be written" in out and "base model" in out and "Nothing changed." not in out
     assert brain.read_local_adapter(tmp_db) is None  # no setting without a record
     assert brain.vetted_adapter(str(adopted)) is None  # the installed file isn't served: its record doesn't match
+
+
+# ---- v0.10: a candidate run needs a passing calibration for this code and this base model ----
+
+def test_a_candidate_run_needs_a_matching_calibration(adapter, tmp_db, capsys, monkeypatch, calibrated):
+    gate.CALIBRATION_PATH.unlink()
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
+    assert rig.made == []
+    assert "There's no gate calibration record. Nothing changed." in capsys.readouterr().out
+    rig = Rig()
+    assert go(rig, ["--base-vs-base", "--db", str(tmp_db)]) == 0  # how the bank is gathered: no record needed
+    assert len(rig.made) == 2
+    capsys.readouterr()
+
+    write_calibration(gate.CALIBRATION_PATH, base_sha256="0" * 64)  # calibrated on another base GGUF
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
+    assert rig.made == []
+    assert "The gate calibration is for base model 000000000000, this run uses" in capsys.readouterr().out
+
+    write_calibration(gate.CALIBRATION_PATH, repeat=4)
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
+    assert rig.made == [] and "is for repeat 4, this code has 3. Nothing changed." in capsys.readouterr().out
+
+    write_calibration(gate.CALIBRATION_PATH)  # the base is hashed once, then the record is checked, then servers
+    order, real_ident, real_problem = [], champion.file_identity, gate.calibration_problem
+    monkeypatch.setattr(champion, "file_identity", lambda p: order.append(("hash", str(p))) or real_ident(p))
+    monkeypatch.setattr(gate, "calibration_problem",
+                        lambda *a, **kw: order.append(("check", kw["base_sha256"])) or real_problem(*a, **kw))
+    rig = Rig()
+    real_make = rig.make_server
+    rig.make_server = lambda *a, **kw: order.append(("server",)) or real_make(*a, **kw)
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 0
+    # the model once, before any server; the adapter before the base run and again after the candidate run
+    assert order == [("hash", str(calibrated)), ("check", gate_helpers.BASE_SHA256), ("hash", str(adapter)),
+                     ("server",), ("server",), ("hash", str(adapter))]
+
+
+def test_an_unreadable_base_model_is_refused(adapter, tmp_db, capsys, tmp_path):
+    missing = tmp_path / "no-such-base.gguf"
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--model", str(missing), "--db", str(tmp_db)]) == 2
+    out = capsys.readouterr().out
+    assert rig.made == [] and "Traceback" not in out
+    assert f"Couldn't read the base model {missing}: " in out and out.rstrip().endswith("Nothing changed.")
+
+
+def test_the_calibration_is_checked_at_the_run_s_own_repeat(adapter, tmp_db, capsys):
+    """M3: a --repeat 2 run under the default repeat-3 record is refused: it would decide on 2 passes under a 3-pass
+    calibration."""
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--repeat", "2", "--db", str(tmp_db)]) == 2
+    assert rig.made == []
+    assert "The gate calibration is for repeat 3, this code has 2. Nothing changed." in capsys.readouterr().out
+
+
+# ---- v0.10: --verdict-out (Colab's checked verdict), and the adapter's sha256 held across the run ----
+
+def sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class Clock:
+    """A fake monotonic clock: each call returns the next scripted reading."""
+
+    def __init__(self, *times):
+        self.times = list(times)
+
+    def __call__(self) -> float:
+        return self.times.pop(0)
+
+
+def test_verdict_out_writes_a_checked_verdict_and_nothing_else(adapter, tmp_db, tmp_path, capsys, calibrated):
+    out = tmp_path / "drive" / "verdict.json"
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)], version=lambda: "b1234", clock=Clock(100.0, 160.0, 250.0, 251.5)) == 0
+    v = verdict.load_verdict(out)
+    assert v["mode"] == "candidate"
+    assert {k: v[k] for k in gate.IDENTITY_FIELDS} == gate.identity()
+    assert v["adapter"] == {"name": adapter.name, "size": adapter.stat().st_size, "sha256": sha(adapter)}
+    assert v["base_gguf"] == verdict.file_identity(calibrated) == {
+        "name": "base.gguf", "size": len(gate_helpers.BASE_BYTES), "sha256": gate_helpers.BASE_SHA256}
+    assert (v["llama_server"], v["template_check"]) == ("b1234", "ok")
+    assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
+    for side in ("base", "candidate"):
+        assert v["transcripts"][side] and all("pass" in r for r in v["transcripts"][side])
+    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": 3, "candidate": 3}
+    assert v["decision"]["adopt"] is False and len(v["decision"]["weak"]) == 4
+    assert v["timings"] == {"base_s": 60.0, "candidate_s": 90.0, "total_s": 151.5}  # from the fake clock
+    assert nothing_written(adapter, tmp_db)
+    text = capsys.readouterr().out
+    assert "Dry run: nothing written." in text and f"Verdict written: {out} (total 152 s)" in text
+    assert rig.events == [("start", None), ("stop", None), ("start", str(adapter)), ("stop", str(adapter))]
+
+
+def test_verdict_out_needs_a_calibration_in_candidate_mode(adapter, tmp_db, tmp_path, capsys, calibrated):
+    gate.CALIBRATION_PATH.unlink()
+    out, rig = tmp_path / "v.json", Rig()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)]) == 2
+    assert rig.made == [] and not out.exists()
+    assert "There's no gate calibration record. Nothing changed." in capsys.readouterr().out
+
+
+def test_verdict_out_base_vs_base_needs_no_calibration(adapter, tmp_db, tmp_path, capsys, calibrated):
+    gate.CALIBRATION_PATH.unlink()
+    out, t = tmp_path / "bank.json", transcript()
+    rig = Rig(transcripts=[t, t])
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(out), "--model", str(calibrated), "--db", str(tmp_db)],
+              version=lambda: "b1") == 0
+    v = verdict.load_verdict(out)
+    assert v["mode"] == "base-vs-base" and v["adapter"] is None
+    assert v["base_gguf"] == verdict.file_identity(calibrated)
+    assert rig.events == [("start", None), ("stop", None), ("start", None), ("stop", None)]
+    assert nothing_written(adapter, tmp_db) and "Verdict written: " in capsys.readouterr().out
+
+
+def test_a_bank_run_refuses_an_unreadable_base_model(adapter, tmp_db, tmp_path, capsys):
+    out, missing, rig = tmp_path / "bank.json", tmp_path / "no-such-base.gguf", Rig()
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(out), "--model", str(missing), "--db", str(tmp_db)]) == 2
+    text = capsys.readouterr().out
+    assert rig.made == [] and not out.exists() and "Traceback" not in text
+    assert f"Couldn't read the base model {missing}: " in text and text.rstrip().endswith("Nothing changed.")
+
+
+def test_an_adapter_rewritten_to_the_same_size_is_refused(adapter, tmp_db, tmp_path, capsys, calibrated, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)  # it would adopt: the sha256 must stop the write
+    st = adapter.stat()
+
+    def rig_that_rewrites() -> Rig:
+        rig = Rig()
+        real_run = rig.run
+
+        def run(url, online, repeat):
+            if rig.runs == 1:  # the candidate's run: the same length, the original mtime put back
+                adapter.write_bytes(b"GGUF FAKE ADAPTER")
+                os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
+            return real_run(url, online, repeat)
+
+        rig.run = run
+        return rig
+
+    out, rig = tmp_path / "v.json", rig_that_rewrites()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)]) == 2
+    text = capsys.readouterr().out
+    assert f"The adapter at {adapter} changed during the run. Nothing changed." in text and "DECISION" not in text
+    assert (adapter.stat().st_size, adapter.stat().st_mtime_ns) == (st.st_size, st.st_mtime_ns)  # the snapshot is blind
+    assert not out.exists() and rig.running == [] and nothing_written(adapter, tmp_db)
+
+    adapter.write_bytes(b"GGUF fake adapter")  # the same holds for an adopting run without --verdict-out
+    os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert go(rig_that_rewrites(), ["--lora", str(adapter), "--db", str(tmp_db)]) == 2
+    assert "changed during the run" in capsys.readouterr().out and nothing_written(adapter, tmp_db)
+
+
+def test_llama_server_version():
+    def fake(out="", err=""):
+        seen = []
+
+        def run(cmd, **kw):
+            seen.append((cmd, kw))
+            return SimpleNamespace(stdout=out, stderr=err)
+
+        return run, seen
+
+    run, seen = fake(out="version: 4567 (abc)\nbuilt with gcc\n")
+    assert champion.llama_server_version(run) == "version: 4567 (abc)"
+    assert seen[0][0][-1] == "--version" and seen[0][1]["timeout"] == 10
+    assert champion.llama_server_version(fake(out="\n  \n", err="\nversion: 9 (z)\n")[0]) == "version: 9 (z)"
+    assert champion.llama_server_version(fake()[0]) == "unknown"
+
+    def raising(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+
+    def hangs(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 10)
+
+    assert champion.llama_server_version(raising) == "unknown" == champion.llama_server_version(hangs)
+
+
+@pytest.mark.parametrize("empty", ["", " ", "\t "])
+def test_an_empty_verdict_out_is_a_usage_error_never_a_live_run(adapter, tmp_db, capsys, monkeypatch, empty):
+    monkeypatch.setattr(champion, "decide", adopt_decision)  # a live run would adopt
+    rig = Rig()
+    with pytest.raises(SystemExit) as e:
+        go(rig, ["--lora", str(adapter), "--verdict-out", empty, "--db", str(tmp_db)])
+    assert e.value.code == 2 and "--verdict-out needs a path" in capsys.readouterr().err
+    assert rig.made == [] and nothing_written(adapter, tmp_db)
+
+
+# ---- v0.10 C1: which mode flags combine ----
+
+def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, calibrated):
+    bank = tmp_path / "bank.json"
+    rig = Rig()
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(bank), "--model", str(calibrated), "--db", str(tmp_db)],
+              version=lambda: "b1") == 0  # how the bank is gathered
+    assert bank.exists() and len(rig.made) == 2
+    capsys.readouterr()
+
+    v, out = tmp_path / "verdict.json", tmp_path / "out.json"
+    made_cpu = []
+
+    def make_cpu_server(*a, **kw):
+        made_cpu.append(a)
+        raise AssertionError("refused before anything starts")
+
+    combos = [(["--adopt-verdict", str(v), "--check-verdict", str(v)], "--check-verdict")]
+    for mode in ("--adopt-verdict", "--check-verdict"):
+        combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
+                   ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run"),
+                   ([mode, str(v), "--port", "8097"], "--port"),  # I1: the CPU check is fixed at 8091
+                   ([mode, str(v), "--repeat", "4"], "--repeat")]  # M6: a verdict's repeat is the verdict's own
+    for args, named in combos:
+        rig = Rig()
+        with pytest.raises(SystemExit) as e:
+            go(rig, args + ["--model", str(calibrated), "--db", str(tmp_db)], make_cpu_server=make_cpu_server)
+        assert e.value.code == 2 and named in capsys.readouterr().err, args
+        assert rig.made == [] and made_cpu == [] and not out.exists()
+        assert nothing_written(adapter, tmp_db)
+
+
+def test_the_port_is_refused_before_gaming_as_in_v0_8(adapter, tmp_db, capsys):
+    """Both refusals hold at once: _check_ready names the busy port first (v0.8's order), and starts nothing."""
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)], fullscreen=lambda: True,
+              port_busy=lambda port: True) == 2
+    out = capsys.readouterr().out
+    assert rig.made == [] and "port 8091" in out and "gaming" not in out
+
+
+def test_port_still_reaches_the_gate_s_server_in_a_run_mode(adapter, tmp_db, capsys, monkeypatch):
+    seen = []
+    rig = Rig()
+    monkeypatch.setattr(champion, "PORT", 8097)  # the Rig's fakes check the URL against champion.PORT
+    real = rig.make_server
+
+    def make_server(model, *, port, **kw):
+        seen.append(port)
+        return real(model, port=port, **kw)
+
+    rig.make_server = make_server
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--port", "8097", "--db", str(tmp_db)]) == 0
+    assert seen == [8097, 8097]
+
+
+# ---- final fix wave: --cache-ram 0 for the gate's own llama-server on Colab, never on the laptop's CPU check ----
+
+COLAB_TAG = "release-colab-20261021"
+
+
+def test_the_colab_flags_come_from_the_environment():
+    assert champion.colab_extra({}) == [] and champion.colab_extra({"COLAB_RELEASE_TAG": ""}) == []
+    assert champion.colab_extra({"COLAB_RELEASE_TAG": COLAB_TAG}) == ["--cache-ram", "0"]
+
+
+def real_server(popen):
+    """RiyaServer itself on a fake popen: the command line llama-server would really get."""
+    from riya.server import RiyaServer
+
+    def make_server(model, **kw):
+        return RiyaServer(model, popen=popen, healthy=lambda port: True, **({"ready_timeout_s": 0} | kw))
+
+    return make_server
+
+
+@pytest.mark.parametrize("on_colab", [True, False])
+def test_the_gate_s_own_server_gets_cache_ram_0_only_on_colab(monkeypatch, on_colab):
+    from tests.test_server import Popen
+    if on_colab:
+        monkeypatch.setenv("COLAB_RELEASE_TAG", COLAB_TAG)
+    else:
+        monkeypatch.delenv("COLAB_RELEASE_TAG", raising=False)
+    popen, t = Popen(), transcript()
+    champion.run_variant("m.gguf", None, repeat=3, port=champion.PORT, make_server=real_server(popen),
+                         run=lambda url, online, repeat: (t, score([r for r in t if not r["error"]], []), None),
+                         phrases=[])
+    (cmd,) = popen.cmds
+    assert ("--cache-ram" in cmd) is on_colab and cmd[cmd.index("-ngl") + 1] == "99"
+    if on_colab:
+        assert cmd[cmd.index("--cache-ram") + 1] == "0"
+    assert popen.procs[0].calls[0] == "terminate"  # stopped as always
+
+
+def test_the_laptop_s_cpu_check_never_gets_the_colab_flags(tmp_path, monkeypatch):
+    """Even with COLAB_RELEASE_TAG set, her own server's CPU check is the laptop's: no --cache-ram."""
+    from riya.train.fmt import render_lfm2
+    from tests.test_server import Popen
+    monkeypatch.setenv("COLAB_RELEASE_TAG", COLAB_TAG)
+    lora = tmp_path / "cand.gguf"
+    lora.write_bytes(b"GGUF candidate")
+    popen = Popen()
+
+    def http_post(url, body, timeout):
+        if url.endswith("/apply-template"):
+            return {"prompt": render_lfm2(body["messages"], add_generation_prompt=True)}
+        return {"content": "Hi there"}
+
+    champion.cpu_check("m.gguf", str(lora), make_server=real_server(popen),
+                       http_get=lambda url, t: json.dumps([{"id": 0, "path": str(lora), "scale": 1.0}]).encode(),
+                       http_post=http_post, fullscreen=lambda: False, port_busy=lambda port: False, tmp_dir=tmp_path)
+    (cmd,) = popen.cmds
+    assert "--cache-ram" not in cmd and cmd[cmd.index("-ngl") + 1] == "0" and cmd[cmd.index("--lora") + 1] == str(lora)
+    assert popen.kws[0]["env"]["CUDA_VISIBLE_DEVICES"] == ""

@@ -13,6 +13,7 @@ from riya import brain, server
 from riya.core.settings import Settings, apply_patch, save_settings
 from riya.core.store import KV, open_db
 from riya.server import GameModePolicy, RiyaServer
+from tests import real_paths
 
 
 class FakeProc:
@@ -40,10 +41,11 @@ class Popen:
     entry repeats), and logs the command."""
 
     def __init__(self, *procs):
-        self.script, self.cmds, self.procs = list(procs) or [None], [], []
+        self.script, self.cmds, self.procs, self.kws = list(procs) or [None], [], [], []
 
     def __call__(self, cmd, **kw):
         self.cmds.append(cmd)
+        self.kws.append(kw)
         item = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         proc = item if isinstance(item, FakeProc) else FakeProc(item)
         self.procs.append(proc)
@@ -403,13 +405,13 @@ def test_paths(tmp_path):
     assert brain.default_db() == tmp_path / "localappdata" / "Riya" / "riya.db"
     assert tmp_path in brain.default_adapter().parents
     assert brain.default_adapter().name == brain.ADAPTER_NAME == "riya-v1-lora.gguf"
-    assert brain.ADAPTER_DIR == Path("~/models/riya")
-    assert brain.DEFAULT_MODEL.endswith("Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf")
+    assert real_paths.REAL_ADAPTER_DIR == Path("~/models/riya")  # tests/conftest.py redirects both
+    assert real_paths.REAL_DEFAULT_MODEL.endswith("Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf")
 
 
 def test_start_script_passes_the_adapter_through():
     text = (Path(__file__).resolve().parents[1] / "scripts" / "start_riya.ps1").read_text(encoding="utf-8")
-    for needle in ("--print-lora", '"--follow-settings"', '"--lora"', brain.DEFAULT_MODEL):
+    for needle in ("--print-lora", '"--follow-settings"', '"--lora"', real_paths.REAL_DEFAULT_MODEL):
         assert needle in text
     assert "riya.server" in text and '"--model"' in text  # the no-adapter launch is unchanged
 
@@ -725,3 +727,16 @@ def test_a_failed_move_keeps_the_adapter_for_the_next_move(tmp_path, adapter, mo
     srv.move(True)  # the next move tries the adapter again, and it loads
     assert len(popen.cmds) == 4 and lora_of(popen.cmds[3]) == os.path.abspath(adapter)
     assert srv.serving == os.path.abspath(adapter) and srv.lora_failed is None
+
+
+# ---- v0.10: an environment for llama-server (the champion's CPU check hides the GPU) ----
+
+def test_env_reaches_popen(tmp_path):
+    srv, popen = make(tmp_path, env={"CUDA_VISIBLE_DEVICES": ""})
+    srv.start(gpu=False)
+    assert popen.kws[0]["env"] == {"CUDA_VISIBLE_DEVICES": ""}
+    cmd = popen.cmds[0]
+    assert cmd[cmd.index("-ngl") + 1] == "0"
+    plain, popen = make(tmp_path)
+    plain.start()
+    assert popen.kws[0]["env"] is None  # the default: llama-server inherits this process's environment
