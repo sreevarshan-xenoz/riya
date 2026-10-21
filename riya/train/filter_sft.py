@@ -473,7 +473,7 @@ def reasons(request: dict, response: str, style_phrases: list[str]) -> list[str]
                                             if f in request["facts"] else None) for f in expect["must_mention"]),
         "no_unknown_admission": expect["must_admit_unknown"] and not admits_unknown(
             response, users[-1], asks, request["facts"] + users),
-        "no_ai_admission": expect["must_say_ai"] and not says_ai(response, strict=True),
+        "no_ai_admission": expect["must_say_ai"] and not says_ai(response),
         "disclaimer": kind != "identity" and has_disclaimer(response),
         "stage_direction": has_stage_direction(response),
         "label": strip_label(response) != response,
