@@ -110,15 +110,54 @@ def test_a_model_without_a_snapshot_is_unverified(monkeypatch):
         FastEmbedder(verify=True)
 
 
+def test_installed_fastembed_reads_the_package_metadata(monkeypatch):
+    import importlib.metadata
+    assert embed.installed_fastembed() == embed.FASTEMBED_VERSION  # this venv is the pinned one
+
+    def absent(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(importlib.metadata, "version", absent)
+    assert embed.installed_fastembed() == "missing"
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "9.9.9" if name == "fastembed" else "?")
+    assert embed.installed_fastembed() == "9.9.9"
+
+
+@pytest.fixture(scope="module")
+def module_scope_load():
+    try:
+        return FastEmbedder()
+    except RuntimeError as e:  # a module-scoped fixture runs before the function-scoped autouse guard
+        return e
+
+
+def test_a_module_scoped_fixture_cannot_load_fastembed_either(module_scope_load):
+    assert isinstance(module_scope_load, RuntimeError) and "tests never load" in str(module_scope_load)
+
+
+def test_constructing_text_embedding_directly_is_guarded_too(tmp_path):
+    from fastembed import TextEmbedding
+
+    from tests import real_paths
+    with pytest.raises(RuntimeError, match="tests never load"):
+        TextEmbedding("BAAI/bge-small-en-v1.5", cache_dir=str(tmp_path))
+    with pytest.raises(RuntimeError, match="tests never load"):
+        TextEmbedding(cache_dir=str(tmp_path), local_files_only=True)
+    with real_paths.allow_real_fastembed():  # the opt-in tests' door: the real constructor, only inside the block
+        assert TextEmbedding.__init__ is real_paths.REAL_TEXT_EMBEDDING_INIT
+    assert TextEmbedding.__init__ is not real_paths.REAL_TEXT_EMBEDDING_INIT
+
+
 def test_identity_names_its_parts():
     snap, files, ver = embed.EMBED_SNAPSHOT, dict(embed.EMBED_FILES), embed.FASTEMBED_VERSION
     base = embed.pin_id(snap, files, ver)
     assert embed.pin_id(snap, files, ver) == base
-    assert embed.pin_id("c" * 40, files, ver) != base
-    assert embed.pin_id(snap, files, "0.9.1") != base
+    # each part moves the digest itself (the first 16), not only the readable suffix after it
+    assert embed.pin_id("c" * 40, files, ver)[:16] != base[:16]
+    assert embed.pin_id(snap[:8] + "c" * 32, files, ver)[:16] != base[:16]  # past the 8 characters the suffix shows
+    assert embed.pin_id(snap, files, "0.9.1")[:16] != base[:16]
     for name, (size, sha) in files.items():
-        assert embed.pin_id(snap, {**files, name: (size + 1, sha)}, ver) != base
-        assert embed.pin_id(snap, {**files, name: (size, "0" * 64)}, ver) != base
+        assert embed.pin_id(snap, {**files, name: (size + 1, sha)}, ver)[:16] != base[:16]
+        assert embed.pin_id(snap, {**files, name: (size, "0" * 64)}, ver)[:16] != base[:16]
     assert HashEmbedder().identity() == "hash-2048"
     assert HashEmbedder(dim=64).identity() == "hash-64"
 
