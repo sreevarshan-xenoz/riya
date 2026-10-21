@@ -1,12 +1,14 @@
 """Live persona scorecard: scripted probes through the real RiyaCore against the real local model. Always exits 0.
 
   python -m evaluation.persona_eval --local-url http://127.0.0.1:8090 [--online] [--label baseline] [--repeat 2]
-                                    [--dials]
+                                    [--dials] [--embedder {auto,fast,hash}]
 
 Starts nothing itself (run `python -m riya.server --model <gguf>` first). Writes
 scratch_runs/persona_eval/<timestamp>_<label>.json and prints a table with pass/fail per target. It's a measurement,
 not a gate. --dials runs the probes at baseline, at low and high teasing/verbosity, and prints a "Dial check": the
-dials should change her style, not break her character (the share metrics stay within the noise).
+dials should change her style, not break her character (the share metrics stay within the noise). --embedder picks
+the one embedder the whole invocation measures: auto (default) is the pinned bge model when it loads and verifies, else
+the hash embedder with a note; fast is bge or an error; hash is the hash embedder. Its id is recorded as embedder_id.
 """
 import argparse
 import json
@@ -18,7 +20,8 @@ from pathlib import Path
 
 from evaluation.style_metrics import irrelevant_share, score
 from riya.core.clock import FakeClock
-from riya.core.embed import HashEmbedder
+from riya.core import embed
+from riya.core.embed import Embedder, HashEmbedder
 from riya.core.engine import RiyaCore
 from riya.core.initiative import Action
 from riya.core.learn.dials import BANDS
@@ -55,9 +58,26 @@ SHARE_KEYS = ("generic_share", "marker_share", "unknown_honesty", "ai_honesty", 
 
 
 # The 17 fixed conversations v0.11's A4 counts: the 8 "applied", the 8 "open" and g_about_12 ("what can't i eat")
+EMBEDDERS = ("auto", "fast", "hash")
 PERSONAL_PROBES = ("g_about_02", "g_about_03", "g_about_05", "g_about_06", "g_about_09", "g_about_10", "g_about_12",
                    "g_about_13", "g_about_14", "g_about_17", "g_about_19", "g_about_20", "g_about_21", "g_about_24",
                    "g_about_25", "g_about_26", "g_about_27")
+
+
+def make_embedder(choice: str = "auto") -> tuple[Embedder, str]:
+    """(embedder, embedder_id) for one invocation. "fast" is the pinned bge model, verified (errors propagate);
+    "auto" tries it and falls back to the hash embedder with a note; "hash" is the hash embedder."""
+    if choice == "hash":
+        emb = HashEmbedder()
+        return emb, emb.identity()
+    if choice == "fast":
+        emb = embed.FastEmbedder(verify=True)
+        return emb, emb.embedder_id
+    try:
+        return make_embedder("fast")
+    except Exception as e:  # noqa: BLE001 - any failure to load or verify means the hash fallback
+        print(f"Note: the bge embedder didn't load ({type(e).__name__}: {e}); running on the hash embedder.")
+        return make_embedder("hash")
 
 
 def load_probes(path: Path = PROBES) -> dict:
@@ -75,15 +95,17 @@ def style_phrases(probes: dict) -> list[str]:
     return out
 
 
-def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: dict | None = None) -> list[dict]:
+def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: dict | None = None,
+                     embedder: Embedder | None = None) -> list[dict]:
     """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed). `dials` are
-    set on the core's learn store (a temp db, never the user's) right after it is built.
+    set on the core's learn store (a temp db, never the user's) right after it is built. `embedder` is shared by every
+    conversation of a run (None: a new HashEmbedder).
     known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user.
     facts is what her memory holds at that turn. A "speak_first" turn is her greeting after away_hours away."""
     clock, emitted = FakeClock(), []
     db = open_db(Path(tmp) / "riya.db")
     try:
-        core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=FakeIdleSource(), local=local,
+        core = RiyaCore(db=db, embedder=embedder or HashEmbedder(), clock=clock, idle_source=FakeIdleSource(), local=local,
                         online=online, emit=emitted.append)
         if dials:
             core.learn.set_dials(dials, "persona_eval", "explicit", clock.now())
@@ -121,21 +143,24 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: 
         db.close()
 
 
-def run_probes(probes: dict, local, online, repeat: int = 1, dials: dict | None = None) -> list[dict]:
+def run_probes(probes: dict, local, online, repeat: int = 1, dials: dict | None = None,
+               embedder: Embedder | None = None) -> list[dict]:
     """Every conversation, fresh each time, `repeat` passes over the probes (sampling is noisy: score them together).
     Rows carry their pass number; probe ids after the first pass get a "#n" suffix."""
     transcript = []
     for n in range(1, repeat + 1):
         for conv in probes["conversations"]:
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-                rows = run_conversation(conv, local, online, tmp, "" if n == 1 else f"#{n}", dials)
+                rows = run_conversation(conv, local, online, tmp, "" if n == 1 else f"#{n}", dials, embedder)
             transcript += [r | {"pass": n} for r in rows]
     return transcript
 
 
-def run(local_url: str, online_wanted: bool = False, repeat: int = 1,
-        dials: dict | None = None) -> tuple[list[dict], dict, str | None]:
-    """(transcript, score, problem). problem is set when the local server couldn't be reached (nothing is run)."""
+def run(local_url: str, online_wanted: bool = False, repeat: int = 1, dials: dict | None = None, *,
+        embedder: tuple[Embedder, str] | None = None) -> tuple[list[dict], dict, str | None]:
+    """(transcript, score, problem). problem is set when the local server couldn't be reached (nothing is run).
+    `embedder` is an (embedder, embedder_id) pair; None builds make_embedder("auto"), after the reachability check.
+    The score carries the embedder_id."""
     probes = load_probes()
     local = local_model(local_url, first_token_timeout_s=60.0)
     try:
@@ -148,10 +173,12 @@ def run(local_url: str, online_wanted: bool = False, repeat: int = 1,
         online = load_online_from_env()
         if online is None:
             print("Note: --online given but no RIYA_ONLINE_API_KEY is set; running local only.")
-    transcript = run_probes(probes, local, online, repeat, dials)
+    emb, embedder_id = embedder if embedder is not None else make_embedder("auto")
+    transcript = run_probes(probes, local, online, repeat, dials, emb)
     answered = [r for r in transcript if not r["error"]]
     s = score(answered, style_phrases(probes))
-    return transcript, s | {"failed_turns": len(transcript) - len(answered), "online": online is not None}, None
+    return transcript, (s | {"failed_turns": len(transcript) - len(answered), "online": online is not None,
+                         "embedder_id": embedder_id}), None
 
 
 def format_table(s: dict) -> str:
@@ -224,14 +251,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repeat", type=int, default=1, help="passes over the probes, scored together (default 1)")
     ap.add_argument("--dials", action="store_true",
                     help="run at baseline, low and high teasing/verbosity and print a Dial check")
+    ap.add_argument("--embedder", choices=EMBEDDERS, default="auto",
+                    help="the one embedder to measure: auto (bge if it loads and verifies, else hash), fast, hash")
     args = ap.parse_args(argv)
     repeat = max(1, args.repeat)
     sets = [("baseline", None), *DIAL_SETS.items()] if args.dials else [("baseline", None)]
+    pair = make_embedder(args.embedder)  # one embedder for the whole invocation, every dial set included
+    embedder_id = pair[1]
+    print(f"Embedder: {embedder_id}")
     results: dict[str, tuple[list[dict], dict]] = {}
     for name, dials in sets:
         # the plain run keeps its three-argument call; with --dials the baseline run's reachability check is the check
-        transcript, s, problem = (run(args.local_url, args.online, repeat, dials=dials) if args.dials
-                                  else run(args.local_url, args.online, repeat))
+        transcript, s, problem = (run(args.local_url, args.online, repeat, dials=dials, embedder=pair) if args.dials
+                                  else run(args.local_url, args.online, repeat, embedder=pair))
         if problem is not None:
             print(f"No model server answered at {args.local_url} ({problem}). Start llama-server and re-run.")
             return 0
@@ -243,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n" + format_dial_check({n: s for n, (_, s) in results.items()}))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{time.strftime('%Y%m%dT%H%M%S')}_{args.label}.json"
-    body = {"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url, "repeat": repeat}
+    body = {"label": args.label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "url": args.local_url, "repeat": repeat,
+            "embedder_id": embedder_id}
     if args.dials:
         body |= {"dials": {n: s for n, (_, s) in results.items()}, "transcripts": {n: t for n, (t, _) in results.items()}}
     else:

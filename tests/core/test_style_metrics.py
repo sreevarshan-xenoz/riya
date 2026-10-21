@@ -316,7 +316,7 @@ def test_persona_eval_runs_the_larger_set_with_the_same_table():
 def test_repeat_flag_is_parsed(monkeypatch, tmp_path, capsys):
     from evaluation import persona_eval
     seen = {}
-    monkeypatch.setattr(persona_eval, "run", lambda url, online, repeat: seen.update(repeat=repeat) or ([], {}, "down"))
+    monkeypatch.setattr(persona_eval, "run", lambda url, online, repeat, **kw: seen.update(repeat=repeat) or ([], {}, "down"))
     assert persona_eval.main(["--repeat", "3"]) == 0 and seen == {"repeat": 3}
 
 
@@ -486,7 +486,7 @@ def test_dials_flag_runs_three_sets_and_exits_zero(monkeypatch, tmp_path, capsys
     from evaluation.persona_eval import DIAL_SETS
     seen = []
 
-    def fake_run(url, online, repeat, dials=None):
+    def fake_run(url, online, repeat, dials=None, **kw):
         seen.append(dials)
         return [{"probe_id": "c.a", "text": "hey", "reply": "Hmph.", "first_sentence_s": 0.1, "error": None,
                  "kind": "small"}], _canned(), None
