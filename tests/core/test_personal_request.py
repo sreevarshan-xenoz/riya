@@ -64,7 +64,30 @@ def test_case_and_curly_apostrophes_never_change_a_verdict():
     assert changed == []
 
 
-PEREGRINE = "The user's best friend is called Peregrine"
+OTHER_KINDS = {"unknown", "ai", "ai_offpath", "small", "explain", "remember", "greeting"}
+
+
+def _bank_turns(kinds: set[str]) -> list[tuple[str, str]]:
+    from evaluation.persona_eval import load_probes
+    return [(f"{c['id']}/{t['id']}", t["text"]) for c in load_probes()["conversations"] for t in c["turns"]
+            if t["kind"] in kinds and t.get("text")]
+
+
+def test_never_fires_on_the_bank_s_other_turns():
+    """A2: the bank is a held-out report; the detector was frozen before this test was written."""
+    turns = _bank_turns(OTHER_KINDS)
+    assert turns
+    assert [pid for pid, text in turns if personal_request(text)] == []
+
+
+def test_bank_about_me_hits_are_reported():
+    turns = _bank_turns({"about_me"})
+    hits = [pid for pid, text in turns if personal_request(text)]
+    print(f"\npersonal_request fires on {len(hits)} of {len(turns)} bank about-me turns: {hits}")
+    assert isinstance(hits, list)
+
+
+PEREGRINE ="The user's best friend is called Peregrine"
 ROLO = "The user's dog is called Rolo"
 BUBBLES = "The user's goldfish is called Bubbles"
 
