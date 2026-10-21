@@ -6,6 +6,8 @@ from pathlib import Path
 
 from colab import gen_riya_v1 as gen
 from colab import train_riya_v1 as tr
+from riya.train import fmt
+from riya.train.holdout import probe_texts
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,6 +100,36 @@ def test_report():
     assert r["lora"] == tr.peft_config_kwargs() and r["adapter"] == "riya-v1-lora.gguf"
     assert (r["rows"], r["skipped_too_long"], r["smoke"], r["gpu"]) == (100, 2, False, "Tesla T4")
     assert r["train"]["dtype"] == "float16"
+    assert r["holdout_dropped"] == 0
+    assert tr.make_report(base_id=tr.OFFICIAL_BASE, base_mismatch=False, rows=1, skipped=0, losses=[], smoke=False,
+                          gpu="T4", settings=tr.train_settings(False), holdout_dropped=3)["holdout_dropped"] == 3
+
+
+def _sft(i: int, user: str) -> dict:
+    return {"id": f"r{i}", "kind": "small", "messages": [{"role": "system", "content": "sys"},
+                                                          {"role": "user", "content": user},
+                                                          {"role": "assistant", "content": "Hmph, hi~"}]}
+
+
+def test_the_loader_drops_and_counts_a_probe_overlap(tmp_path):
+    """A9 (CPU): the trainer drops rows that overlap a probe, before the smoke slice, and counts them."""
+    rows = [_sft(0, "good morning to you"), _sft(1, probe_texts()[0]), _sft(2, "i made toast today")]
+    p = tmp_path / "sft.jsonl"
+    fmt.write_jsonl(rows, p)
+    assert tr.load_sft(p) == ([rows[0], rows[2]], 1)
+    many = [_sft(i, f"message number {i} here") for i in range(tr.SMOKE_ROWS + 4)]
+    many.insert(1, _sft(99, probe_texts()[0]))
+    fmt.write_jsonl(many, p)
+    kept, n = tr.load_sft(p, smoke=True)
+    assert n == 1 and len(kept) == tr.SMOKE_ROWS and "r99" not in {r["id"] for r in kept}  # dropped before slicing
+    assert [r["id"] for r in kept] == [f"r{i}" for i in range(tr.SMOKE_ROWS)]
+
+
+def test_the_run_uses_the_loader_and_reports_the_drop():
+    src = (ROOT / "colab" / "train_riya_v1.py").read_text(encoding="utf-8")
+    run = src.split("def _run(", 1)[1].split("\ndef ", 1)[0]
+    assert "load_sft(" in run and "rows dropped as probe overlaps" in run and "holdout_dropped=" in run
+    assert "riya.core" not in src
 
 
 def test_teacher_helpers():
@@ -202,21 +234,82 @@ def test_no_gpu_stack_at_import():
             assert word not in src, (name, word)
 
 
+BASE_GGUF = "/content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
+
+
+def _runbook() -> str:
+    return (ROOT / "colab" / "riya_v1" / "README.md").read_text(encoding="utf-8")
+
+
 def test_runbook_cells():
-    text = (ROOT / "colab" / "riya_v1" / "README.md").read_text(encoding="utf-8")
+    text = _runbook()
     pos = -1
-    for needle in ("riya.train.build_sft", "sync_to_drive.py", "colab.gen_riya_v1", "riya.train.filter_sft",
-                   "colab.train_riya_v1 --smoke", "SMOKE_OK", "colab.train_riya_v1", "base_mismatch",
+    for needle in ("riya.train.build_sft", "sync_to_drive.py", "pip uninstall -y torchao", "colab.gen_riya_v1",
+                   "riya.train.filter_sft", "colab.train_riya_v1 --smoke", "SMOKE_OK", "colab.train_riya_v1",
+                   "base_mismatch",
+                   "## 7. Colab: the gate's verdict", "git archive --format=zip", "/content/riya_code.zip",
+                   "11731cb4", BASE_GGUF, "LLAMA_SERVER=/content/bin/llama-server",
+                   "PYTHONPATH=/content/code", "--verdict-out /content/drive/MyDrive/riya_v1/verdict-$SHA8.json",
+                   "--cache-ram", "LLAMA_ARG_CACHE_RAM=0",
+                   "## 8. Colab: calibrating the gate", "gate.identity()",
+                   "for n in 1;", "--base-vs-base", "gate/bank-$n.json", "for n in 2 3;",
+                   "evaluation.gate_calibrate --bank scratch_runs/riya_v1/gate/bank",
+                   "evaluation/gate_calibration.json",
+                   "## 9. Local: adopt from the verdict",
                    "C:/Users/sreev/models/riya/riya-v1-candidate-lora.gguf",
-                   "riya.train.fmt --check-template --server http://127.0.0.1:8090", "evaluation.champion"):
+                   "--check-verdict", "--adopt-verdict", "-ngl 0"):
         nxt = text.find(needle, pos + 1)
         assert nxt > pos, f"{needle!r} is missing or out of order"
         pos = nxt
     assert "drive.mount" in text and "pip install" in text and "peft" in text
+    assert "riya.train.fmt --check-template" not in text  # the adopt checks her own build's template itself
     # a new adapter goes to the candidate path; only the gate installs it as the adopted file (C1)
     copies = [line for line in text.splitlines() if line.lstrip().startswith("Copy-Item")]
     to_models = [line for line in copies if "models/riya" in line]
     assert to_models and all(line.rstrip().endswith('riya-v1-candidate-lora.gguf"') for line in to_models)
+
+
+def _joined_commands(text: str) -> list[str]:
+    """The README's lines with every continuation (a trailing backslash in bash, a backtick in PowerShell) joined onto
+    the next line, so a flag on a continuation line is checked like any other."""
+    out, cur = [], ""
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped.endswith("\\") or stripped.endswith("`"):
+            cur += stripped[:-1] + " "
+            continue
+        out.append((cur + stripped).strip())
+        cur = ""
+    if cur:
+        out.append(cur.strip())
+    return out
+
+
+def test_the_joiner_follows_both_continuations():
+    text = "a --x \\\n  --y\nb --p `\n  --q\nc --z"
+    assert _joined_commands(text) == ["a --x    --y", "b --p    --q", "c --z"]
+
+
+def test_runbook_commands_match_the_code():
+    import re
+    from evaluation import champion
+    text = _runbook()
+    known = set(champion.parser()._option_string_actions)
+    cmds = [c for c in _joined_commands(text) if "python -m evaluation.champion" in c]
+    assert cmds
+    for cmd in cmds:
+        for flag in re.findall(r"(?<![\w-])--[a-z][a-z-]*", cmd):
+            assert flag in known, f"{flag} isn't a champion flag: {cmd}"
+    wanted = {
+        "a candidate run": lambda c: "--verdict-out" in c and "--base-vs-base" not in c and "--lora" in c,
+        "base-vs-base": lambda c: "--base-vs-base" in c and "--verdict-out" in c,
+        "check": lambda c: "--check-verdict" in c,
+        "adopt": lambda c: "--adopt-verdict" in c,
+    }
+    for name, has in wanted.items():
+        assert any(has(c) for c in cmds), f"no {name} command in the runbook"
+    assert any("python -m evaluation.gate_calibrate" in c for c in _joined_commands(text))
+    assert "gate.identity()" in text
 
 
 def test_batching_helpers():

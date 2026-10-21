@@ -1,10 +1,25 @@
 import pytest
 
+from tests import real_paths  # first: it records the real paths before any fixture redirects them
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_models_untouched():
+    """The session fails if anything under the user's real models folder (C:\\Users\\sreev\\models) was added, removed
+    or changed while it ran (C1: a fake adapter and its champion record once landed there). Read-only: it lists the
+    folder at the start and at the end, and never writes. No folder: nothing to guard."""
+    before = real_paths.listing(real_paths.REAL_MODELS)
+    yield
+    if found := real_paths.changes(before, real_paths.listing(real_paths.REAL_MODELS)):
+        pytest.fail(f"The test session changed the real models folder {real_paths.REAL_MODELS}: " + "; ".join(found),
+                    pytrace=False)
+
 
 @pytest.fixture(autouse=True)
 def no_real_user_files(tmp_path, monkeypatch):
-    """No test reaches the real %LOCALAPPDATA%\\Riya, ~/.claude/settings.json or Startup folder: every default path is
-    redirected to tmp_path, and no remembered key carries from one test into the next."""
+    """No test reaches the real %LOCALAPPDATA%\\Riya, ~/.claude/settings.json, Startup folder or models folder: every
+    default path is redirected to tmp_path (riya.brain's base model, adapter folder and so its adopted and candidate
+    adapters), and no remembered key carries from one test into the next."""
     from riya import brain
     from riya.agents import hooks, install_hooks
     from riya.core import secrets as keystore
@@ -13,7 +28,9 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setattr(install_hooks, "default_settings_path", lambda: tmp_path / "home" / ".claude" / "settings.json")
     monkeypatch.setattr(install_hooks, "default_token_path", lambda: riya_dir / "hook_token")
     monkeypatch.setattr(hooks, "default_token_path", lambda: riya_dir / "hook_token")
-    monkeypatch.setattr(brain, "default_adapter", lambda: tmp_path / "models" / "riya" / "riya-v1-lora.gguf")
+    real_paths.redirect_models(tmp_path, monkeypatch)
+    from riya import server
+    monkeypatch.setattr(server, "LLAMA_SERVER", str(tmp_path / "no-llama-server.exe"))  # nothing runs her real binary
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders

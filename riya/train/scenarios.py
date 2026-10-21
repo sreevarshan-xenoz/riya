@@ -1,16 +1,14 @@
 """Seeded, deterministic scenarios for Riya v1's fine-tuning data: fake people, facts and places for every kind of reply
 she gives. Pure (no torch, no network, no llama-server) and synthetic: the only files read are the persona probes
-(to hold them out) and traits.json (through load_traits). Each row has its own rng keyed on seed, kind and index, so a
-row never depends on how many rows are asked for. A row whose user text shares a 6-word window with a persona probe
-(or equals one), or whose facts include a probe fact, is re-drawn.
+(to hold them out, through riya.train.holdout) and traits.json (through load_traits). Each row has its own rng keyed on
+seed, kind and index, so a row never depends on how many rows are asked for. A row whose user text shares a 6-word
+window with a persona probe (or equals one), or whose facts include a probe fact, is re-drawn.
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.1, §4 and §4.1.2."""
 import functools
-import json
 import random
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from riya.agents.hub import AgentEvent
 from riya.core import games
@@ -21,6 +19,9 @@ from riya.core.hands.types import ToolResult
 from riya.core.learn.dials import BANDS, DIALS, clamp
 from riya.core.memory import Thread
 from riya.core.persona import load_traits
+# PROBES_PATH is a snapshot taken at import: inside holdout.probes_at() it is stale, so read holdout.PROBES_PATH
+from riya.train.holdout import (HOLDOUT_N, PROBES_PATH, normalize, overlaps, probe_facts,  # noqa: F401 (re-exported)
+                                probe_texts)
 
 KINDS = ("small", "about_me", "unknown", "identity", "remember", "explain", "greeting", "bid", "game", "tool",
          "feedback", "report")
@@ -28,50 +29,8 @@ MIX = {"small": 18, "about_me": 10, "unknown": 12, "identity": 6, "remember": 8,
        "bid": 6, "game": 6, "tool": 6, "feedback": 6, "report": 6}  # integer weights summing to 100
 DEFAULT_N = 3000
 DEFAULT_SEED = 0
-HOLDOUT_N = 6  # a request shares no run of this many words with a persona probe
 BASE_T = 1_800_000_000.0
-PROBES_PATH = Path(__file__).resolve().parents[2] / "evaluation" / "persona_probes.json"
 MAX_DRAWS = 50  # re-draws of one row before giving up
-
-# ---- the hold-out --------------------------------------------------------------------------------------------------
-
-
-def normalize(text: str) -> str:
-    """Casefold, no punctuation, single spaces: the form every hold-out comparison uses."""
-    return " ".join(re.sub(r"[^\w\s]", "", text.casefold()).split())
-
-
-@functools.cache
-def _conversations(path: Path) -> tuple[dict, ...]:
-    """The probe conversations, read and parsed once per path (nobody edits the file mid-run)."""
-    return tuple(json.loads(path.read_text(encoding="utf-8"))["conversations"])
-
-
-def probe_texts(path: Path = PROBES_PATH) -> list[str]:
-    """The user text of every probe turn, except the speak-first ones (they carry a stage note, not user text)."""
-    return [t["text"] for c in _conversations(path) for t in c["turns"] if not t.get("speak_first")]
-
-
-def probe_facts(path: Path = PROBES_PATH) -> list[str]:
-    """Every fact of every probe conversation."""
-    return [f for c in _conversations(path) for f in c["facts"]]
-
-
-def _windows(words: list[str]) -> set[tuple[str, ...]]:
-    return {tuple(words[i:i + HOLDOUT_N]) for i in range(len(words) - HOLDOUT_N + 1)}
-
-
-def overlaps(text: str, probes: Iterable[str]) -> bool:
-    """text equals a probe, or shares a run of HOLDOUT_N words with one (after normalize)."""
-    t = normalize(text)
-    tw = t.split()
-    wins = _windows(tw)
-    for p in probes:
-        n = normalize(p)
-        if t == n or (wins and wins & _windows(n.split())):
-            return True
-    return False
-
 
 # ---- the pools (written independently of the probes) ----------------------------------------------------------------
 
