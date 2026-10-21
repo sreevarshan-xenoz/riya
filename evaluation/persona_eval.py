@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from evaluation.style_metrics import score
+from evaluation.style_metrics import irrelevant_share, score
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
 from riya.core.engine import RiyaCore
@@ -108,10 +108,13 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: 
                     first = time.perf_counter() - t0
                 sentences.append(s)
             err = next((m.message for m in emitted if isinstance(m, ErrorMsg)), None)
-            rows.append({"conversation": conv["id"], "probe_id": f"{conv['id']}.{turn['id']}{tag}",
-                         "kind": turn["kind"], "text": turn["text"], "reply": " ".join(sentences),
-                         "first_sentence_s": first, "known_texts": list(known),
-                         "facts": [f.text for f in core.memory.list_facts()], "error": err})
+            row = {"conversation": conv["id"], "probe_id": f"{conv['id']}.{turn['id']}{tag}",
+                   "kind": turn["kind"], "text": turn["text"], "reply": " ".join(sentences),
+                   "first_sentence_s": first, "known_texts": list(known),
+                   "facts": [f.text for f in core.memory.list_facts()], "error": err}
+            if "relevant" in turn:  # the fact texts, so a verdict can be re-scored (never scored by the gate)
+                row["relevant"] = [conv["facts"][i] for i in turn["relevant"]]
+            rows.append(row)
             clock.advance(TURN_GAP_S)
         return rows
     finally:
@@ -206,6 +209,9 @@ def _print_run(transcript: list[dict], s: dict) -> None:
     print("Tone check (rudeness is an anti-goal; read these): " + ("none" if not s.get("tone_check") else ""))
     for pid in s.get("tone_check", []):
         print(f"    [{pid}] {replies[pid]}")
+    share, n = irrelevant_share(transcript)  # informational: not in score(), so never in a verdict
+    print("Irrelevant facts used (about-me rows with a distractor): "
+          + ("n/a" if share is None else f"{round(share * n)} of {n} ({share:.0%})"))
 
 
 def main(argv: list[str] | None = None) -> int:
