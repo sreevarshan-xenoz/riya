@@ -159,15 +159,36 @@ mkdir -p /content/riya_v1 /content/drive/MyDrive/riya_v1/gate
 cp /content/drive/MyDrive/riya_v1/riya-v1-lora.gguf /content/riya_v1/riya-v1-candidate-lora.gguf
 ```
 
+**Install and verify the memory model.** The gate measures Riya with her real memory model, the pinned
+`bge-small-en-v1.5` (v0.11), and refuses (exit 2, before any server starts) when a run would use anything else, such as
+the simple hash fallback she uses without it. Install `fastembed` at the pinned version, point `RIYA_MODEL_DIR` at a
+folder that survives the session, and check the model before any bank or verdict run. The first run downloads about
+66 MB into that folder; every champion command below carries the same
+`RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models` prefix (Kaggle: `/tmp/riya/models`). Offline, copy the
+`models--Qdrant--bge-small-en-v1.5-onnx-Q` folder into `RIYA_MODEL_DIR` first. The check prints the model's id, which
+must equal the `embedder` field of `gate.identity()` (section 8 compares them):
+
+```bash
+%%bash
+pip install -q fastembed==0.9.0
+mkdir -p /content/drive/MyDrive/riya_v1/models
+cd /content/code && RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models PYTHONPATH=/content/code \
+python -c "from riya.core.embed import FastEmbedder; print(FastEmbedder(verify=True).embedder_id)"
+```
+
+Kaggle follows the same flow with the same commands: the same `pip install -q fastembed==0.9.0`,
+`RIYA_MODEL_DIR=/tmp/riya/models` in every command (after `mkdir -p /tmp/riya/models`), and the same pinned-model
+check before the first run. `FastEmbedder(verify=True)` raises when the files don't match the pin: stop there.
+
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
-It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.10.1,
+It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.11.0,
 the gate's budget is a ceiling of 1200 s, which section 8 checks on `bank-1`) and prints the table and
 `Verdict written: ... (total N s)`. Kaggle works the same as Colab, with the same commands:
 
 ```bash
 %%bash
 cd /content/code && SHA8=$(sha256sum /content/riya_v1/riya-v1-candidate-lora.gguf | cut -c1-8) && \
-LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
 python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
   --lora /content/riya_v1/riya-v1-candidate-lora.gguf --db /content/riya_v1/champ.db \
   --url ws://127.0.0.1:9 --port 8097 --verdict-out /content/drive/MyDrive/riya_v1/verdict-$SHA8.json
@@ -186,19 +207,21 @@ to the model. If a run dies with the server killed and no error, suspect the RAM
 
 ## 8. Colab: calibrating the gate (after any probe, prompt, scorer, repeat or base-model change)
 
-The calibration measures the gate on Colab's own model, with nothing to adopt: three live base-vs-base runs (the bank).
-Each one scores the base against itself, so every "improvement" or veto the gate finds is a false decision. The
-criteria were fixed before any run (at most one of the three may be false; 200 simulated draws from the bank at a false
-rate of at most 6%; the planted regressions caught; each run inside 1200 s). A failing calibration is reported, never
-tuned.
+The calibration measures the gate on Colab's own model, with nothing to adopt: five live base-vs-base runs at `--repeat 4`
+(the bank). Each one scores the base against itself, so every "improvement" or veto the gate finds is a false decision.
+The criteria were fixed before any run (a bank of at least 3 runs with at most one false decision among them; 200
+simulated draws from the bank at a false rate of at most 6%; the planted regressions caught; each run inside 1200 s). A
+failing calibration is reported, never tuned. A bank taken before v0.11 (without the pinned embedder, or with other
+retrieval code) is refused: take five new runs.
 
 On a first calibration (no record yet), run section 7's **Ship the code** and **Check the inputs** cells first: this
 section starts in `/content/code` and writes to `riya_v1/gate/`, which those cells make. The adapter copy in the check
 cell fails if there's no adapter yet; that's fine here, since the bank needs none.
 
-**First, check that Colab runs your code.** Print the gate's identity on Colab and on the laptop and compare the four
-code fields (`gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`). If any differs, the zip is stale or its line
-endings changed: stop and ship the code again (section 7). A mismatch would only show after about 18 minutes of Colab.
+**First, check that Colab runs your code.** Print the gate's identity on Colab and on the laptop and compare the
+five code fields (`gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`, `embedder`). If any differs, the zip is
+stale or its line endings changed: stop and ship the code again (section 7). A mismatch would only show after about 30
+minutes of Colab. Then print the loaded model's id on Colab; it must equal the `embedder` field:
 
 ```bash
 %%bash
@@ -209,29 +232,48 @@ cd /content/code && PYTHONPATH=/content/code python -c "from evaluation import g
 .venv\Scripts\python -c "from evaluation import gate; import json; print(json.dumps(gate.identity(), indent=1))"
 ```
 
+```bash
+%%bash
+cd /content/code && RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models PYTHONPATH=/content/code python -c "from riya.core.embed import FastEmbedder; print(FastEmbedder(verify=True).embedder_id)"
+```
+
+The laptop prints the same id with `python -c "from riya.core.embed import FastEmbedder;
+print(FastEmbedder(verify=True).embedder_id)"` once her model has downloaded there.
+
 **Then the bank.** `bank-1` goes alone first, so you can read its total against the 1200 s budget (and its RAM) before
-spending the other two:
+spending the other four:
 
 ```bash
 %%bash
-cd /content/code && for n in 1; do LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+cd /content/code && for n in 1; do RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
   python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
   --db /content/riya_v1/champ.db --url ws://127.0.0.1:9 --port 8097 --base-vs-base \
   --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
 ```
 
-If `Verdict written: ... (total N s)` says more than 1200 s, stop: the gate is too slow as built, and the other two runs
-aren't spent. Otherwise run the same command for the other two:
+If `Verdict written: ... (total N s)` says more than 1200 s, stop: the gate is too slow as built, and the other four runs
+aren't spent. Otherwise run the same command for `bank-2` and `bank-3`:
 
 ```bash
 %%bash
-cd /content/code && for n in 2 3; do LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+cd /content/code && for n in 2 3; do RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
   python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
   --db /content/riya_v1/champ.db --url ws://127.0.0.1:9 --port 8097 --base-vs-base \
   --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
 ```
 
-`--base-vs-base` needs no calibration record (it is what makes one). Back on your PC, calibrate from the three files on
+Then `bank-4` and `bank-5`, the same command in its own cell (each run is separate, so a disconnect costs one):
+
+```bash
+%%bash
+cd /content/code && for n in 4 5; do RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+  python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
+  --db /content/riya_v1/champ.db --url ws://127.0.0.1:9 --port 8097 --base-vs-base \
+  --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
+```
+
+`--base-vs-base` needs no calibration record (it is what makes one), but it needs the pinned embedder: a run without
+it exits 2 before any server starts. Back on your PC, calibrate from the five files on
 the CPU (a few minutes, no model):
 
 ```powershell
@@ -247,7 +289,7 @@ PASS. A run that fails (or a diagnostic one, such as `--draws 50`) never touches
 verdict and the record also name the Python and numpy they ran on, for information only: a note is printed when the
 bank's differ from the laptop's. On PASS, **commit that file** and ship the code again (section 7): the
 record is part of the code the gate checks. After a scorer-only change the same bank is re-scored on the CPU with this
-same command; a change to the probes, the prompt, the repeat count or the base model needs three new live runs.
+same command; a change to the probes, the prompt, the retrieval code, the embedder, the repeat count or the base model needs five new live runs.
 
 ## 9. Local: adopt from the verdict
 
