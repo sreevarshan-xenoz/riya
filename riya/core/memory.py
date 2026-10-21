@@ -36,6 +36,71 @@ def about_me(query: str) -> bool:
     return ABOUT_ME_RE.search(query) is not None
 
 
+NAMING = frozenset({"call", "calls", "called", "name", "names", "named"})  # never shared content (v0.11 §4.3)
+_HEDGE = (r"as far as you (?:know|can tell)|going by what you(?:'ve| have)? (?:know|seen|heard)"
+          r"|from what you(?:'ve| have)? (?:know|seen|heard|can tell)|as you see it")
+PERSONAL_RE = re.compile("|".join((
+    # applied: an action for them, or "me" as the object
+    r"\b(?:pick|choose|suggest|recomm?end|plan|make(?! it\b)|find|book|sort out|cook|order) (?:\w+ ){0,3}?for me\b",
+    r"\b(?:pick|choose|book|sort|plan|find|cook|order)(?: out)? me (?:out )?(?:a|an|some|something|anything|one)\b",
+    r"\bwhich (?:\w+ ){1,3}(?:would|should|do) you (?:book|pick|choose|order|recomm?end) (?:for )?me\b",
+    r"\bhelp me (?:pick|choose|decide|plan|find)\b",
+    r"(?:^|[,.!?;]\s*|\b(?:please|pls|can you|could you|would you|will you|just) )(?:suggest|recomm?end|recomend)\b",
+    r"\b(?:what|which \w+) (?:would|do|can|could) you (?:suggest|recomm?end|recomend)\b",
+    r"\bany (?:picks|suggestions|recommendations|recs)\b",
+    r"\bgive me (?:a |an |some )?(?:\w+ ){0,2}(?:routine|plan|idea|ideas|recipe|playlist|suggestions?)\b",
+    r"\bneed (?:some |a )(?:music|tunes|songs|playlist|film|movie|book|show)\b",
+    r"\byou know (?:what i (?:like|enjoy|love)|how i am|my tastes?)\b",
+    r"\b(?:what|how|when|where|which \w+) (?:should|shall) i (?:eat|get|order|watch|listen to|wear|cook|drink|have"
+    r"|make|read|play|buy|book|travel|go|start|do)\b",
+    r"\b(?:what|which \w+) (?:should|shall|do) i (?:ask (?:\w+ ){0,2}for|tell (?:\w+ ){0,2}to get me)\b",
+    r"\bshould i (?:buy|book)\b",
+    r"\b(?:no (?:clue|idea)|thoughts on|any ideas? (?:on|for)) what to (?:eat|get|order|watch|listen to|wear|cook"
+    r"|drink|make|read|buy)\b",
+    r"\b(?:something|anything|that|stuff|things?) (?:i'd|i would|i'll|i will) (?:actually |really )?"
+    r"(?:like|enjoy|love)\b",
+    r"\b(?:is|are|would|does) (?:\w+ ){0,4}(?:very|so) me\b",
+    r"\bwhat (?:can't|cannot|can not|shouldn't) i (?:eat|drink)\b",
+    # topical: what she knows about a part of their life
+    r"\bwhat (?:do|did) you (?:actually |really )?(?:know|remember) about (?:my|where i|how i|what i)\b",
+    r"\b(?:anything|what) (?:else )?you (?:know|remember) about (?:my\b|(?:the )?(?:\w+ ){0,4}(?:to|of|around) me\b)",
+    r"\b(?:you(?:'ve|ve| have)?|have you) (?:\w+ )?(?:noticed|figured out|picked up|learned|learnt|gathered"
+    r"|worked out) about (?:me|my|them|how i|what i|where i)\b",
+    r"\bdescribe (?:me|my)\b",
+    r"\bwhat (?:kind|sort|type) of (?:person|guy|girl|man|woman) am i\b",
+    r"\b(?:what|which) (?:sort|kind|type)s? of (?:\w+ ){1,2}i (?:go for|tend to)\b",
+    r"\b(?:your|ur) (?:read|take|impression|sense) (?:on|of) (?:me|my)\b",
+    r"\bhow (?:do|does) my\b(?: \S+){1,8}? (?:usually|normally|typically) go\s*(?:[?.!,~]|$)",
+    rf"\b(?:{_HEDGE})\b",
+)))
+NOT_PERSONAL_RE = re.compile("|".join((
+    # direct attribute questions
+    r"\b(?:what|who|when|where)(?:'s| is| was) my\b", r"\bhow old (?:is|was|am)\b",
+    r"\bwhat (?:did|do) i (?:name|call)\b",
+    # shared history and remember-that turns
+    r"\bwhat did i (?:tell|say|mention)\b", r"\bdid i (?:ever )?(?:tell|say|mention)\b", r"\bremember (?:when|that)\b",
+    r"\bkeep in mind\b", r"\bdon't forget\b",
+    # leading questions
+    r"\b(?:do|did) you (?:happen to |even )?(?:know|remember) my\b",
+    r"\byou (?:already )?(?:know|remember) my\b(?! tastes?\b)",
+    r"\bnow that you know\b", r"\bsince you (?:already )?know\b", r",? right\?",
+    # "we", and identity or AI questions
+    r"\b(?:should|shall|can|could) we\b", r"\blet's\b", r"\byou and i\b", r"\bthe two of us\b", r"\bjust us\b",
+    r"\b(?:ai|a\.i\.|bot|chatbot|robot|language model|llm|chatgpt|programmed)\b",
+)))
+
+
+def personal_request(query: str) -> bool:
+    """Asks her to apply what she knows about them ("pick a snack for me, you know what i like") or about a part of
+    their life ("what have you noticed about my nights"): v0.11 §4.1. Never a direct attribute, shared-history,
+    leading, "we", identity or remember-that question, and never an about-me one (that path wins). Case and curly
+    apostrophes don't matter."""
+    q = query.replace("’", "'").lower()
+    if about_me(query) or about_me(q):
+        return False
+    return PERSONAL_RE.search(q) is not None and NOT_PERSONAL_RE.search(q) is None
+
+
 @dataclass
 class Fact:
     id: int
@@ -128,12 +193,13 @@ class Memory:
         self.lock = threading.RLock()
 
     def eligible(self, sim: float, query_tokens: set[str], text: str) -> bool:
-        """Strongly similar, or weakly similar and sharing at least one content word with the query."""
+        """Strongly similar, or weakly similar and sharing at least one content word with the query. Naming words
+        ("called", "named") aren't shared content: "...dog called?" never reaches "...friend is called X"."""
         if self.min_sim is not None:
             return sim >= self.min_sim
         strong = getattr(self.embedder, "strong_sim", 0.2)
         weak = getattr(self.embedder, "weak_sim", strong)
-        return sim >= strong or (sim >= weak and not query_tokens.isdisjoint(content_tokens(text)))
+        return sim >= strong or (sim >= weak and not (query_tokens - NAMING).isdisjoint(content_tokens(text) - NAMING))
 
     def _embed(self, text: str) -> np.ndarray:
         return self.embedder.embed([text])[0]
