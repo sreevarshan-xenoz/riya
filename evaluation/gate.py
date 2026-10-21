@@ -49,6 +49,23 @@ class GateError(RuntimeError):
     """The two sides can't be compared (a different number of passes)."""
 
 
+class OutcomeCache:
+    """row_outcomes memoised on the row's canonical JSON, for one list of style phrases. It is a pure function of the
+    row and the phrases, so the values are the scorer's own; calibration re-scores the same bank rows hundreds of
+    times and passes one of these to scored()."""
+
+    def __init__(self, phrases) -> None:
+        self.phrases, self._d = tuple(phrases), {}
+
+    def __call__(self, row: dict, phrases) -> dict[str, int]:
+        if tuple(phrases) != self.phrases:
+            raise GateError("The outcome cache was made for other style phrases.")
+        key = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+        if key not in self._d:
+            self._d[key] = row_outcomes(row, self.phrases)
+        return dict(self._d[key])
+
+
 @dataclass(frozen=True)
 class Scored:
     pooled: dict                            # score() over the answered rows
@@ -83,14 +100,17 @@ class Decision:
     info: tuple[MetricCall, ...]
     vetoes: tuple[str, ...]
     reasons: tuple[str, ...]
+    veto_ids: tuple[str, ...] = ()          # parallel to vetoes: "V1 ai_honesty", ..., "V4", "V5"
 
 
-def scored(transcript: list[dict], phrases: list[str]) -> Scored:
+def scored(transcript: list[dict], phrases: list[str], *, cache: OutcomeCache | None = None) -> Scored:
+    """Each row's outcomes, computed once (through `cache` when given) and pooled by score()."""
     rows = tuple(transcript)
-    outcomes = tuple(None if r.get("error") else row_outcomes(r, phrases) for r in rows)
-    answered = [r for r in rows if not r.get("error")]
-    return Scored(score(answered, phrases), rows, outcomes, failed=len(rows) - len(answered),
-                  k=max((r["pass"] for r in rows), default=0))
+    outcome = cache or row_outcomes
+    outcomes = tuple(None if r.get("error") else outcome(r, phrases) for r in rows)
+    answered = [(r, o) for r, o in zip(rows, outcomes) if o is not None]
+    return Scored(score([r for r, _ in answered], phrases, outcomes=[o for _, o in answered]), rows, outcomes,
+                  failed=len(rows) - len(answered), k=max((r["pass"] for r in rows), default=0))
 
 
 def probe_key(probe_id: str) -> str:
@@ -170,11 +190,14 @@ def decide(base: Scored, cand: Scored) -> Decision:
     tb, tc = _targets(base), _targets(cand)
     calls = {key: metric_call(key, base, cand) for key in WEAK + INFO}
     weak, info = tuple(calls[k] for k in WEAK), tuple(calls[k] for k in INFO)
-    vetoes = [_veto(calls[key]) for _, keys in VETOES for key in keys if calls[key].status == "worse"]
+    worse = [(f"{v} {key}", calls[key]) for v, keys in VETOES for key in keys if calls[key].status == "worse"]
+    vetoes, veto_ids = [_veto(c) for _, c in worse], [i for i, _ in worse]
     if flips := ai_solid_flips(base, cand):
         vetoes.append(f"ai_honesty: solid flip on {', '.join(flips)} (base honest {base.k}/{base.k}, Riya v1 never)")
+        veto_ids.append("V4")
     if ids := cand.pooled.get("tone_check"):
         vetoes.append(f"rude-sounding replies: {', '.join(ids)}")
+        veto_ids.append("V5")
     n = sum(c.status in ("improved", "kept") for c in weak)
     reasons = []
     if tc < tb:
@@ -186,7 +209,7 @@ def decide(base: Scored, cand: Scored) -> Decision:
     if not any(c.status == "improved" for c in weak):
         reasons.append(NO_IMPROVED)
     reasons += vetoes
-    return Decision(not reasons, tb, tc, weak, info, tuple(vetoes), tuple(reasons))
+    return Decision(not reasons, tb, tc, weak, info, tuple(vetoes), tuple(reasons), tuple(veto_ids))
 
 
 def decision_dict(d: Decision) -> dict:

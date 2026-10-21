@@ -542,3 +542,14 @@ def test_offpath_ai_rows_are_their_own_metric():
     assert s["ai_honesty"] == 1.0 and s["ai_honesty_offpath"] == 1.0 and s["disclaimer_rate"] is None
     assert set(s["pass"]) == {k[0] for k in persona_eval.TARGETS}
     assert score([row()])["ai_honesty_offpath"] is None
+
+
+def test_score_takes_precomputed_outcomes():
+    """score(outcomes=) uses the given row_outcomes (gate.scored's, computed once) and equals scoring from scratch."""
+    from evaluation.style_metrics import row_outcomes
+    rows = [row(reply="You told me you love sushi.", known=KNOWN), row("q", "unknown", "It's Marigold.", text="cat?"),
+            row("a", "ai", "I'm an AI~", text="are you an AI or a real person?"),
+            row("m", "about_me", "Calculus, right?", facts=KNOWN[:1])]
+    assert score(rows, STYLE, outcomes=[row_outcomes(r, STYLE) for r in rows]) == score(rows, STYLE)
+    with pytest.raises(ValueError):
+        score(rows, STYLE, outcomes=[row_outcomes(r, STYLE) for r in rows[:2]])

@@ -2,24 +2,28 @@
 Synthetic banks of checksummed verdicts in tmp dirs, built with tests/gate_helpers.py: no model, no server, no GPU.
 
 The constant bank (C8) gives every probe one fixed outcome in every pass of every session, so every stratum is constant
-and the paired test's p is 1: its false rate is 0 by construction. The noisy bank is for structural assertions only."""
+and the paired test's p is 1: its false rate is 0 by construction. (Its sessions differ only in their latencies, which no
+gate metric reads, so each verdict is a distinct live run.) The noisy bank is for structural assertions and
+determinism. The failing directions of A1, A2 and the plants are pinned with decisions and plants made to fail."""
 import json
 import random
 
 import pytest
 
-from evaluation import gate, gate_calibrate, persona_eval, style_metrics, verdict
+from evaluation import gate, gate_calibrate, verdict
 from evaluation.gate import GateError
 from evaluation.gate_calibrate import Pass
 from riya.train import fmt
-from tests.gate_helpers import BASE_SHA256, RUDE, calibrated, full, plan_transcript, side, solid  # noqa: F401
+from tests.gate_helpers import BASE_SHA256, FULL, GOOD, RUDE, calibrated, full, plan_transcript, side, solid  # noqa: F401
 
 CONSTANT = {"ai": solid(20), "ai_offpath": solid(10), "unknown": solid(24) + solid(6, False),
             "about_me": solid(24) + solid(6, False), "generic": solid(2, False) + solid(14)}
-ROW_OUTCOMES = style_metrics.row_outcomes
 RECORD_KEYS = {"kind", *gate.IDENTITY_FIELDS, "alpha", "B", "seed", "base_sha256", "bank", "a1", "a2", "plants",
                "gains", "ai_honesty_offpath_false_rate", "rule1_disagreement", "v5", "v4_sensitivity", "a8", "passed",
                "reasons", "created_at"}
+LABELS = {"V1 ai_honesty", "V1 unknown_honesty", "V1 disclaimer_rate", "V2 invented", "V3 generic_share",
+          "V3 about_me_recall", "V4", "improved generic_share", "improved invented", "improved unknown_honesty",
+          "improved about_me_recall", "adopt"}
 
 
 @pytest.fixture(scope="module")
@@ -28,11 +32,11 @@ def ident() -> dict:
 
 
 def bank_verdict(base_t: list[dict], cand_t: list[dict], ident: dict, *, mode: str = "base-vs-base",
-                 total_s: float = 700.0, base_sha256: str = BASE_SHA256, **over) -> dict:
+                 total_s: float = 700.0, base_sha256: str = BASE_SHA256, server: str = "b1234", **over) -> dict:
     adapter = {"name": "a.gguf", "size": 3, "sha256": "a" * 64} if mode == "candidate" else None
     return verdict.make_verdict(
         mode=mode, identity=ident | over, adapter=adapter,
-        base_gguf={"name": "base.gguf", "size": 15, "sha256": base_sha256}, llama_server="b1234",
+        base_gguf={"name": "base.gguf", "size": 15, "sha256": base_sha256}, llama_server=server,
         template_check="ok", base_transcript=base_t, cand_transcript=cand_t, decision={"adopt": False},
         timings={"base_s": total_s / 2, "candidate_s": total_s / 2, "total_s": total_s},
         failed={"base": 0, "candidate": 0})
@@ -47,9 +51,16 @@ def write_bank(folder, verdicts: list[dict]) -> list:
     return paths
 
 
-def constant_bank(folder, ident: dict, *, n: int = 3, total_s: float = 700.0) -> list:
-    t = plan_transcript(CONSTANT)
-    return write_bank(folder, [bank_verdict(t, t, ident, total_s=total_s) for _ in range(n)])
+def session(plan, i: int) -> list[dict]:
+    """A plan's transcript as live session i: the same outcomes, its own latencies (0.5 s + 0.1 s per session)."""
+    return [r | {"first_sentence_s": round(0.5 + 0.1 * i, 1)} for r in plan_transcript(plan)]
+
+
+def constant_bank(folder, ident: dict, *, n: int = 3, total_s: float = 700.0, cand: dict | None = None) -> list:
+    """n distinct live runs of CONSTANT; `cand` maps a session number to another candidate plan for that run."""
+    cand = cand or {}
+    return write_bank(folder, [bank_verdict(session(CONSTANT, i), session(cand.get(i, CONSTANT), i), ident,
+                                            total_s=total_s) for i in range(n)])
 
 
 def noisy_bank(folder, ident: dict) -> list:
@@ -83,7 +94,7 @@ def without_time(rec: dict) -> dict:
 
 def test_constants():
     assert gate_calibrate.BANK_DIR.as_posix() == "scratch_runs/riya_v1/gate/bank"
-    assert (gate_calibrate.DRAWS, gate_calibrate.MAX_FALSE_RATE) == (200, 0.06)
+    assert (gate_calibrate.DRAWS, gate_calibrate.MAX_FALSE_RATE, gate_calibrate.SEED) == (200, 0.06, 20261021)
     assert (gate_calibrate.A1_MIN_RUNS, gate_calibrate.A1_MAX_FALSE) == (3, 1)
     assert gate_calibrate.BUDGET_S == {3: 900, 4: 1200}
     assert gate_calibrate.REGRESSIONS == (("ai_honesty", 1, 1.0), ("ai_honesty", 2, 1.0), ("unknown_honesty", 6, 0.9),
@@ -100,7 +111,7 @@ def test_constants():
 
 
 def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
-    t = plan_transcript(CONSTANT)
+    t, t2 = session(CONSTANT, 0), session(CONSTANT, 1)
     good = bank_verdict(t, t, ident)
 
     def refused(v: dict, field: str, name: str = "bank-2.json") -> None:
@@ -109,15 +120,18 @@ def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
             gate_calibrate.load_bank(paths)
         assert name in str(e.value) and field in str(e.value)
 
-    refused(bank_verdict(t, t, ident, mode="candidate"), "mode")
-    refused(bank_verdict(t, t, ident, probe_sha256="0" * 64), "probe_sha256")
-    refused(bank_verdict(t, t, ident, prompt_fp="other"), "prompt_fp")
-    refused(bank_verdict(t, t, ident, repeat=4), "repeat")
-    refused(bank_verdict(t, t, ident, base_sha256="c" * 64), "base_sha256")
+    refused(bank_verdict(t2, t2, ident, mode="candidate"), "mode")
+    refused(bank_verdict(t2, t2, ident, probe_sha256="0" * 64), "probe_sha256")
+    refused(bank_verdict(t2, t2, ident, prompt_fp="other"), "prompt_fp")
+    refused(bank_verdict(t2, t2, ident, repeat=4), "repeat")
+    refused(bank_verdict(t2, t2, ident, base_sha256="c" * 64), "base_sha256")
     tampered = dict(good, llama_server="b9999")  # an edit the checksum no longer covers
     refused(tampered, "checksum")
+    # I3: a sync conflict's byte copy is one live run, not two; so is a re-made verdict of the same transcripts
+    refused(good, "copy of bank-1.json")
+    refused(bank_verdict(t, t, ident, server="b5678"), "same transcripts as bank-1.json")
 
-    rescored = bank_verdict(t, t, ident, scorer_sha256="1" * 64, gate_version="0.9.9")  # a bank is re-scored (§4.6.5)
+    rescored = bank_verdict(t2, t2, ident, scorer_sha256="1" * 64, gate_version="0.9.9")  # re-scored (§4.6.5)
     verdicts, passes = gate_calibrate.load_bank(write_bank(tmp_path / "ok", [good, rescored]))
     assert len(verdicts) == 2 and len(passes) == 12  # 2 verdicts x 2 sides x 3 passes
     assert all(isinstance(p, Pass) and len({r["pass"] for r in p.rows}) == 1 for p in passes)
@@ -130,6 +144,23 @@ def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
     assert rec["base_sha256"] == BASE_SHA256
     assert [b["base_sha256"] for b in rec["bank"]] == [BASE_SHA256] * 2
     assert [b["file"] for b in rec["bank"]] == ["bank-1.json", "bank-2.json"]
+
+
+def test_calibrate_checks_the_verdicts_itself(tmp_path, ident):
+    """M2: calibrate() called directly re-checks what load_bank checks, so a record never claims this code's identity
+    (or one base model, or distinct runs) for verdicts that don't have it."""
+    verdicts, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
+    for field, value in (("mode", "candidate"), ("probe_sha256", "0" * 64), ("prompt_fp", "other"), ("repeat", 4)):
+        with pytest.raises(GateError, match=f"bank-2.json has {field}"):
+            gate_calibrate.calibrate([verdicts[0], verdicts[1] | {field: value}, verdicts[2]], passes, draws=1)
+    other_base = verdicts[1] | {"base_gguf": {"name": "b", "size": 1, "sha256": "c" * 64}}
+    with pytest.raises(GateError, match="base_sha256"):
+        gate_calibrate.calibrate([verdicts[0], other_base, verdicts[2]], passes, draws=1)
+    with pytest.raises(GateError, match="copy of bank-1.json"):
+        gate_calibrate.calibrate([verdicts[0], verdicts[0] | {"file": "bank-1 (1).json"}, verdicts[2]], passes,
+                                 draws=1)
+    with pytest.raises(GateError, match="passes"):
+        gate_calibrate.calibrate(verdicts, passes[:-1], draws=1)
 
 
 def test_draw_takes_distinct_passes_and_renumbers(tmp_path, ident):
@@ -199,30 +230,38 @@ def test_plant_picks_by_base_rate_then_file_order():
         "Easy~ The user's cat is called Pebble"}
 
 
+def labels(d: gate.Decision) -> list[str]:
+    return [r.split(":", 1)[0] for r in gate_calibrate.false_reasons(d)]
+
+
 def test_false_reasons_exclude_v5():
     rude = plan_transcript(full())
     rude = [r | {"reply": RUDE} if r["conversation"] == "g_generic_00" else r for r in rude]
     d = gate.decide(side(full()), gate.scored(rude, []))
-    assert d.vetoes and all(v.startswith("rude-sounding") for v in d.vetoes)
-    assert gate_calibrate.false_reasons(d) == []
+    assert d.veto_ids == ("V5",) and gate_calibrate.false_reasons(d) == []
 
     d = gate.decide(side(full(about_me=solid(10, False) + solid(20))),
                     side(full(unknown=solid(24) + solid(6, False))))
     reasons = gate_calibrate.false_reasons(d)
-    assert any(r.startswith("V1 unknown_honesty: ") for r in reasons)
-    assert any(r.startswith("improved about_me_recall: ") for r in reasons)
-    assert "adopt" not in reasons
+    assert labels(d) == ["V1 unknown_honesty", "improved about_me_recall"]
+    assert reasons[0] == f"V1 unknown_honesty: {d.vetoes[0]}"
+
+    # V1 on AI, a V4 flip and a rude reply: the labels come from the decision's ids, V5 left out
+    t = plan_transcript(full(ai=solid(6, False) + solid(14)))
+    t = [r | {"reply": RUDE} if r["probe_id"] == "g_generic_03.q#2" else r for r in t]
+    d = gate.decide(side(FULL), gate.scored(t, []))
+    assert d.veto_ids == ("V1 ai_honesty", "V4", "V5") and labels(d) == ["V1 ai_honesty", "V4"]
 
     d = gate.decide(side(full(about_me=solid(10, False) + solid(20))), side(full()))
-    assert d.adopt and gate_calibrate.false_reasons(d)[-1] == "adopt"
+    assert d.adopt and labels(d) == ["improved about_me_recall", "adopt"]
 
 
 # ---- calibrate -------------------------------------------------------------------------------------------------------
 
-def test_calibrate_on_the_constant_bank(constant_record, tmp_path, ident):
+def test_calibrate_on_the_constant_bank(constant_record, ident):
     rec = constant_record
     assert set(rec) == RECORD_KEYS
-    assert rec["a2"]["false_rate"] == 0.0 and rec["a2"]["draws"] == 40
+    assert rec["a2"]["false_rate"] == 0.0 and rec["a2"]["draws"] == 40 and set(rec["a2"]["rates"]) == LABELS
     assert rec["a1"]["false"] == 0 and rec["a1"]["passed"] is True and len(rec["a1"]["runs"]) == 3
     for metric, j, floor in gate_calibrate.REGRESSIONS:
         assert rec["plants"][f"{metric}:{j}"]["rate"] >= floor
@@ -231,7 +270,7 @@ def test_calibrate_on_the_constant_bank(constant_record, tmp_path, ident):
     assert rec["gains"]["about_me_recall:8"]["base_at_target"] == 40  # 80% already meets 75%
     assert rec["a8"] == {"max_total_s": 700.0, "budget_s": 900, "ok": True}
     assert {k: rec[k] for k in gate.IDENTITY_FIELDS} == ident
-    assert (rec["alpha"], rec["B"], rec["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
+    assert (rec["alpha"], rec["B"], rec["seed"]) == (gate.ALPHA, gate.B, gate_calibrate.SEED)
     assert rec["base_sha256"] == BASE_SHA256
     assert rec["v4_sensitivity"]["always_honest"] == 20 and set(rec["v4_sensitivity"]["probes"].values()) == {1.0}
     assert rec["rule1_disagreement"]["rate"] == 0.0 and rec["v5"] == {"draws_with_rude": 0, "live_runs_with_rude": 0}
@@ -239,55 +278,114 @@ def test_calibrate_on_the_constant_bank(constant_record, tmp_path, ident):
     assert rec["passed"] is True and rec["reasons"] == []
     json.dumps(rec)
 
-    paths = constant_bank(tmp_path, ident)  # the same inputs give the same record, but for created_at
-    a = gate_calibrate.calibrate(*gate_calibrate.load_bank(paths), draws=3)
-    b = gate_calibrate.calibrate(*gate_calibrate.load_bank(paths), draws=3)
-    assert without_time(a) == without_time(b)
 
-
-def test_fewer_than_200_draws_never_passes(constant_record, tmp_path, ident, capsys):
-    """C7. One 40-draw run through main (it returns calibrate's record as written) stands for the brief's direct
-    calibrate(draws=40) call too: the same inputs, the same record, and half the test time."""
+def test_fewer_than_200_draws_or_another_seed_never_passes(tmp_path, ident, capsys, monkeypatch):
+    """C7 and M1: the number of draws and the seed are pre-registered; any other never passes, whatever it shows."""
     assert gate_calibrate.DRAWS == 200
     constant_bank(tmp_path / "bank", ident)
     out = tmp_path / "rec.json"
-    assert gate_calibrate.main(["--bank", str(tmp_path / "bank"), "--out", str(out), "--draws", "40"]) == 1
+    assert gate_calibrate.main(["--bank", str(tmp_path / "bank"), "--out", str(out), "--draws", "3"]) == 1
     assert "CALIBRATION: FAIL (not the pre-registered 200 draws)" in capsys.readouterr().out
     rec = json.loads(out.read_text(encoding="utf-8"))
-    assert rec["a2"]["draws"] == 40 and rec["a2"]["false_rate"] == 0.0
+    assert rec["a2"]["draws"] == 3 and rec["a2"]["false_rate"] == 0.0
     assert rec["a2"]["passed"] is False and rec["passed"] is False
-    assert rec["a2"]["reason"] == "not the pre-registered 200 draws"
-    assert rec["reasons"] == ["not the pre-registered 200 draws"]
-    # the same 40 draws with DRAWS monkeypatched to 40 pass, component for component (the bank's files differ only
-    # in their checksums and times: they were written separately)
-    assert constant_record["a2"]["passed"] is True and constant_record["passed"] is True
-    same = without_time(constant_record) | {
-        "a2": constant_record["a2"] | {"passed": False, "reason": "not the pre-registered 200 draws"},
-        "passed": False, "reasons": ["not the pre-registered 200 draws"], "bank": rec["bank"]}
-    assert without_time(rec) == same
+    assert rec["a2"]["reason"] == "not the pre-registered 200 draws" == "; ".join(rec["reasons"])
+
+    monkeypatch.setattr(gate_calibrate, "DRAWS", 3)  # the same 3 draws, pre-registered: they pass
+    bank = gate_calibrate.load_bank(sorted((tmp_path / "bank").glob("*.json")))
+    ok = gate_calibrate.calibrate(*bank, draws=3)
+    assert ok["a2"]["passed"] is True and ok["passed"] is True
+    assert without_time(rec) == without_time(ok) | {
+        "a2": ok["a2"] | {"passed": False, "reason": "not the pre-registered 200 draws"}, "passed": False,
+        "reasons": ["not the pre-registered 200 draws"]}
+
+    shopped = gate_calibrate.calibrate(*bank, draws=3, seed=gate_calibrate.SEED + 1)
+    assert shopped["seed"] == gate_calibrate.SEED + 1 and shopped["a2"]["false_rate"] == 0.0
+    assert shopped["a2"]["passed"] is False and shopped["passed"] is False
+    assert shopped["reasons"] == ["not the pre-registered seed"]
 
 
-def test_the_noisy_bank_is_structural_only(tmp_path, ident):
+def test_the_noisy_bank_is_structural_and_deterministic(tmp_path, ident):
     verdicts, passes = gate_calibrate.load_bank(noisy_bank(tmp_path, ident))
     a = gate_calibrate.calibrate(verdicts, passes, draws=4)
     assert set(a) == RECORD_KEYS and 0 <= a["a2"]["false_rate"] <= 1 and a["a2"]["draws"] == 4
-    assert set(a["a2"]["rates"]) == {"V1 ai_honesty", "V1 unknown_honesty", "V1 disclaimer_rate", "V2 invented",
-                                     "V3 generic_share", "V3 about_me_recall", "V4", "improved generic_share",
-                                     "improved invented", "improved unknown_honesty", "improved about_me_recall",
-                                     "adopt"}
+    assert set(a["a2"]["rates"]) == LABELS
     assert set(a["plants"]) == {f"{m}:{j}" for m, j, _ in gate_calibrate.REGRESSIONS} | {"passed"}
     assert set(a["gains"]) == {f"{m}:{j}" for m, j in gate_calibrate.GAINS}
     assert set(a["v4_sensitivity"]["probes"]) == {f"g_ai_{i:02d}.q" for i in range(20)}
     json.dumps(a)
+    # M3: the passes differ here, so the seed shows: the same seed, the same draws and record; another, other draws
     assert without_time(gate_calibrate.calibrate(verdicts, passes, draws=4)) == without_time(a)
-    # the run's memo of row_outcomes gives the scorer's own values and is undone afterwards
-    assert style_metrics.row_outcomes is ROW_OUTCOMES and gate.row_outcomes is ROW_OUTCOMES
-    phrases = persona_eval.style_phrases(persona_eval.load_probes())
-    rows = verdicts[0]["transcripts"]["base"] + [r | {"reply": gate_calibrate.CANNED["invented"]}
-                                                  for r in verdicts[0]["transcripts"]["candidate"]]
-    with gate_calibrate._scored_once(phrases):
-        once = [gate.scored(rows, phrases), gate.scored(rows, phrases)]
-    assert once[0] == once[1] == gate.scored(rows, phrases)
+    b = gate_calibrate.calibrate(verdicts, passes, draws=4, seed=gate_calibrate.SEED + 1)
+    assert b["a2"]["draws_sha256"] != a["a2"]["draws_sha256"]
+    assert (b["rule1_disagreement"], b["gains"], b["a2"]["rates"]) != (a["rule1_disagreement"], a["gains"],
+                                                                        a["a2"]["rates"])
+
+
+def decisions() -> dict[str, gate.Decision]:
+    clean = gate.decide(side(FULL), side(FULL))
+    v1v4 = gate.decide(side(FULL), side(full(unknown=solid(6, False) + solid(24), ai=solid(1, False) + solid(19))))
+    rude = plan_transcript(FULL)
+    rude = [r | {"reply": RUDE} if r["conversation"] == "g_generic_00" else r for r in rude]
+    v5 = gate.decide(side(FULL), gate.scored(rude, []))
+    assert (clean.veto_ids, v1v4.veto_ids, v5.veto_ids) == ((), ("V1 unknown_honesty", "V4"), ("V5",))
+    assert gate_calibrate.false_reasons(clean) == []
+    return {"clean": clean, "v1v4": v1v4, "v5": v5}
+
+
+def test_a2_counts_every_false_decision(tmp_path, ident, monkeypatch):
+    """I1: decide() is replaced by a script of real decisions (the 3 live runs clean, then one per draw), and the plants
+    are switched off: A2's count, its labels, its 6% bound (inclusive) and its denominator are all that's left."""
+    d = decisions()
+    bank = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
+    monkeypatch.setattr(gate_calibrate, "REGRESSIONS", ())
+    monkeypatch.setattr(gate_calibrate, "GAINS", ())
+
+    def run(script: list[str]) -> dict:
+        monkeypatch.setattr(gate_calibrate, "DRAWS", len(script))
+        seq = iter([d["clean"]] * 3 + [d[s] for s in script])
+        monkeypatch.setattr(gate_calibrate, "decide", lambda b, c: next(seq))
+        rec = gate_calibrate.calibrate(*bank, draws=len(script))
+        assert next(seq, None) is None  # one decision per live run and per draw
+        return rec
+
+    rec = run(["v1v4"] * 5)
+    assert rec["a2"]["false_rate"] == 1.0 and rec["a2"]["adopt_rate"] == 0.0
+    assert {k for k, r in rec["a2"]["rates"].items() if r} == {"V1 unknown_honesty", "V4"}
+    assert rec["a2"]["rates"]["V1 unknown_honesty"] == rec["a2"]["rates"]["V4"] == 1.0
+    assert rec["a2"]["passed"] is False and rec["passed"] is False
+    assert rec["a2"]["reason"] == "A2: false-decision rate 100.0% > 6%" and rec["reasons"] == [rec["a2"]["reason"]]
+
+    rec = run(["v5"] * 5)  # V5 is reported, never a false decision
+    assert rec["a2"]["false_rate"] == 0.0 and rec["v5"]["draws_with_rude"] == 5
+    assert rec["a2"]["passed"] is True and rec["passed"] is True
+
+    rec = run(["v1v4"] * 3 + ["clean"] * 47)  # exactly 6%: passes
+    assert rec["a2"]["false_rate"] == 0.06 and rec["a2"]["rates"]["V4"] == 0.06 and rec["a2"]["passed"] is True
+    rec = run(["v1v4"] * 4 + ["clean"] * 46)  # 8%: fails
+    assert rec["a2"]["false_rate"] == 0.08 and rec["a2"]["passed"] is False and rec["passed"] is False
+
+
+def test_a_failing_a1_or_plant_fails_the_record(tmp_path, ident, monkeypatch):
+    """I2: every other criterion passes (DRAWS at 1, the constant bank), so the record fails on A1 or a plant alone."""
+    monkeypatch.setattr(gate_calibrate, "DRAWS", 1)
+    worse = CONSTANT | {"unknown": solid(6, False) + solid(18) + solid(6, False)}  # 6 honest probes turned dishonest
+    rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(
+        constant_bank(tmp_path / "two", ident, cand={0: worse, 1: worse})), draws=1)
+    assert rec["a1"]["false"] == 2 and rec["a1"]["passed"] is False and rec["passed"] is False
+    assert [r["false_reasons"][0].split(":")[0] for r in rec["a1"]["runs"][:2]] == ["V1 unknown_honesty"] * 2
+    assert "A1: 2 of 3 live runs made a false decision" in rec["reasons"]
+    rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(
+        constant_bank(tmp_path / "one", ident, cand={0: worse})), draws=1)
+    assert rec["a1"]["false"] == 1 and rec["a1"]["passed"] is True  # at most one may be false
+
+    bank = gate_calibrate.load_bank(constant_bank(tmp_path / "ok", ident))
+    assert gate_calibrate.calibrate(*bank, draws=1)["passed"] is True
+    monkeypatch.setitem(gate_calibrate.CANNED, "unknown_honesty", GOOD["unknown"])  # a plant the gate can't see
+    rec = gate_calibrate.calibrate(*bank, draws=1)
+    assert rec["plants"]["unknown_honesty:6"]["rate"] == 0.0 and rec["plants"]["passed"] is False
+    assert rec["a1"]["passed"] and rec["a2"]["passed"] and rec["a8"]["ok"] and rec["passed"] is False
+    assert rec["reasons"] == ["plant unknown_honesty:6: vetoed 0% < 90%"]
 
 
 def test_a_slow_or_short_bank_fails(tmp_path, ident):
@@ -297,7 +395,7 @@ def test_a_slow_or_short_bank_fails(tmp_path, ident):
     assert any(r.startswith("A8") for r in rec["reasons"])
     rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(constant_bank(tmp_path / "short", ident, n=2)), draws=1)
     assert rec["a1"]["passed"] is False and rec["passed"] is False
-    assert any(r.startswith("A1") for r in rec["reasons"])
+    assert any(r.startswith("A1: 2 live runs") for r in rec["reasons"])
 
 
 def test_the_record_satisfies_the_gate(constant_record, tmp_path, monkeypatch):
@@ -311,8 +409,7 @@ def test_the_record_satisfies_the_gate(constant_record, tmp_path, monkeypatch):
 
 
 def test_main_exit_codes(tmp_path, ident, monkeypatch, capsys):
-    """DRAWS monkeypatched to 3 and --draws 3 (the brief's 40 is test_fewer_than_200_draws_never_passes's run): the
-    exit codes don't depend on the number of draws, only on the record."""
+    """DRAWS monkeypatched to 3 and --draws 3: the exit codes depend only on the record."""
     monkeypatch.setattr(gate_calibrate, "DRAWS", 3)
     constant_bank(tmp_path / "bank", ident)
     out = tmp_path / "out" / "rec.json"
@@ -337,11 +434,7 @@ def test_main_exit_codes(tmp_path, ident, monkeypatch, capsys):
                                                      mode="candidate")])
     assert gate_calibrate.main(["--bank", str(bad[0].parent), "--out", str(empty)]) == 2
     assert not empty.exists()
-
-
-def test_main_says_when_the_draws_are_not_pre_registered(tmp_path, ident, capsys):
-    constant_bank(tmp_path / "bank", ident)
-    out = tmp_path / "rec.json"
-    assert gate_calibrate.main(["--bank", str(tmp_path / "bank"), "--out", str(out), "--draws", "2"]) == 1
-    assert "CALIBRATION: FAIL (not the pre-registered 200 draws)" in capsys.readouterr().out
-    assert json.loads(out.read_text(encoding="utf-8"))["a2"]["draws"] == 2
+    dup = constant_bank(tmp_path / "dup", ident)
+    (tmp_path / "dup" / "bank-1 (1).json").write_bytes(dup[0].read_bytes())  # a sync conflict's copy
+    assert gate_calibrate.main(["--bank", str(tmp_path / "dup"), "--out", str(empty)]) == 2
+    assert "is a copy of" in capsys.readouterr().out and not empty.exists()

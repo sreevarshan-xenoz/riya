@@ -238,7 +238,42 @@ def test_exactly_two_fewer_invented_replies_improves(monkeypatch):
 def vetoed(base_plan, cand_plan) -> gate.Decision:
     d = gate.decide(side(base_plan), side(cand_plan))
     assert not d.adopt and d.vetoes and all(v in d.reasons for v in d.vetoes)
+    assert len(d.veto_ids) == len(d.vetoes)
     return d
+
+
+def test_each_veto_carries_its_id():
+    """The ids run parallel to the printed lines (Task 8 fix round 1): calibration labels vetoes from them, never from
+    the lines' text or order."""
+    assert gate.decide(side(FULL), side(FULL)).veto_ids == ()
+    d = vetoed(FULL, full(ai=solid(2, False) + solid(18)))
+    assert d.veto_ids == ("V1 ai_honesty", "V4")
+    assert vetoed(FULL, full(ai=solid(1, False) + solid(19))).veto_ids == ("V4",)
+    for plan, ids in ((full(unknown=solid(6, False) + solid(24)), ("V1 unknown_honesty",)),
+                      (full(about_me=solid(6, False) + solid(24)), ("V3 about_me_recall",)),
+                      (full(generic=solid(6, False) + solid(10)), ("V3 generic_share",))):
+        assert vetoed(FULL, plan).veto_ids == ids
+    assert vetoed(full(invented=solid(6)), full(invented=solid(6, False))).veto_ids == ("V2 invented",)
+    assert vetoed(full(disclaimer=solid(6)), full(disclaimer=solid(6, False))).veto_ids == ("V1 disclaimer_rate",)
+    t = plan_transcript(full(ai=solid(6, False) + solid(14)))
+    t = [r | {"reply": RUDE} if r["probe_id"] == "g_generic_03.q#2" else r for r in t]
+    d = gate.decide(side(FULL), gate.scored(t, []))
+    assert d.veto_ids == ("V1 ai_honesty", "V4", "V5") and d.vetoes[2] == "rude-sounding replies: g_generic_03.q#2"
+
+
+def test_an_outcome_cache_scores_the_same():
+    """gate.scored(cache=OutcomeCache(phrases)) memoises row_outcomes on the whole row: the same Scored as without
+    it, for every row (failed ones too), and a cache made for other phrases refuses."""
+    phrases = persona_eval.style_phrases(persona_eval.load_probes())
+    rows = plan_transcript(hetero(3)) + [r | {"reply": "You told me you hate pineapple on toast~", "pass": 1}
+                                         for r in plan_transcript({"generic": solid(2)}) if r["pass"] == 1]
+    cache = gate.OutcomeCache(phrases)
+    once = gate.scored(rows, phrases, cache=cache)
+    assert once == gate.scored(rows, phrases, cache=cache) == gate.scored(rows, phrases)
+    assert once.failed > 0 and once.pooled["invented"] > 0
+    assert gate.decide(once, gate.scored(rows, phrases, cache=cache)) == gate.decide(once, gate.scored(rows, phrases))
+    with pytest.raises(GateError):
+        gate.scored(rows, [], cache=cache)
 
 
 def test_vetoes():
@@ -431,7 +466,8 @@ def test_format_and_dict():
     assert lines[-1] == "DECISION: adopt Riya v1"
     back = json.loads(json.dumps(gate.decision_dict(d)))
     assert back["adopt"] is True and back["weak"][3]["key"] == "about_me_recall"
-    assert set(back) == {"adopt", "targets_base", "targets_candidate", "weak", "info", "vetoes", "reasons"}
+    assert set(back) == {"adopt", "targets_base", "targets_candidate", "weak", "info", "vetoes", "reasons",
+                         "veto_ids"}
     assert set(back["info"][0]) == {"key", "base", "cand", "delta", "band", "p_better", "p_worse", "flips_better",
                                     "flips_worse", "status", "rows", "probes"}
 

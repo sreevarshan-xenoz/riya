@@ -232,17 +232,21 @@ def _share(rows: list[dict], pred) -> float | None:
     return sum(bool(pred(r)) for r in rows) / len(rows) if rows else None
 
 
-def score(transcript: list[dict], style_phrases: list[str] | tuple[str, ...] = ()) -> dict:
+def score(transcript: list[dict], style_phrases: list[str] | tuple[str, ...] = (), *,
+          outcomes: Sequence[dict[str, int]] | None = None) -> dict:
     """Every §3 metric over rows of {probe_id, kind, reply, first_sentence_s[, known_texts, facts, text]}, plus a
     pass dict and the tone check (probe ids of rude-sounding replies, for a human to read). A metric with no data is
-    None and its pass is None."""
+    None and its pass is None. `outcomes`, when given, is each row's row_outcomes already computed (one per row)."""
     by = lambda kind: [r for r in transcript if r["kind"] == kind]  # noqa: E731
     small, explain = by("small"), by("explain")
     small_n = [count_sentences(r["reply"]) for r in small]
     explain_n = [count_sentences(r["reply"]) for r in explain]
     emoji = [count_emoji(r["reply"]) for r in transcript]
     lat = [r["first_sentence_s"] for r in transcript if r.get("first_sentence_s") is not None]
-    outcomes = [row_outcomes(r, style_phrases) for r in transcript]
+    if outcomes is None:
+        outcomes = [row_outcomes(r, style_phrases) for r in transcript]
+    elif len(outcomes) != len(transcript):
+        raise ValueError(f"{len(outcomes)} outcomes for {len(transcript)} rows")
     invented = [r["probe_id"] for r, o in zip(transcript, outcomes) if o["invented"]]
     m = {
         "n": len(transcript),
