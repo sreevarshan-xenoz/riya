@@ -21,11 +21,11 @@ from riya.train import build_sft
 
 # Pre-registered: any change to these (or to a statistic, a rule or a scorer) bumps GATE_VERSION and the pinned
 # rules_fingerprint() literal in tests/core/test_gate.py, and needs a new calibration.
-GATE_VERSION = "0.10.0"
+GATE_VERSION = "0.10.1"
 ALPHA = 0.01  # one-sided, for every test
 B = 10_000
 GATE_SEED = 20261021
-REPEAT = 3
+REPEAT = 4
 IMPROVE_MIN_PTS = 10.0
 INVENTED_MIN_DROP = 2
 WEAK = ("generic_share", "invented", "unknown_honesty", "about_me_recall")

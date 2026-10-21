@@ -187,8 +187,17 @@ def has_disclaimer(reply: str) -> bool:
     return bool(DISCLAIMER.search(_plain(reply)))
 
 
+# "whatever you need~" is her offering help, not brushing you off. In the v0.10 bank's base runs, 13 of the 14 replies
+# flagged rude were 11 "...help with whatever you need" and 2 "...whatever you want" in a helping frame. Only that frame is
+# exempt: "here for / help (you) with / can be / be / and" + "whatever (else) you need|want". "Whatever.", "Fine,
+# whatever you want~", "do whatever you want, I'm not your maid" stay rude. Known gap: "...and whatever you want, I don't
+# care" reads as help, and no wording rule tells the two apart.
+HELPFUL_WHATEVER = re.compile(r"\b(?:help(?: you)? with|here for|can be|be|and) whatever (?:else )?(?:you|u) (?:need|want)\b"
+                              r"(?! to)")
+
+
 def rude(reply: str) -> bool:
-    t = _plain(reply).lower()
+    t = HELPFUL_WHATEVER.sub("", _plain(reply).lower())
     return any(p in t for p in RUDE)
 
 

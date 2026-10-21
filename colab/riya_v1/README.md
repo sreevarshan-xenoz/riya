@@ -128,7 +128,7 @@ About 2 epochs at lr 2e-4, fp16 on a T4. It prints `TRAIN_DONE` and writes `riya
 
 ## 7. Colab: the gate's verdict
 
-The gate runs on a Colab T4, not on your GPU: a fair run is 636 turns. Colab writes a checksummed **verdict** (both
+The gate runs on a Colab T4, not on your GPU: a fair run is 848 turns. Colab writes a checksummed **verdict** (both
 transcripts, the adapter's and the base's sha256, the timings) and adopts nothing. Section 9 re-decides the verdict on
 your laptop and adopts from it. A candidate run refuses, before any server starts, without a passing
 `evaluation/gate_calibration.json` taken by this exact code on this base model: if it says there is none or that it is
@@ -160,8 +160,9 @@ cp /content/drive/MyDrive/riya_v1/riya-v1-lora.gguf /content/riya_v1/riya-v1-can
 ```
 
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
-It takes about 12-15 minutes (the gate's budget is 900 s; section 8 checks it on `bank-1`) and prints the table and
-`Verdict written: ... (total N s)`:
+It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.10.1,
+the gate's budget is a ceiling of 1200 s, which section 8 checks on `bank-1`) and prints the table and
+`Verdict written: ... (total N s)`. Kaggle works the same as Colab, with the same commands:
 
 ```bash
 %%bash
@@ -188,7 +189,7 @@ to the model. If a run dies with the server killed and no error, suspect the RAM
 The calibration measures the gate on Colab's own model, with nothing to adopt: three live base-vs-base runs (the bank).
 Each one scores the base against itself, so every "improvement" or veto the gate finds is a false decision. The
 criteria were fixed before any run (at most one of the three may be false; 200 simulated draws from the bank at a false
-rate of at most 6%; the planted regressions caught; each run inside 900 s). A failing calibration is reported, never
+rate of at most 6%; the planted regressions caught; each run inside 1200 s). A failing calibration is reported, never
 tuned.
 
 On a first calibration (no record yet), run section 7's **Ship the code** and **Check the inputs** cells first: this
@@ -197,7 +198,7 @@ cell fails if there's no adapter yet; that's fine here, since the bank needs non
 
 **First, check that Colab runs your code.** Print the gate's identity on Colab and on the laptop and compare the four
 code fields (`gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`). If any differs, the zip is stale or its line
-endings changed: stop and ship the code again (section 7). A mismatch would only show after about 36 minutes of Colab.
+endings changed: stop and ship the code again (section 7). A mismatch would only show after about 18 minutes of Colab.
 
 ```bash
 %%bash
@@ -208,7 +209,7 @@ cd /content/code && PYTHONPATH=/content/code python -c "from evaluation import g
 .venv\Scripts\python -c "from evaluation import gate; import json; print(json.dumps(gate.identity(), indent=1))"
 ```
 
-**Then the bank.** `bank-1` goes alone first, so you can read its total against the 900 s budget (and its RAM) before
+**Then the bank.** `bank-1` goes alone first, so you can read its total against the 1200 s budget (and its RAM) before
 spending the other two:
 
 ```bash
@@ -219,7 +220,7 @@ cd /content/code && for n in 1; do LLAMA_SERVER=/content/bin/llama-server PYTHON
   --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
 ```
 
-If `Verdict written: ... (total N s)` says more than 900 s, stop: the gate is too slow as built, and the other two runs
+If `Verdict written: ... (total N s)` says more than 1200 s, stop: the gate is too slow as built, and the other two runs
 aren't spent. Otherwise run the same command for the other two:
 
 ```bash
@@ -285,4 +286,4 @@ Then read a few of the candidate's replies in the verdict, for feel: the gate me
 she still sounds like Riya.
 
 The old gate on your own GPU (a plain `evaluation.champion` with no verdict flag) still works with the same rules, but
-it is not the path: it is 636 turns on your graphics card.
+it is not the path: it is 848 turns on your graphics card.

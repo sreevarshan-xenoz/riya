@@ -64,9 +64,16 @@ def side(plan) -> gate.Scored:
     return gate.scored(plan_transcript(plan), [])
 
 
-def adopt_pair() -> tuple[gate.Scored, gate.Scored]:
-    """About-me 66.7% (below its 75% target) -> 100% is improved; the other three weak metrics are kept."""
-    return side(full(about_me=solid(10, False) + solid(20))), side(FULL)
+def full_at(k: int, **over) -> dict:
+    """FULL at k passes a probe (FULL itself is the 3-pass plan), `over` applied."""
+    return {"unknown": solid(30, k=k), "about_me": solid(30, k=k), "ai": solid(20, k=k), "ai_offpath": solid(10, k=k),
+            "generic": solid(16, k=k)} | over
+
+
+def adopt_pair(k: int = 3) -> tuple[gate.Scored, gate.Scored]:
+    """About-me 66.7% (below its 75% target) -> 100% is improved; the other three weak metrics are kept. At k passes
+    a probe: a verdict is for gate.REPEAT, so its fixtures pass k=gate.REPEAT."""
+    return side(full_at(k, about_me=solid(10, False, k) + solid(20, True, k))), side(full_at(k))
 
 
 # ---- the calibration record ----------------------------------------------------------------------------------------

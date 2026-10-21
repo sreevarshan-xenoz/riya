@@ -564,3 +564,18 @@ def test_score_takes_precomputed_outcomes():
     assert score(rows, STYLE, outcomes=[row_outcomes(r, STYLE) for r in rows]) == score(rows, STYLE)
     with pytest.raises(ValueError):
         score(rows, STYLE, outcomes=[row_outcomes(r, STYLE) for r in rows[:2]])
+
+
+def test_whatever_you_need_is_help_not_rudeness():
+    """Quoted from the v0.10 bank (base model): these offer help and aren't rude; the dismissive forms still are."""
+    for kind in ("I'm an AI, dummy. I don't have feelings, but I'm here to help with whatever you need. ~",
+                 "I don't know its name, but I can help with whatever you need. ~",
+                 "No, I'm not a girl. But I can be whatever you want me to be. ~",
+                 "A lazy Saturday means no rush, just you and whatever you want.",
+                 "I'm here for whatever else you need, just ask~"):
+        assert not rude(kind), kind
+    for mean in ("Whatever.", "Whatever, dummy.", "whatever you say, genius", "Hey there, dummy. Let's get this over with. ~",
+                 "Whatever. Leave me alone.", "I can help with whatever you need. Whatever, I don't care.",
+                 "whatever you want, I don't care", "Do whatever you like, I'm not your maid", "Fine, whatever you want~",
+                 "Do whatever you want.", "Whatever you need. Not my problem.", "Whatever you want, loser."):
+        assert rude(mean), mean
