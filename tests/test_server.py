@@ -13,6 +13,7 @@ from riya import brain, server
 from riya.core.settings import Settings, apply_patch, save_settings
 from riya.core.store import KV, open_db
 from riya.server import GameModePolicy, RiyaServer
+from tests import real_paths
 
 
 class FakeProc:
@@ -404,13 +405,13 @@ def test_paths(tmp_path):
     assert brain.default_db() == tmp_path / "localappdata" / "Riya" / "riya.db"
     assert tmp_path in brain.default_adapter().parents
     assert brain.default_adapter().name == brain.ADAPTER_NAME == "riya-v1-lora.gguf"
-    assert brain.ADAPTER_DIR == Path("C:/Users/sreev/models/riya")
-    assert brain.DEFAULT_MODEL.endswith("Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf")
+    assert real_paths.REAL_ADAPTER_DIR == Path("C:/Users/sreev/models/riya")  # tests/conftest.py redirects both
+    assert real_paths.REAL_DEFAULT_MODEL.endswith("Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf")
 
 
 def test_start_script_passes_the_adapter_through():
     text = (Path(__file__).resolve().parents[1] / "scripts" / "start_riya.ps1").read_text(encoding="utf-8")
-    for needle in ("--print-lora", '"--follow-settings"', '"--lora"', brain.DEFAULT_MODEL):
+    for needle in ("--print-lora", '"--follow-settings"', '"--lora"', real_paths.REAL_DEFAULT_MODEL):
         assert needle in text
     assert "riya.server" in text and '"--model"' in text  # the no-adapter launch is unchanged
 

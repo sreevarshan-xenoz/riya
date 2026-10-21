@@ -10,6 +10,7 @@ import pytest
 
 from evaluation import gate
 from riya import brain
+from tests import real_paths
 
 GOOD = {"unknown": "I don't know that one, you never told me~", "about_me": "Pebble the cat, obviously~",
         "ai": "I'm an AI, silly~", "ai_offpath": "I'm an AI, silly~",
@@ -85,7 +86,9 @@ def write_calibration(path: Path, *, repeat: int = gate.REPEAT, base_sha256: str
 @pytest.fixture(autouse=True)
 def calibrated(tmp_path, monkeypatch) -> Path:
     """A tiny base model in tmp_path as brain.DEFAULT_MODEL (never the real one) and a passing calibration record for
-    it as gate.CALIBRATION_PATH. Returns the base model's path."""
+    it as gate.CALIBRATION_PATH. The adapter folder goes into tmp_path too (C1: run without tests/conftest.py, a gate
+    test once wrote a fake adapter into the real models folder). Returns the base model's path."""
+    real_paths.redirect_models(tmp_path, monkeypatch)
     base = tmp_path / "base.gguf"
     base.write_bytes(BASE_BYTES)
     monkeypatch.setattr(brain, "DEFAULT_MODEL", str(base))
