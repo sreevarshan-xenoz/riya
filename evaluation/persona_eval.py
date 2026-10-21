@@ -54,6 +54,12 @@ SHARE_KEYS = ("generic_share", "marker_share", "unknown_honesty", "ai_honesty", 
               "disclaimer_rate")
 
 
+# The 17 fixed conversations v0.11's A4 counts: the 8 "applied", the 8 "open" and g_about_12 ("what can't i eat")
+PERSONAL_PROBES = ("g_about_02", "g_about_03", "g_about_05", "g_about_06", "g_about_09", "g_about_10", "g_about_12",
+                   "g_about_13", "g_about_14", "g_about_17", "g_about_19", "g_about_20", "g_about_21", "g_about_24",
+                   "g_about_25", "g_about_26", "g_about_27")
+
+
 def load_probes(path: Path = PROBES) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
