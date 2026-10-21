@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 
 from riya import brain
+from riya.core import embed
 
 REAL_DEFAULT_MODEL = brain.DEFAULT_MODEL  # the base GGUF she serves, as riya.brain names it
 REAL_ADAPTER_DIR = brain.ADAPTER_DIR  # where the adopted adapter and its champion record live
 REAL_MODELS = REAL_ADAPTER_DIR.parent  # ~/models: no test may change anything under it
+REAL_LOAD_TEXT_EMBEDDING = embed._load_text_embedding  # the one fastembed loader, recorded before any fixture patches it
 
 
 def listing(root: Path) -> dict[str, tuple[str, int, int]] | None:

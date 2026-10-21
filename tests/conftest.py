@@ -34,6 +34,13 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders
+    from riya.core import embed
+
+    def no_fastembed(model, cache_dir, local_files_only=False):
+        raise RuntimeError(f"tests never load fastembed (model {model}, cache {cache_dir}): "
+                           "use tests/data/bge_vectors.npz")
+    monkeypatch.setattr(embed, "_load_text_embedding", no_fastembed)  # the opt-in live_bge tests use REAL_LOAD_TEXT_EMBEDDING
+    monkeypatch.delenv("RIYA_MODEL_DIR", raising=False)
     keystore.forget_all()
     yield
     keystore.forget_all()
