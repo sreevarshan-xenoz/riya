@@ -79,6 +79,7 @@ def test_written_apart_from_the_probe_file():
     texts, facts = probe_texts(), probe_facts()
     probes = texts + facts
     names = _probe_names(facts)
+    assert texts and facts and names, "the probe file read as empty, so this check would pass vacuously"
     probe_pairs = set()
     for f in facts:
         probe_pairs |= _pairs(f)
@@ -104,3 +105,56 @@ def test_every_question_has_four_words():
     d = _load()
     for r in d["requests"] + d["negatives"]:
         assert len(normalize(r["q"]).split()) >= 4, r["id"]
+
+
+# Pairs of near-synonyms (any order) that a positive may not use against its relevant facts: the request would then
+# echo the fact in other words. Compared on the stems below.
+NEAR_SYNONYMS = [
+    ("bro", "brother"), ("flick", "movie"), ("flick", "film"), ("movie", "film"), ("pastime", "hobby"),
+    ("mate", "friend"), ("tunes", "music"), ("mum", "mother"), ("mum", "mom"), ("finances", "budget"),
+    ("money", "budget"), ("cash", "budget"), ("weekend", "saturday"), ("weekend", "sunday"), ("scary", "horror"),
+    ("veggie", "vegetarian"), ("pup", "dog"), ("kitty", "cat"), ("curry", "spicy"), ("novel", "book"),
+    ("telly", "tv"), ("alarm", "wake"), ("snack", "food"), ("doctor", "health"),
+]
+
+
+def _stems(word: str) -> set[str]:
+    """The word and the forms left by stripping a trailing "ing", "es" or "s" (all of them, so the match is generous)."""
+    out = {word}
+    for suffix in ("ing", "es", "s"):
+        if word.endswith(suffix) and len(word) > len(suffix) + 2:
+            out.add(word[:-len(suffix)])
+    return out
+
+
+def _content_stems(text: str) -> set[str]:
+    out: set[str] = set()
+    for tok in embed.tokenize(text):
+        if tok not in embed.STOPWORDS:
+            out |= _stems(tok)
+    return out
+
+
+def test_positives_share_no_content_word_with_their_relevant_facts():
+    d = _load()
+    fact_text = {f["id"]: f["text"] for f in d["facts"]}
+    problems = []
+    for r in d["requests"]:
+        q = _content_stems(r["q"])
+        for fid in r["relevant"]:
+            f = _content_stems(fact_text[fid])
+            if q & f:
+                problems.append(f"{r['id']} / {fid}: shares {sorted(q & f)}")
+            for a, b in NEAR_SYNONYMS:
+                if (a in q and b in f) or (b in q and a in f):
+                    problems.append(f"{r['id']} / {fid}: near-synonyms {a}/{b}")
+    assert not problems, "\n".join(problems)
+
+
+def test_no_two_questions_open_the_same_way():
+    d = _load()
+    seen: dict[str, str] = {}
+    for r in d["requests"] + d["negatives"]:
+        opening = " ".join(normalize(r["q"]).split()[:3])
+        assert opening not in seen, f"{r['id']} opens like {seen[opening]}: {opening!r}"
+        seen[opening] = r["id"]

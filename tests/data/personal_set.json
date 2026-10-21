@@ -188,19 +188,20 @@
    "q": "got any thoughts on what to order from the thai place tonight",
    "relevant": [
     "f01",
-    "f39"
+    "f39",
+    "f14"
    ],
    "memory": [
     "f01",
     "f39",
-    "f09",
+    "f14",
     "f24"
    ]
   },
   {
    "id": "r03",
    "kind": "applied",
-   "q": "my birthday's creeping up, what should i ask people for?",
+   "q": "my birthday's creeping up, what do i tell people to get me?",
    "relevant": [
     "f08",
     "f19"
@@ -208,29 +209,29 @@
    "memory": [
     "f08",
     "f19",
-    "f35",
-    "f26",
-    "f21"
+    "f10",
+    "f41"
    ]
   },
   {
    "id": "r04",
    "kind": "applied",
-   "q": "how should i get across town tomorrow, it's miles away",
+   "q": "how should i travel across town tomorrow, it's miles away",
    "relevant": [
-    "f07"
+    "f07",
+    "f13"
    ],
    "memory": [
     "f07",
     "f13",
-    "f20",
-    "f31"
+    "f31",
+    "f24"
    ]
   },
   {
    "id": "r05",
    "kind": "applied",
-   "q": "i have a whole free afternoon and zero plans, suggest something",
+   "q": "i've got a whole free stretch today and zero plans, suggest something",
    "relevant": [
     "f31",
     "f19",
@@ -247,15 +248,18 @@
   {
    "id": "r06",
    "kind": "applied",
-   "q": "plan me a little weekend escape somewhere not too far",
+   "q": "sort me out a little getaway somewhere not too far",
    "relevant": [
-    "f26"
+    "f26",
+    "f13",
+    "f30"
    ],
    "memory": [
     "f26",
-    "f12",
     "f13",
-    "f30"
+    "f30",
+    "f10",
+    "f41"
    ]
   },
   {
@@ -264,33 +268,35 @@
    "q": "what should i have for breakfast tmrw, im sick of the usual",
    "relevant": [
     "f34",
-    "f22"
+    "f22",
+    "f14"
    ],
    "memory": [
     "f34",
     "f22",
-    "f09",
-    "f14"
+    "f14",
+    "f03"
    ]
   },
   {
    "id": "r08",
    "kind": "applied",
-   "q": "can you pick a flick for me to put on tonight",
+   "q": "can you pick something for me to put on the telly tonight",
    "relevant": [
-    "f41"
+    "f41",
+    "f24"
    ],
    "memory": [
     "f41",
     "f24",
-    "f27",
+    "f10",
     "f16"
    ]
   },
   {
    "id": "r09",
    "kind": "applied",
-   "q": "wanna get fit properly this year, what would you recommend",
+   "q": "wanna get fit propperly this year, what would you recommend",
    "relevant": [
     "f13",
     "f20"
@@ -298,9 +304,8 @@
    "memory": [
     "f13",
     "f20",
-    "f05",
-    "f09",
-    "f35"
+    "f24",
+    "f10"
    ]
   },
   {
@@ -312,36 +317,36 @@
    ],
    "memory": [
     "f17",
-    "f12",
-    "f26"
+    "f10",
+    "f24"
    ]
   },
   {
    "id": "r11",
    "kind": "applied",
-   "q": "help me think of something to bring to the party saturday",
+   "q": "help me pick a snack to bring to my mate's party tonight",
    "relevant": [
     "f22",
-    "f34"
+    "f34",
+    "f14"
    ],
    "memory": [
     "f22",
     "f34",
-    "f38",
-    "f21"
+    "f14",
+    "f04"
    ]
   },
   {
    "id": "r12",
    "kind": "applied",
-   "q": "when should i set my alarm tomorrow, i have to be somewhere at nine",
+   "q": "i need to leave the house by nine on tuesday, when should i start my day",
    "relevant": [
     "f09"
    ],
    "memory": [
     "f09",
     "f37",
-    "f05",
     "f11"
    ]
   },
@@ -351,21 +356,24 @@
    "q": "i get to choose where the team eats lunch, any picks",
    "relevant": [
     "f21",
-    "f14"
+    "f14",
+    "f39"
    ],
    "memory": [
     "f21",
     "f14",
-    "f05",
-    "f39"
+    "f39",
+    "f24",
+    "f13"
    ]
   },
   {
    "id": "r14",
    "kind": "applied",
-   "q": "what should i put on while i'm getting ready to go out",
+   "q": "need some music for getting ready to go out later",
    "relevant": [
-    "f08"
+    "f08",
+    "f04"
    ],
    "memory": [
     "f08",
@@ -387,7 +395,7 @@
     "f24",
     "f37",
     "f18",
-    "f16",
+    "f10",
     "f02"
    ]
   },
@@ -397,41 +405,45 @@
    "q": "suggest some new pastime i could pick up this winter",
    "relevant": [
     "f19",
-    "f31"
+    "f31",
+    "f35",
+    "f13"
    ],
    "memory": [
     "f19",
     "f31",
     "f35",
     "f13",
-    "f10"
+    "f10",
+    "f41"
    ]
   },
   {
    "id": "r17",
    "kind": "applied",
-   "q": "i need to sort out a problem with the council, best way to reach them?",
+   "q": "theres a problem with the council and i have to contact them, best route?",
    "relevant": [
     "f25"
    ],
    "memory": [
     "f25",
-    "f15",
-    "f09"
+    "f10",
+    "f41"
    ]
   },
   {
    "id": "r18",
    "kind": "applied",
-   "q": "recommend something to curl up with on the sofa tonight",
+   "q": "recomend something to curl up with on the sofa tonight",
    "relevant": [
-    "f24"
+    "f24",
+    "f41"
    ],
    "memory": [
     "f24",
     "f41",
     "f31",
-    "f03"
+    "f10"
    ]
   },
   {
@@ -439,12 +451,26 @@
    "kind": "applied",
    "q": "what shall i wear to the wedding in summer? i can never tell what clashes",
    "relevant": [
-    "f40"
+    "f40",
+    "f38"
    ],
    "memory": [
     "f40",
     "f38",
-    "f35"
+    "f24"
+   ]
+  },
+  {
+   "id": "r20",
+   "kind": "applied",
+   "q": "should i buy one of those huge sofas that seats six",
+   "relevant": [
+    "f15"
+   ],
+   "memory": [
+    "f15",
+    "f10",
+    "f24"
    ]
   },
   {
@@ -467,7 +493,7 @@
   {
    "id": "t02",
    "kind": "topical",
-   "q": "what do you reckon you know about my mornings",
+   "q": "how do my first couple of hours each day usually go?",
    "relevant": [
     "f09",
     "f18",
@@ -483,7 +509,7 @@
   {
    "id": "t03",
    "kind": "topical",
-   "q": "tell me what you've noticed about how i cope under pressure",
+   "q": "tell me what youve noticed about how i cope under pressure",
    "relevant": [
     "f11",
     "f30"
@@ -491,14 +517,14 @@
    "memory": [
     "f11",
     "f30",
-    "f04",
-    "f35"
+    "f10",
+    "f41"
    ]
   },
   {
    "id": "t04",
    "kind": "topical",
-   "q": "anything you remember about my family?",
+   "q": "so who's in my family as far as you know",
    "relevant": [
     "f02",
     "f16",
@@ -509,13 +535,13 @@
     "f16",
     "f29",
     "f15",
-    "f23"
+    "f13"
    ]
   },
   {
    "id": "t05",
    "kind": "topical",
-   "q": "what do you know about the animals in my life",
+   "q": "do you know which animals share my home",
    "relevant": [
     "f03",
     "f23"
@@ -545,7 +571,7 @@
   {
    "id": "t07",
    "kind": "topical",
-   "q": "tell me your take on my body and its quirks",
+   "q": "how's my body treating me, as far as you can tell",
    "relevant": [
     "f13",
     "f25",
@@ -576,7 +602,7 @@
   {
    "id": "t09",
    "kind": "topical",
-   "q": "how would you describe my weekends, from what you know",
+   "q": "how would you describe my days off, from what you know",
    "relevant": [
     "f31",
     "f32",
@@ -592,24 +618,22 @@
   {
    "id": "t10",
    "kind": "topical",
-   "q": "what do you know about the places i want to see",
+   "q": "which far-off spots am i dreaming about, as far as you know",
    "relevant": [
     "f12",
-    "f26",
-    "f36"
+    "f26"
    ],
    "memory": [
     "f12",
     "f26",
-    "f36",
-    "f17",
-    "f30"
+    "f24",
+    "f10"
    ]
   },
   {
    "id": "t11",
    "kind": "topical",
-   "q": "how would you sum up my days between the job and classes",
+   "q": "sum up my job and classes for me, as you see it",
    "relevant": [
     "f05",
     "f06"
@@ -617,7 +641,7 @@
    "memory": [
     "f05",
     "f06",
-    "f09",
+    "f10",
     "f18"
    ]
   },
@@ -642,13 +666,11 @@
   {
    "id": "t13",
    "kind": "topical",
-   "q": "how are my finances looking in your head",
+   "q": "how careful am i with my pennies, going by what you know",
    "relevant": [
-    "f12",
     "f35"
    ],
    "memory": [
-    "f12",
     "f35",
     "f19",
     "f22"
@@ -661,7 +683,8 @@
    "relevant": [
     "f38",
     "f27",
-    "f02"
+    "f02",
+    "f16"
    ],
    "memory": [
     "f38",
@@ -823,7 +846,7 @@
   {
    "id": "m2",
    "kind": "near_miss",
-   "q": "what breed of cat do i have",
+   "q": "what breed is my rabbit again",
    "memory": [
     "f03",
     "f15",
@@ -882,9 +905,9 @@
   {
    "id": "s4",
    "kind": "small_talk",
-   "q": "i swear my bus is always late when it's raining",
+   "q": "i swear my bus is always late when its raining",
    "memory": [
-    "f07",
+    "f33",
     "f15"
    ]
   },
@@ -903,9 +926,9 @@
    "kind": "we",
    "q": "can you and i put together a playlist for a long drive",
    "memory": [
-    "f08",
-    "f04",
-    "f12"
+    "f24",
+    "f35",
+    "f09"
    ]
   },
   {
