@@ -23,6 +23,28 @@ def test_shared_and_asked_words_never_flag():
     assert irrelevant_fact_used("chess~", [], ["The user plays chess"]) is True
 
 
+def test_possessives_are_folded_before_comparing():
+    assert irrelevant_fact_used("the user's~", [OAT], [MINT]) is False
+    assert irrelevant_fact_used("the user’s~", [OAT], [MINT]) is False
+    assert irrelevant_fact_used("friend~", [], ["The user's friend's name is Bob"]) is True
+    assert irrelevant_fact_used("Bob's~", [], ["The user's friend's name is Bob"]) is True
+    assert irrelevant_fact_used("friend's~", [], ["The user's friend is Bob"]) is True
+    assert irrelevant_fact_used("your friend's~", ["Their friend's name is Bob"], ["The user's friend is Cy"]) is False
+
+
+def test_over_common_words_never_flag():
+    from evaluation.style_metrics import OVER_COMMON
+    assert OVER_COMMON == {"love", "case", "play", "learning"}
+    for reply, other in (("I'd love to help~", "The user loves hiking"), ("In that case, oat milk~", MINT),
+                         ("Let's play it safe~", "The user plays chess"), ("Learning is fun~", "The user is learning bass")):
+        assert irrelevant_fact_used(reply, [OAT], [other]) is False, reply
+    assert irrelevant_fact_used("hiking~", [OAT], ["The user loves hiking"]) is True
+
+
+def test_a_denial_still_counts_as_dragging_it_in():
+    assert irrelevant_fact_used("I don't know about your bass guitar yet~", [OAT], ["The user plays bass guitar"]) is True
+
+
 def test_the_share_counts_annotated_rows_only():
     facts = [OAT, MINT]
     rows = [_row("Get it in mint green~", facts, [OAT], pid="flagged"),
