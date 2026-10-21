@@ -208,6 +208,16 @@ def test_the_added_text_fits():
     assert sum(lines[:3]) + len(personal_situation()) + 1 <= 600
 
 
+def test_personal_situation_uses_a_memory_only_about_what_was_asked():
+    """Final review I3: a memory about someone or something else ("brother known, sister asked") isn't one to use, so
+    then she says she doesn't know. Still one line of at most 160 characters."""
+    line = personal_situation()
+    assert len(line) <= 160 and "\n" not in line
+    assert "only if it's about exactly who or what they asked" in line
+    assert "if not, say you don't know" in line
+    assert "draw only on the memories above that fit" not in line
+
+
 def test_personal_situation_reads_the_constant_at_call_time(monkeypatch):
     from riya.core import prompt
 
