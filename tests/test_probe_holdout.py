@@ -55,6 +55,8 @@ def test_main_reports_each_source(tmp_path, capsys):
         seen.append((seed, holdout.PROBES_PATH))
         if seed == 1 and holdout.PROBES_PATH == current:
             raise ValueError("probe overlap: ['x']")
+        if seed == 0 and holdout.PROBES_PATH == old:  # drawn under v0.9, it collides with a new probe
+            return [_row("good morning riya", "s0a"), _row("so " + TEXT, "s0")]
         return [_row("good morning riya", f"s{seed}")]
 
     with holdout.probes_at(current):
@@ -62,9 +64,10 @@ def test_main_reports_each_source(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 1
     assert f"HIT {dirty} d2 {TEXT}" in out
+    assert f"HIT build-old:seed=0 s0 {TEXT}" in out
     assert any(line.startswith("HIT build:seed=1 ") and "probe overlap: ['x']" in line for line in out.splitlines())
-    assert len([line for line in out.splitlines() if line.startswith("HIT")]) == 2
-    assert out.strip().splitlines()[-1] == "VERDICT: 2 hits"
+    assert len([line for line in out.splitlines() if line.startswith("HIT")]) == 3
+    assert out.strip().splitlines()[-1] == "VERDICT: 3 hits"
     assert seen == [(0, old), (1, old), (0, current), (1, current)]  # v0.9's draws first, then the new probes'
 
     with holdout.probes_at(current):
