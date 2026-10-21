@@ -19,7 +19,10 @@ has no more failed turns, keeps or improves 2 of the 4 weak metrics with 1 impro
 significant regression in AI or unknown honesty, disclaimers, invented memories, generic share or about-me recall; an
 AI probe the base always answers honestly and she never does; any rude-sounding reply). Every mode but --base-vs-base
 first hashes the base model and needs a passing gate calibration record for this code and that base
-(evaluation/gate_calibration.json), before any server starts.
+(evaluation/gate_calibration.json), before any server starts. Then every mode that runs probes builds its one embedder
+(persona_eval.make_embedder("auto")) and refuses unless it is the pinned bge model (gate.identity()["embedder"]): an
+auto that fell back to the hash embedder measures another Riya (v0.11 §4.7.5). Both runs get that embedder, each must
+report it back, and a verdict records it as embedder_id with the retrieval code's retrieval_sha256.
 
 On adopt it installs the candidate as the adopted adapter (riya-v1-lora.gguf) in one atomic rename, writes the
 .champion.json record for the installed file and sets local_adapter to it (through the running core when one answers,
@@ -59,6 +62,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from evaluation import gate, persona_eval
 from evaluation.gate import Decision, MetricCall, Scored, decide, format_decision, scored  # noqa: F401
@@ -120,9 +124,10 @@ def colab_extra(environ: Mapping[str, str] | None = None) -> list[str]:
 
 def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_server=RiyaServer,
                 run=persona_eval.run, http_get=health.default_http_get, phrases: list[str],
-                template_post=None) -> Scored:
+                template_post=None, embedder: tuple[Any, str] | None = None) -> Scored:
     """The scorecard on one variant: its own llama-server (a temp slot dir), stopped whatever happens. template_post:
-    check the chat template on this server first (check_template) with that poster."""
+    check the chat template on this server first (check_template) with that poster. embedder: the (embedder,
+    embedder_id) pair the run is given; the run's score must report that embedder_id back (Resolution 10)."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         # its own server serves the candidate as it is (no vetted-only rule): this is how a candidate gets vetted
         srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False, vetted_only=False,
@@ -134,9 +139,11 @@ def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_se
                 check_template(url, template_post)
             if lora is not None and not any(same_path(p, lora) for p in served_adapters(http_get, url)):
                 raise ChampionError(f"the adapter didn't load: {lora}")
-            transcript, pooled, problem = run(url, False, repeat)
+            transcript, pooled, problem = run(url, False, repeat, embedder=embedder)
             if problem is not None:
                 raise ChampionError(f"the model server didn't answer ({problem})")
+            if embedder is not None and (got := pooled.get("embedder_id")) != embedder[1]:
+                raise ChampionError(f"the run used embedder {str(got)[:12]}, not {embedder[1][:12]}")
             if not any(not r.get("error") for r in transcript):
                 raise ChampionError("no probe got an answer")
             return scored(transcript, phrases)
@@ -334,6 +341,9 @@ def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision,
         if v[field] != ours[field]:
             raise ChampionError(f"The verdict is for {field} {str(v[field])[:12]}, "
                                 f"this code has {str(ours[field])[:12]}.")
+    if v["embedder_id"] != ours["embedder"]:  # the runs' own embedder, not just the pin the code held (§4.7.5)
+        raise ChampionError(f"The verdict's runs used embedder {str(v['embedder_id'])[:12]}, this code pins "
+                            f"{ours['embedder'][:12]}.")
     if v["repeat"] != gate.REPEAT:
         raise ChampionError(f"The verdict is for repeat {str(v['repeat'])[:12]}, "
                             f"this code has {str(gate.REPEAT)[:12]}.")
@@ -470,10 +480,24 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def pinned_embedder(make_embedder: Callable[[str], tuple[Any, str]]) -> tuple[Any, str]:
+    """The run's one embedder, make_embedder("auto"), or a ChampionError: when it can't be built, or isn't the pinned
+    bge model (an auto that fell back to the hash embedder would measure another Riya)."""
+    try:
+        pair = make_embedder("auto")
+    except Exception as e:  # noqa: BLE001 - any failure to build it is a refusal, never a traceback
+        raise ChampionError(f"The gate needs the pinned bge embedder; it couldn't be built ({type(e).__name__}: "
+                            f"{e}).") from None
+    if pair[1] != gate.identity()["embedder"]:
+        raise ChampionError(f"The gate needs the pinned bge embedder; this run would use {str(pair[1])[:12]}.")
+    return pair
+
+
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
          run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
          version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic,
-         make_cpu_server=RiyaServer, cpu_tmp_dir: str | Path | None = None) -> int:
+         make_cpu_server=RiyaServer, cpu_tmp_dir: str | Path | None = None,
+         make_embedder: Callable[[str], tuple[Any, str]] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = parser()
@@ -521,6 +545,9 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
             if problem := gate.calibration_problem(repeat, base_sha256=base_id["sha256"]):
                 print(f"{problem} Nothing changed.")
                 return 2
+        # Resolution 11: built once, up front, in every probe-running mode (None: persona_eval's, read now)
+        pair = pinned_embedder(make_embedder or persona_eval.make_embedder)
+        variant["embedder"] = pair
         measured = _snapshot(cand_lora)
         adapter_id = None
         if cand_lora is not None:
@@ -556,7 +583,7 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
                     base_transcript=list(base.transcript), cand_transcript=list(cand.transcript),
                     decision=gate.decision_dict(d),
                     timings={"base_s": t1 - t0, "candidate_s": t2 - t1, "total_s": total_s},
-                    failed={"base": base.failed, "candidate": cand.failed})
+                    failed={"base": base.failed, "candidate": cand.failed}, embedder_id=pair[1])
                 try:
                     write_verdict(v, Path(args.verdict_out))
                 except OSError as e:

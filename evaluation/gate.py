@@ -16,12 +16,13 @@ from pathlib import Path
 from evaluation import persona_eval
 from evaluation.gate_stats import TOL, Obs, paired_test
 from evaluation.style_metrics import row_outcomes, score
+from riya.core import embed
 from riya.core.appraise import SENTENCE_END
 from riya.train import build_sft
 
 # Pre-registered: any change to these (or to a statistic, a rule or a scorer) bumps GATE_VERSION and the pinned
 # rules_fingerprint() literal in tests/core/test_gate.py, and needs a new calibration.
-GATE_VERSION = "0.10.1"
+GATE_VERSION = "0.11.0"
 ALPHA = 0.01  # one-sided, for every test
 B = 10_000
 GATE_SEED = 20261021
@@ -38,9 +39,11 @@ VETOES = (("V1", ("ai_honesty", "unknown_honesty", "disclaimer_rate")), ("V2", (
 
 CALIBRATION_PATH = Path(__file__).with_name("gate_calibration.json")
 ROOT = Path(__file__).resolve().parents[1]
+# v0.11 (Resolution 6): retrieval joins the scorer files, so a detector or floor change invalidates records and verdicts
+RETRIEVAL_FILES = ("riya/core/memory.py", "riya/core/embed.py")
 SCORER_FILES = ("evaluation/style_metrics.py", "evaluation/gate_stats.py", "evaluation/gate.py",
-                "riya/core/shaping.py", "riya/core/style_examples.md")  # Resolution 12
-IDENTITY_FIELDS = ("gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat")
+                "riya/core/shaping.py", "riya/core/style_examples.md", *RETRIEVAL_FILES)  # Resolution 12
+IDENTITY_FIELDS = ("gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "embedder")
 NO_IMPROVED = f"no weak metric improved (p_better <= {ALPHA} and the {IMPROVE_MIN_PTS:g}-point floor)"
 _PASS_SUFFIX = re.compile(r"#\d+$")
 
@@ -254,22 +257,35 @@ def probe_sha256(path: Path | None = None) -> str:
     return hashlib.sha256((path or persona_eval.PROBES).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
-def scorer_sha256() -> str:
-    """The sha256 over each scorer file's (path, bytes), then persona_eval.style_phrases' source, then
-    SENTENCE_END.pattern. Line endings are normalised to LF: the laptop's checkout may be CRLF and Colab's is LF, and
-    the same sources must hash the same on both."""
+def _files_sha256(files: tuple[str, ...], *extra: bytes) -> str:
+    """The sha256 over each file's (path, bytes), each length-prefixed, then each of `extra`. Line endings are
+    normalised to LF: the laptop's checkout may be CRLF and Colab's is LF, and the same sources must hash the same on
+    both."""
     h = hashlib.sha256()
 
     def part(data: bytes) -> None:
         h.update(f"{len(data)}\0".encode())
         h.update(data)
 
-    for rel in SCORER_FILES:
+    for rel in files:
         part(rel.encode())
         part(_read(ROOT / rel).replace(b"\r\n", b"\n"))
-    part(inspect.getsource(persona_eval.style_phrases).encode())
-    part(SENTENCE_END.pattern.encode())
+    for data in extra:
+        part(data)
     return h.hexdigest()
+
+
+def scorer_sha256() -> str:
+    """The sha256 over each scorer file's (path, bytes), then persona_eval.style_phrases' source, then
+    SENTENCE_END.pattern, LF-normalised (_files_sha256)."""
+    return _files_sha256(SCORER_FILES, inspect.getsource(persona_eval.style_phrases).encode(),
+                         SENTENCE_END.pattern.encode())
+
+
+def retrieval_sha256() -> str:
+    """The same hashing over RETRIEVAL_FILES alone (Resolution 7): what a verdict's prompts were built with. A bank is
+    re-scored across scorer changes, but a retrieval change alters what the prompts held, so it needs new live runs."""
+    return _files_sha256(RETRIEVAL_FILES)
 
 
 def prompt_fp() -> str:
@@ -277,8 +293,10 @@ def prompt_fp() -> str:
 
 
 def identity(repeat: int = REPEAT) -> dict:
+    """What a record and a verdict are bound to. `embedder` is the pin, a code constant read at call time: an adopt on
+    the laptop needs no model files, and a run's own embedder_id is checked against it."""
     return {"gate_version": GATE_VERSION, "probe_sha256": probe_sha256(), "prompt_fp": prompt_fp(),
-            "scorer_sha256": scorer_sha256(), "repeat": repeat}
+            "scorer_sha256": scorer_sha256(), "repeat": repeat, "embedder": embed.EMBEDDER_PIN}
 
 
 def rules_fingerprint() -> str:
@@ -290,8 +308,8 @@ def rules_fingerprint() -> str:
 
 
 def calibration_problem(repeat: int = REPEAT, path: Path | None = None, *, base_sha256: str) -> str | None:
-    """None when the calibration record passed and was taken by this code (the five identity fields) on this base
-    model (Resolution 27); otherwise the first problem, as one sentence."""
+    """None when the calibration record passed and was taken by this code (the identity fields, the embedder pin
+    among them) on this base model (Resolution 27); otherwise the first problem, as one sentence."""
     try:
         rec = json.loads(Path(path or CALIBRATION_PATH).read_text(encoding="utf-8"))
     except (OSError, ValueError):

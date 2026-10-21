@@ -7,6 +7,7 @@ import pytest
 
 from evaluation import champion, gate, verdict
 from evaluation.verdict import VerdictError
+from riya.core import embed
 from tests.gate_helpers import plan_transcript
 
 
@@ -17,15 +18,17 @@ def make(**over) -> dict:
               base_gguf={"name": "b.gguf", "size": 4, "sha256": "b" * 64}, llama_server="b1234", template_check="ok",
               base_transcript=t, cand_transcript=t,
               decision={"adopt": False, "weak": ({"key": "invented"},), "reasons": ["Δ ≈ 0 — ok"]},
-              timings={"base_s": 1.0, "candidate_s": 2.0, "total_s": 3.5}, failed={"base": 0, "candidate": 1})
+              timings={"base_s": 1.0, "candidate_s": 2.0, "total_s": 3.5}, failed={"base": 0, "candidate": 1},
+              embedder_id=embed.EMBEDDER_PIN)
     return verdict.make_verdict(**(kw | over))
 
 
 def test_constants():
     assert (verdict.KIND, verdict.MODES) == ("riya-gate-verdict", ("candidate", "base-vs-base"))
     assert verdict.REQUIRED == ("kind", "mode", "gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat",
-                                "alpha", "B", "seed", "adapter", "base_gguf", "llama_server", "template_check",
-                                "transcripts", "decision", "timings", "failed_turns", "created_at", "checksum")
+                                "embedder", "embedder_id", "retrieval_sha256", "alpha", "B", "seed", "adapter",
+                                "base_gguf", "llama_server", "template_check", "transcripts", "decision", "timings",
+                                "failed_turns", "created_at", "checksum")
     assert issubclass(VerdictError, ValueError)
 
 
@@ -34,6 +37,9 @@ def test_checksum_round_trip(tmp_path):
     assert v["checksum"] == verdict.checksum_of(v) and set(verdict.REQUIRED) <= set(v)
     ident = gate.identity()
     assert {k: v[k] for k in gate.IDENTITY_FIELDS} == ident
+    assert v["embedder"] == embed.EMBEDDER_PIN == v["embedder_id"]  # the pin the code holds, and what the runs used
+    assert v["retrieval_sha256"] == gate.retrieval_sha256()  # None means this code's own
+    assert make(retrieval_sha256="9" * 64)["retrieval_sha256"] == "9" * 64
     assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
     assert v["failed_turns"] == {"base": 0, "candidate": 1} and v["kind"] == verdict.KIND
     assert set(v["transcripts"]) == {"base", "candidate"} and len(v["transcripts"]["candidate"]) == 2 * gate.REPEAT
@@ -118,6 +124,17 @@ def test_load_verdict_refuses_every_malformed_file(tmp_path, name):
     assert "\n" not in str(e.value)  # a one-line reason
 
 
+def test_an_old_verdict_is_refused_by_name(tmp_path):
+    """Review Focus 5: a v0.10.1 verdict still on disk (no embedder, embedder_id or retrieval_sha256), checksum intact,
+    is refused in one sentence naming what's missing, never a KeyError."""
+    body = {k: x for k, x in make().items() if k not in ("embedder", "embedder_id", "retrieval_sha256")}
+    body["checksum"] = verdict.checksum_of(body)
+    write_text(tmp_path / "old.json", json.dumps(body))
+    with pytest.raises(VerdictError) as e:
+        verdict.load_verdict(tmp_path / "old.json")
+    assert str(e.value) == "The verdict is missing embedder, embedder_id, retrieval_sha256."
+
+
 def test_a_bank_verdict_may_have_no_adapter(tmp_path):
     write_text(tmp_path / "v.json", signed(mode="base-vs-base", adapter=None))
     assert verdict.load_verdict(tmp_path / "v.json")["adapter"] is None
@@ -164,9 +181,9 @@ def test_the_checksum_covers_the_nested_fields(tmp_path, key, inner):
 
 
 def test_the_covered_fields_are_all_the_non_structural_ones():
-    assert set(COVERED) == {"gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "alpha", "B",
-                            "seed", "adapter", "base_gguf", "llama_server", "template_check", "decision", "timings",
-                            "failed_turns", "created_at"}
+    assert set(COVERED) == {"gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "embedder",
+                            "embedder_id", "retrieval_sha256", "alpha", "B", "seed", "adapter", "base_gguf",
+                            "llama_server", "template_check", "decision", "timings", "failed_turns", "created_at"}
 
 
 def test_write_verdict_is_atomic(tmp_path, monkeypatch):
