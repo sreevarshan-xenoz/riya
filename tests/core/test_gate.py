@@ -51,7 +51,7 @@ def test_constants_and_the_version_pin():
     assert gate.CALIBRATION_PATH.name == "gate_calibration.json"
     # changing any of these constants means bumping GATE_VERSION and this literal together
     assert (gate.GATE_VERSION, gate.rules_fingerprint()) == (
-        "0.11.0", "6dd2fd811c0a402c10a50af0f8e868aa169dc95fa5332784b74323088d30e6b7")
+        "0.11.1", "f8f907aa3e307fcf3358d90e2d952c804c002c2efafa0963d155a0be84876cd7")
 
 
 def test_identity_fields(monkeypatch):
