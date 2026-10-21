@@ -3,11 +3,12 @@
     python -m colab.train_riya_v1 --smoke   # 8 rows, one optimizer step, export, load in llama-server: prints SMOKE_OK
     python -m colab.train_riya_v1           # the full run: prints TRAIN_DONE
 
-Reads sft.jsonl (riya.train.filter_sft), trains on the assistant tokens only (riya.train.fmt's mask), writes the
-adapter, converts it with llama.cpp's convert_lora_to_gguf.py to riya-v1-lora.gguf, then proves llama-server loads it
-(--lora, /lora-adapters) and that the HF chat template renders the same prompt as llama-server's. train_report.json
-records the base, the config and the loss curve. LoRA weights in fp32 under autocast over fp16 base weights; nothing is
-quantised for training. A NaN or infinite loss stops the run before anything is exported (TRAIN_ABORTED, and the
+Reads sft.jsonl (riya.train.filter_sft), drops every row that overlaps a persona probe (riya.train.holdout; an
+sft.jsonl built before the probes grew is cleaned too, and train_report.json says how many), trains on the assistant
+tokens only (riya.train.fmt's mask), writes the adapter, converts it with llama.cpp's convert_lora_to_gguf.py to
+riya-v1-lora.gguf, then proves llama-server loads it (--lora, /lora-adapters) and that the HF chat template renders
+the same prompt as llama-server's. train_report.json records the base, the config and the loss curve. LoRA weights
+in fp32 under autocast over fp16 base weights; nothing is quantised for training. A NaN or infinite loss stops the run before anything is exported (TRAIN_ABORTED, and the
 report says "aborted": "non-finite loss").
 
 torch, transformers, peft and huggingface_hub are imported inside the functions that need them, so the pure helpers
@@ -28,6 +29,7 @@ from pathlib import Path
 
 from riya.train.fmt import (IGNORE_INDEX, MAX_LEN, encode_row, read_jsonl, template_matches, validate_sft_row,
                             write_json)
+from riya.train.holdout import drop_holdout
 
 DEFAULT_BASE = "huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated"  # the safetensors twin of the GGUF she serves
 OFFICIAL_BASE = "LiquidAI/LFM2.5-1.2B-Instruct"
@@ -138,13 +140,24 @@ def smoke_problems(served: list[str], lora: str, server_prompt: str, hf_prompt: 
     return problems
 
 
+def load_sft(path: Path, smoke: bool = False) -> tuple[list[dict], int]:
+    """(the training rows, how many were dropped as probe overlaps): the file's rows, each validated, without the ones
+    that overlap a persona probe, then the first SMOKE_ROWS of them in a smoke run (so the drop comes before the slice)."""
+    rows = read_jsonl(path)
+    for row in rows:
+        validate_sft_row(row)
+    rows, dropped = drop_holdout(rows)
+    return (rows[:SMOKE_ROWS] if smoke else rows), len(dropped)
+
+
 def make_report(*, base_id: str, base_mismatch: bool, rows: int, skipped: int, losses: list[tuple[int, float]],
-                smoke: bool, gpu: str, settings: dict, aborted: str | None = None) -> dict:
+                smoke: bool, gpu: str, settings: dict, aborted: str | None = None, holdout_dropped: int = 0) -> dict:
     """train_report.json: the base (and whether it is the wrong one), the data, the loss curve and the config;
-    aborted names why the run stopped early (NON_FINITE), else None."""
+    aborted names why the run stopped early (NON_FINITE), else None; holdout_dropped counts the rows left out for
+    overlapping a probe."""
     return {"base_id": base_id, "base_mismatch": base_mismatch, "rows": rows, "skipped_too_long": skipped,
             "loss_curve": [[s, v] for s, v in losses], "smoke": smoke, "gpu": gpu, "lora": peft_config_kwargs(),
-            "train": settings, "adapter": OUT_NAME, "aborted": aborted}
+            "train": settings, "adapter": OUT_NAME, "aborted": aborted, "holdout_dropped": holdout_dropped}
 
 
 NON_FINITE = "non-finite loss"
@@ -323,11 +336,9 @@ def _run(args: argparse.Namespace) -> int:
     print(f"LoRA on {len(chosen)} modules, {sum(p.numel() for _, p in trainable):,} trainable parameters", flush=True)
 
     # 3. the data: each row's prompt masked, its answer trained on
-    sft = read_jsonl(Path(args.sft))
-    for row in sft:
-        validate_sft_row(row)
-    if args.smoke:
-        sft = sft[:SMOKE_ROWS]
+    sft, holdout_dropped = load_sft(Path(args.sft), args.smoke)
+    if holdout_dropped:
+        print(f"{holdout_dropped} rows dropped as probe overlaps", flush=True)
     data, skipped = [], 0
     for row in sft:
         enc = encode_row(tok, row["messages"], settings["max_len"])
@@ -376,7 +387,8 @@ def _run(args: argparse.Namespace) -> int:
                             opt_step=opt_step, log=log)
     except NonFiniteLoss as e:  # an fp16 overflow: a near-zero adapter would still pass the smoke step, so stop here
         write_json(make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped,
-                               losses=e.losses, smoke=args.smoke, gpu=gpu, settings=settings, aborted=NON_FINITE),
+                               losses=e.losses, smoke=args.smoke, gpu=gpu, settings=settings, aborted=NON_FINITE,
+                               holdout_dropped=holdout_dropped),
                    out_dir / REPORT_NAME)
         raise SystemExit(f"TRAIN_ABORTED: {e}. See {out_dir / REPORT_NAME}.") from None
 
@@ -391,7 +403,7 @@ def _run(args: argparse.Namespace) -> int:
 
     # 6. report (before the smoke, so a failed load keeps the loss curve)
     report = make_report(base_id=base_id, base_mismatch=mismatch, rows=len(data), skipped=skipped, losses=losses,
-                         smoke=args.smoke, gpu=gpu, settings=settings)
+                         smoke=args.smoke, gpu=gpu, settings=settings, holdout_dropped=holdout_dropped)
     write_json(report, out_dir / REPORT_NAME)  # atomic: a killed run never leaves half a report
 
     # 7. smoke: llama-server loads the adapter, and the HF template matches llama-server's

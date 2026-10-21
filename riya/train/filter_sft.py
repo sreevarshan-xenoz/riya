@@ -19,12 +19,14 @@ from riya.core.shaping import CODE_BLOCK, EMOJI, STAGE_WORDS, strip_label
 from riya.train import build_sft
 from riya.train.fmt import (read_jsonl_checked, sft_row, trained_reply, validate_request, validate_teacher,
                             write_json, write_jsonl)
+from riya.train.holdout import first_hit, probe_facts, probe_texts
 from riya.train.scenarios import ATTR_WORDS, value_words
 
 MIN_KEPT_PER_KIND = 40
 REASONS = ("empty", "ack_only", "generic", "too_many_sentences", "too_many_emoji", "invented", "missed_fact",
            "no_unknown_admission", "no_ai_admission", "disclaimer", "stage_direction", "label",
-           "truncated")  # the last is the truncation check (progress.md, CONFLICT 4)
+           "truncated",  # the truncation check (progress.md, CONFLICT 4)
+           "holdout")  # a request-level reason (v0.10): the request overlaps a probe, so it is never scored
 SITUATIONAL_KINDS = frozenset({"report", "tool", "game"})  # their facts live in the situation text
 DEFAULT_TEACHER = Path("scratch_runs/riya_v1/teacher.jsonl")
 DEFAULT_SFT = Path("scratch_runs/riya_v1/sft.jsonl")
@@ -480,12 +482,14 @@ def reasons(request: dict, response: str, style_phrases: list[str]) -> list[str]
     return [r for r in REASONS if failed.get(r)]
 
 
-def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[str]) -> tuple[list[dict], dict]:
+def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[str],
+                probes: tuple[list[str], list[str]] | None = None) -> tuple[list[dict], dict]:
     """(the kept chat rows in request order, the report). An answer pairs with a request only on its id and its h (the
     request's content hash, echoed by the teacher): a row whose h isn't the request's, or that has none, answered
     another request built under the same id (another seed, pool or prompt) and counts as "stale_answer", never kept.
     The first matching row per request wins; later ones count as "duplicate", ids that no request has as
-    "unknown_id", and requests without a matching answer as "missing"."""
+    "unknown_id", and requests without a matching answer as "missing". probes: (texts, facts), default the current
+    probe file's: an answered request that overlaps one counts "holdout" once and is never scored or kept."""
     by_id = {r["id"]: r for r in requests}
     answers: dict[str, str] = {}
     duplicate = unknown_id = stale = 0
@@ -499,13 +503,15 @@ def filter_rows(requests: list[dict], teacher: list[dict], style_phrases: list[s
             duplicate += 1
         else:
             answers[row["id"]] = clean_response(row["response"])
+    texts, facts = probes if probes is not None else (probe_texts(), probe_facts())
     kept, failures = [], Counter()
     totals, kept_by_kind = Counter(), Counter()
     for request in requests:
         totals[request["kind"]] += 1
         if request["id"] not in answers:
             continue
-        failed = reasons(request, answers[request["id"]], style_phrases)
+        failed = ["holdout"] if first_hit(request, texts, facts) is not None else reasons(
+            request, answers[request["id"]], style_phrases)
         failures.update(failed)
         if not failed:
             kept.append(sft_row(request, trained_reply(request["kind"], answers[request["id"]])))

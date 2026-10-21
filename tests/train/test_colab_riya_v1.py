@@ -6,6 +6,8 @@ from pathlib import Path
 
 from colab import gen_riya_v1 as gen
 from colab import train_riya_v1 as tr
+from riya.train import fmt
+from riya.train.holdout import probe_texts
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,6 +100,36 @@ def test_report():
     assert r["lora"] == tr.peft_config_kwargs() and r["adapter"] == "riya-v1-lora.gguf"
     assert (r["rows"], r["skipped_too_long"], r["smoke"], r["gpu"]) == (100, 2, False, "Tesla T4")
     assert r["train"]["dtype"] == "float16"
+    assert r["holdout_dropped"] == 0
+    assert tr.make_report(base_id=tr.OFFICIAL_BASE, base_mismatch=False, rows=1, skipped=0, losses=[], smoke=False,
+                          gpu="T4", settings=tr.train_settings(False), holdout_dropped=3)["holdout_dropped"] == 3
+
+
+def _sft(i: int, user: str) -> dict:
+    return {"id": f"r{i}", "kind": "small", "messages": [{"role": "system", "content": "sys"},
+                                                          {"role": "user", "content": user},
+                                                          {"role": "assistant", "content": "Hmph, hi~"}]}
+
+
+def test_the_loader_drops_and_counts_a_probe_overlap(tmp_path):
+    """A9 (CPU): the trainer drops rows that overlap a probe, before the smoke slice, and counts them."""
+    rows = [_sft(0, "good morning to you"), _sft(1, probe_texts()[0]), _sft(2, "i made toast today")]
+    p = tmp_path / "sft.jsonl"
+    fmt.write_jsonl(rows, p)
+    assert tr.load_sft(p) == ([rows[0], rows[2]], 1)
+    many = [_sft(i, f"message number {i} here") for i in range(tr.SMOKE_ROWS + 4)]
+    many.insert(1, _sft(99, probe_texts()[0]))
+    fmt.write_jsonl(many, p)
+    kept, n = tr.load_sft(p, smoke=True)
+    assert n == 1 and len(kept) == tr.SMOKE_ROWS and "r99" not in {r["id"] for r in kept}  # dropped before slicing
+    assert [r["id"] for r in kept] == [f"r{i}" for i in range(tr.SMOKE_ROWS)]
+
+
+def test_the_run_uses_the_loader_and_reports_the_drop():
+    src = (ROOT / "colab" / "train_riya_v1.py").read_text(encoding="utf-8")
+    run = src.split("def _run(", 1)[1].split("\ndef ", 1)[0]
+    assert "load_sft(" in run and "rows dropped as probe overlaps" in run and "holdout_dropped=" in run
+    assert "riya.core" not in src
 
 
 def test_teacher_helpers():
