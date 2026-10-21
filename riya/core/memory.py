@@ -19,6 +19,7 @@ LIVE = "('active','conflict')"
 EPISODE_FORGET_SIM = 0.6
 DAY = 86400.0
 ABOUT_ME_FACTS = 8
+PERSONAL_EXTRA = 3  # a personal request's fill: at most this many facts beyond the eligible ones (v0.11 §4.2)
 MAX_EPISODES = 3
 RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it's this fresh
 STALE_THREAD_S = 7 * DAY  # an open thread this far past due is dropped by the daily purge
@@ -152,6 +153,7 @@ class Retrieved:
     facts: list[Fact]
     episodes: list[Episode]
     threads: list[Thread]
+    filled: tuple[int, ...] = ()  # the ids a personal request's fill added, in rank order (they end `facts`)
 
 
 _FACT_COLS = "id, text, key, source, confidence, valid_from, valid_until, status, supersedes_id"
@@ -496,20 +498,32 @@ class Memory:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
     @_locked
-    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2) -> Retrieved:
+    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2,
+                 personal: bool = True) -> Retrieved:
         """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
         it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets the
         facts that pass the gate first, then is filled to 8 with her best facts by trust and recency. Due threads
-        pass the same gate as facts."""
+        pass the same gate as facts.
+
+        A personal request ("pick a snack for me, you know what i like") gets the eligible facts first, then up to
+        PERSONAL_EXTRA more live facts whose cosine is at least the embedder's personal_sim, ranked by score, never
+        more than k_facts in all; `filled` names them. It ignores min_sim, and an embedder without personal_sim
+        (HashEmbedder) gets no fill. personal=False turns it off: the engine does that on the online route, so an
+        online-routed request ("plan my week for me" goes online on "plan") gets no fill, a known limit (v0.11
+        §4.7.9). Every other query retrieves exactly what it did before."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         mine = about_me(query)
-        facts, rest, episodes = [], [], []
+        floor = getattr(self.embedder, "personal_sim", None)
+        fill = personal and not mine and floor is not None and personal_request(query)
+        facts, rest, extra, episodes = [], [], [], []
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["text"]):
                 facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
             elif mine:
                 rest.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            elif fill and sim >= floor:
+                extra.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["summary"]):
@@ -522,8 +536,11 @@ class Memory:
             e for _, e in episodes[:k_episodes]]
         unique = list({e.id: e for e in picked}.values())  # in order of first appearance
         chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
-        return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen,
-                         self._relevant_threads(vec, qtokens, k_threads))
+        kept = [f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]]
+        extra.sort(key=lambda p: p[0], reverse=True)  # empty unless a personal request
+        added = [f for _, f in extra[:min(PERSONAL_EXTRA, k_facts - len(kept))]]
+        return Retrieved(kept + added, chosen, self._relevant_threads(vec, qtokens, k_threads),
+                         tuple(f.id for f in added))
 
     # --- legacy import ---
 
