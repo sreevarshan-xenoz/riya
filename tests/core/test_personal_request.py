@@ -91,6 +91,23 @@ def test_the_spec_s_fire_forms():
     assert [q for q in fire if not personal_request(q)] == []
 
 
+def test_plural_direct_attribute_questions_never_fire():
+    """Final review I1 (a post-freeze tightening, §4.1): "what are my kids called", "who are my best friends" and
+    "where are my parents from" are direct attribute questions, so a hedge or "describe me" never makes them fire.
+    A topical plural ("what are my pet peeves, as far as you can tell") still does."""
+    plural = (
+        "what are my kids called, as far as you know?", "who are my best friends, as far as you know",
+        "where are my parents from, as far as you know", "what are my pets called? describe me",
+        "what're my cats named, as far as you can tell?", "who were my exes, as far as you know?",
+        "what were my grandparents' names, as far as you know?", "where were my parents from? describe me",
+        "whatre my kids called, as far as you know?", "who’re my best friends, as far as you know?",
+    )
+    assert [q for q in plural if not _fires_raw(q)] == []
+    assert [q for q in plural if personal_request(q)] == []
+    assert personal_request("what are my pet peeves, as far as you can tell")
+    assert personal_request("what are my habits like, as far as you know?")
+
+
 def test_case_and_curly_apostrophes_never_change_a_verdict():
     d = _load()
     changed = []
