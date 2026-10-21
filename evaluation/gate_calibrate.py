@@ -13,6 +13,11 @@ calibration is reported, never tuned (§3), and never written over the committed
 --out elsewhere). The record and each bank verdict name their Python and numpy (information only; a note when they
 differ from this machine's).
 
+v0.11: a bank verdict must also carry this code's embedder pin, runs that used it (embedder_id) and this code's
+retrieval_sha256: a retrieval change alters what the prompts held, so it needs new live runs, never a re-score. The
+record's `info` holds A16's report lines (bank_info): base about-me recall on the personal probes, unknown honesty and
+the irrelevant-fact share, printed as information and never a criterion.
+
 Never runs a model. --draws 200 at B = 10,000 takes a few minutes of CPU at most (about one on a fake bank of the
 real probe file): each draw is 14 vectorised paired tests (7 in decide(), 7 plants) over rows whose outcomes are scored
 once per run. See docs/superpowers/specs/2026-10-21-riya-v0.10-gate-that-sees-design.md §4.4 and §4.6, and the plan's
@@ -30,6 +35,7 @@ from evaluation import gate, persona_eval
 from evaluation.gate import (CALIBRATION_PATH, GOOD_IS_1, PASS_KEY, VETOES, WEAK, Decision, GateError, OutcomeCache,
                              Scored, ai_solid_flips, decide, identity, metric_call, probe_key, scored)
 from evaluation.gate_stats import TOL
+from evaluation.style_metrics import about_me_recalls, honest_unknown, irrelevant_share
 from evaluation.verdict import VerdictError, canonical, env_info, env_note, load_verdict
 from riya.brain import same_path
 from riya.train import fmt
@@ -63,9 +69,12 @@ class Pass:
 # ---- the bank --------------------------------------------------------------------------------------------------------
 
 def _check(name: str, v: dict, ours: dict) -> None:
-    """One bank verdict against this code: base-vs-base, and the probe_sha256, prompt_fp and repeat it was run with
-    (gate_version and scorer_sha256 may differ: a bank is re-scored from its transcripts, §4.6.5)."""
-    for field, want in (("mode", "base-vs-base"), *((f, ours[f]) for f in ("probe_sha256", "prompt_fp", "repeat"))):
+    """One bank verdict against this code: base-vs-base, and the probe_sha256, prompt_fp, repeat, embedder pin, the
+    runs' embedder_id and retrieval_sha256 it was run with (gate_version and scorer_sha256 may differ: a bank is
+    re-scored from its transcripts, §4.6.5; retrieval may not: it changed what the prompts held, Resolution 7)."""
+    for field, want in (("mode", "base-vs-base"), *((f, ours[f]) for f in ("probe_sha256", "prompt_fp", "repeat")),
+                        ("embedder", ours["embedder"]), ("embedder_id", ours["embedder"]),
+                        ("retrieval_sha256", gate.retrieval_sha256())):
         if v[field] != want:
             raise GateError(f"The bank verdict {name} has {field} {str(v[field])[:12]}, this code has "
                             f"{str(want)[:12]}.")
@@ -188,6 +197,20 @@ def _rate(n: int, of: int) -> float:
     return n / of if of else 0.0
 
 
+def bank_info(rows: list[dict]) -> dict:
+    """A16's report lines over bank rows (Resolution 24), information only: the share of answered about-me rows of
+    persona_eval.PERSONAL_PROBES that recall a fact (about_me_recalls), the pooled unknown honesty, and the
+    irrelevant-fact share with its count (irrelevant_share). A share with no rows is None."""
+    answered = [r for r in rows if not r.get("error")]
+    personal = [about_me_recalls(r["reply"], r.get("facts", [])) for r in answered
+                if r["kind"] == "about_me" and r.get("conversation") in persona_eval.PERSONAL_PROBES]
+    unknown = [honest_unknown(r["reply"], r.get("text", "")) for r in answered if r["kind"] == "unknown"]
+    used, n = irrelevant_share(rows)
+    return {"about_me_recall_personal": sum(personal) / len(personal) if personal else None,
+            "unknown_honesty": sum(unknown) / len(unknown) if unknown else None,
+            "irrelevant_fact_used": used, "irrelevant_n": n}
+
+
 # ---- calibrate -------------------------------------------------------------------------------------------------------
 
 def calibrate(verdicts: list[dict], passes: list[Pass], *, draws: int = DRAWS, seed: int = SEED) -> dict:
@@ -297,6 +320,7 @@ def calibrate(verdicts: list[dict], passes: list[Pass], *, draws: int = DRAWS, s
             "v4_sensitivity": {"probes": honest, "always_honest": sum(h == 1.0 for h in honest.values()),
                                "n": len(honest)},
             "a8": a8, "passed": a1["passed"] and a2["passed"] and plants["passed"] and a8["ok"], "reasons": reasons,
+            "info": bank_info([r for v in verdicts for side in ("base", "candidate") for r in v["transcripts"][side]]),
             "env": env_info(), "created_at": datetime.now().astimezone().isoformat(timespec="seconds")}
 
 
@@ -304,6 +328,10 @@ def calibrate(verdicts: list[dict], passes: list[Pass], *, draws: int = DRAWS, s
 
 def _ok(flag: bool) -> str:
     return "PASS" if flag else "FAIL"
+
+
+def _pct(x) -> str:
+    return "n/a" if x is None else f"{x:.1%}"
 
 
 def summary(rec: dict) -> list[str]:
@@ -332,6 +360,10 @@ def summary(rec: dict) -> list[str]:
     budget = "none" if a8["budget_s"] is None else f"{a8['budget_s']} s"
     lines.append(f"A8: slowest run {a8['max_total_s']:.0f} s (budget {budget} at repeat {rec['repeat']}): "
                  f"{_ok(a8['ok'])}")
+    info = rec["info"]
+    lines.append(f"info: base about-me recall on personal probes {_pct(info['about_me_recall_personal'])}, unknown "
+                 f"honesty {_pct(info['unknown_honesty'])}, irrelevant facts {_pct(info['irrelevant_fact_used'])} of "
+                 f"{info['irrelevant_n']} annotated replies (information, never a criterion)")
     return lines
 
 

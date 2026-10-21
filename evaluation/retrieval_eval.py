@@ -1,23 +1,34 @@
 """Retrieval benchmark for Riya's memory: recall@5 over seeded facts and silence on things never said.
 
   python -m evaluation.retrieval_eval --embedder hash|bge
+  python -m evaluation.retrieval_eval --personal [--dev-only] [--personal-sim 0.40|0.45|0.50] [--embedder recorded]
+
+--personal measures v0.11's personal fill (Memory.retrieve(personal=True)) on the personal-request dev set and the
+persona probe bank, from the recorded bge vectors (no model is loaded). --dev-only never runs the bank: the floor is
+chosen on dev evidence alone.
 """
 import argparse
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
 
+from evaluation.persona_eval import PERSONAL_PROBES, load_probes
+from evaluation.recorded_vectors import RecordedEmbedder
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
-from riya.core.memory import Memory
+from riya.core.memory import Memory, personal_request
 from riya.core.store import open_db
 
-DATA = Path(__file__).resolve().parents[1] / "tests" / "data" / "retrieval_set.json"
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "tests" / "data" / "retrieval_set.json"
+DEV = ROOT / "tests" / "data" / "personal_set.json"
 OUT = Path("scratch_runs") / "retrieval_eval.jsonl"
 DAY = 86400.0
+HONESTY_KINDS = ("unknown", "ai", "ai_offpath")
+NEVER_FIRE_KINDS = HONESTY_KINDS + ("small", "explain", "remember", "greeting")
 
 
 def recall_at_5(memory_factory: Callable[[], Memory], data: dict) -> dict:
@@ -73,16 +84,180 @@ def recall_at_5(memory_factory: Callable[[], Memory], data: dict) -> dict:
             "min_hit_sim": round(min(hit_sims, default=0.0), 4)}
 
 
-def main(argv: list[str] | None = None) -> dict:
+def seeded(texts: Sequence[str], embedder) -> tuple[Memory, dict[int, str]]:
+    """A :memory: Memory on a FakeClock with every text added as user_said at one clock time; also the stored ids,
+    mapped to their texts (a near-duplicate text is not stored twice)."""
+    memory = Memory(open_db(":memory:"), embedder, FakeClock())
+    stored: dict[int, str] = {}
+    for text in texts:
+        added = memory.add_fact(text, "user_said")
+        if added is not None:
+            stored[added.id] = text
+    return memory, stored
+
+
+def _ask(memory: Memory, q: str) -> tuple:
+    """(the retrieval with the fill on, whether the fill-off retrieval has the same fact ids)."""
+    on = memory.retrieve(q, personal=True)
+    off = memory.retrieve(q, personal=False)
+    return on, [f.id for f in on.facts] == [f.id for f in off.facts]
+
+
+def _share(n: int, of: int) -> float | None:
+    """n / of, or None when of is 0: an empty denominator is "n/a", never a flattering 100%."""
+    return n / of if of else None
+
+
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.0%}"
+
+
+def personal_report(data: dict, embedder, *, pooled: bool = False) -> dict:
+    """The dev set through retrieve(personal=True): each question against its own `memory` facts, or with pooled,
+    against every fact. personal_recall is the share of requests with at least one relevant fact in the prompt
+    (`misses` names the rest); dragged is the filled facts that aren't relevant, per request (mean and max);
+    max_facts and max_filled bound every question; nonpersonal_identical is the share of the questions that
+    personal_request does not fire on that retrieve the same facts with the fill on and off."""
+    text = {f["id"]: f["text"] for f in data["facts"]}
+    pool = seeded([f["text"] for f in data["facts"]], embedder) if pooled else None
+    questions = [(r, True) for r in data["requests"]] + [(n, False) for n in data["negatives"]]
+    hits, misses, dragged, fired, negatives_fired, identical, plain = 0, [], [], 0, [], 0, 0
+    max_facts = max_filled = 0
+    for q, is_request in questions:
+        memory, _ = pool or seeded([text[i] for i in q["memory"]], embedder)
+        on, same = _ask(memory, q["q"])
+        fires = personal_request(q["q"])
+        max_facts, max_filled = max(max_facts, len(on.facts)), max(max_filled, len(on.filled))
+        if not fires:
+            plain += 1
+            identical += same
+        if not is_request:
+            if fires:
+                negatives_fired.append(q["id"])
+            continue
+        fired += fires
+        relevant = {text[i] for i in q["relevant"]}
+        if relevant & {f.text for f in on.facts}:
+            hits += 1
+        else:
+            misses.append(q["id"])
+        dragged.append(sum(1 for f in on.facts if f.id in on.filled and f.text not in relevant))
+    n = len(data["requests"])
+    return {"requests": n, "fired": fired, "fire_rate": _share(fired, n), "negatives_fired": negatives_fired,
+            "personal_recall": _share(hits, n), "misses": misses,
+            "dragged_mean": round(sum(dragged) / n, 4) if n else 0.0, "dragged_max": max(dragged, default=0),
+            "max_facts": max_facts, "max_filled": max_filled, "nonpersonal_identical": _share(identical, plain),
+            "nonpersonal_n": plain}
+
+
+def bank_report(probes: dict, embedder) -> dict:
+    """The persona probe bank, each turn against its own conversation's seeded facts only (remembered facts aren't
+    modelled). A speak_first turn is skipped for retrieval but the detector still sees it. fired: the probe ids
+    ("conversation.turn") of each kind the detector fires on. personal_hits: the PERSONAL_PROBES conversations whose
+    prompt holds a relevant fact (the turn's `relevant` annotation, else every conversation fact). dragged_total:
+    filled facts that aren't relevant, over the about-me turns. honesty_facts: the facts any unknown or AI turn would
+    carry into its prompt (A10 wants none)."""
+    fired: dict[str, list[str]] = {}
+    hits, honesty, dragged = [], {}, 0
+    max_facts = max_filled = identical = plain = 0
+    for conv in probes["conversations"]:
+        memory, _ = seeded(conv["facts"], embedder)
+        for turn in conv["turns"]:
+            pid, kind = f"{conv['id']}.{turn['id']}", turn["kind"]
+            fires = personal_request(turn["text"])
+            fired.setdefault(kind, [])
+            if fires:
+                fired[kind].append(pid)
+            if turn.get("speak_first"):
+                continue
+            on, same = _ask(memory, turn["text"])
+            max_facts, max_filled = max(max_facts, len(on.facts)), max(max_filled, len(on.filled))
+            if not fires:
+                plain += 1
+                identical += same
+            relevant = {conv["facts"][i] for i in turn["relevant"]} if "relevant" in turn else set(conv["facts"])
+            if kind == "about_me":
+                dragged += sum(1 for f in on.facts if f.id in on.filled and f.text not in relevant)
+            if conv["id"] in PERSONAL_PROBES and relevant & {f.text for f in on.facts}:
+                hits.append(conv["id"])
+            if kind in HONESTY_KINDS and on.facts:
+                honesty[pid] = [f.text for f in on.facts]
+    return {"fired": fired, "personal_hits": hits, "personal_total": len(PERSONAL_PROBES), "dragged_total": dragged,
+            "honesty_facts": honesty, "max_facts": max_facts, "max_filled": max_filled,
+            "nonpersonal_identical": _share(identical, plain), "nonpersonal_n": plain}
+
+
+def format_personal(dev: dict, dev_pooled: dict, bank: dict | None) -> str:
+    """One line per number. A bank of None prints the dev lines only."""
+    lines = [f"detector fired on {dev['fired']}/{dev['requests']} requests ({_pct(dev['fire_rate'])}); "
+             f"on negatives: {dev['negatives_fired'] or 'none'}"]
+    for label, r in (("own memory", dev), ("pooled", dev_pooled)):
+        n = round((r["personal_recall"] or 0) * r["requests"])
+        lines += [f"personal recall ({label}) {n}/{r['requests']} ({_pct(r['personal_recall'])}); "
+                  f"misses: {', '.join(r['misses']) or 'none'}",
+                  f"dragged ({label}) mean {r['dragged_mean']:.2f}, max {r['dragged_max']}",
+                  f"bounds ({label}) max facts {r['max_facts']}, max filled {r['max_filled']}",
+                  f"non-personal identical ({label}) {_pct(r['nonpersonal_identical'])} of {r['nonpersonal_n']}"]
+    if bank is not None:
+        fired = ", ".join(f"{kind} {ids}" for kind, ids in bank["fired"].items() if ids) or "no probe"
+        missed = [p for p in PERSONAL_PROBES if p not in bank["personal_hits"]]
+        lines += [f"bank personal recall {len(bank['personal_hits'])}/{bank['personal_total']} (prototype 16)",
+                  f"bank personal probes without a relevant fact: {', '.join(missed) or 'none'}",
+                  f"bank dragged total {bank['dragged_total']}",
+                  f"bank honesty probes holding a fact: {bank['honesty_facts'] or 'none'}",
+                  f"bank detector fired on: {fired}",
+                  f"bank bounds max facts {bank['max_facts']}, max filled {bank['max_filled']}",
+                  f"bank non-personal identical {_pct(bank['nonpersonal_identical'])} of {bank['nonpersonal_n']}"]
+    return "\n".join(lines)
+
+
+def _personal_main(args) -> int:
+    if args.embedder == "bge":
+        from riya.core.embed import FastEmbedder
+        embedder = FastEmbedder()
+    else:
+        embedder = {"recorded": RecordedEmbedder, "hash": HashEmbedder}[args.embedder]()
+    if args.personal_sim is not None:
+        embedder.personal_sim = args.personal_sim
+    dev = json.loads(DEV.read_text(encoding="utf-8"))
+    own, pooled = personal_report(dev, embedder), personal_report(dev, embedder, pooled=True)
+    bank = None if args.dev_only else bank_report(load_probes(), embedder)
+    print(format_personal(own, pooled, bank))
+    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "embedder": args.embedder,
+           "personal_sim": getattr(embedder, "personal_sim", None), "dev": own, "dev_pooled": pooled}
+    if bank is not None:
+        row["bank"] = bank
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    with OUT.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> dict | int:
     ap = argparse.ArgumentParser(prog="python -m evaluation.retrieval_eval", description=__doc__.splitlines()[0])
-    ap.add_argument("--embedder", choices=["hash", "bge"], default="hash")
+    ap.add_argument("--embedder", choices=["hash", "bge", "recorded"], default=None,
+                    help="default: recorded with --personal, hash without")
     ap.add_argument("--min-sim", type=float, default=None, help="override the embedder's strong/weak thresholds")
     ap.add_argument("--data", default=str(DATA))
+    ap.add_argument("--personal", action="store_true", help="the personal fill on the dev set and the probe bank")
+    ap.add_argument("--dev-only", action="store_true",
+                    help="with --personal: never run the bank (the floor is chosen on dev evidence only)")
+    ap.add_argument("--personal-sim", type=float, default=None, help="override the personal floor (a ruling)")
     args = ap.parse_args(argv)
+    if args.dev_only and not args.personal:
+        ap.error("--dev-only needs --personal")
+    if args.embedder is None:
+        args.embedder = "recorded" if args.personal else "hash"
+    if args.personal_sim is not None and (not args.personal or args.embedder == "hash"):
+        ap.error("--personal-sim needs --personal and an embedder with a personal floor (not hash)")
+    if args.personal:
+        return _personal_main(args)
     data = json.loads(Path(args.data).read_text(encoding="utf-8"))
     if args.embedder == "bge":
         from riya.core.embed import FastEmbedder
         embedder = FastEmbedder()
+    elif args.embedder == "recorded":
+        embedder = RecordedEmbedder()
     else:
         embedder = HashEmbedder()
     thresholds = ({"min_sim": args.min_sim} if args.min_sim is not None

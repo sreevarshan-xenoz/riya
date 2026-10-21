@@ -245,19 +245,10 @@ def test_build_core_falls_back_to_the_hash_embedder_when_bge_cannot_load(tmp_pat
 
 
 def test_fast_embedder_keeps_its_model_in_riya_model_dir(tmp_path, monkeypatch):
-    import sys
-    import types
-
     from riya.core import embed
+    from tests.embed_stubs import fake_loader, fake_snapshot
     seen = {}
-
-    class TextEmbedding:
-        def __init__(self, model, cache_dir=None):
-            seen["cache_dir"] = cache_dir
-
-        def embed(self, texts):
-            return iter([[1.0, 0.0]] * len(texts))
-    monkeypatch.setitem(sys.modules, "fastembed", types.SimpleNamespace(TextEmbedding=TextEmbedding))
+    monkeypatch.setattr(embed, "_load_text_embedding", fake_loader(fake_snapshot(tmp_path / "snap"), seen))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.delenv("RIYA_MODEL_DIR", raising=False)
     embed.FastEmbedder()

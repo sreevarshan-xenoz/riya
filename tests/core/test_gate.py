@@ -11,6 +11,7 @@ import pytest
 from evaluation import gate, persona_eval
 from evaluation.gate import GateError
 from evaluation.gate_stats import Paired
+from riya.core import embed
 from tests.gate_helpers import (BAD, BASE_SHA256, FULL, RUDE, adopt_pair, full, plan_transcript, side, solid,
                                 write_calibration)
 
@@ -50,19 +51,21 @@ def test_constants_and_the_version_pin():
     assert gate.CALIBRATION_PATH.name == "gate_calibration.json"
     # changing any of these constants means bumping GATE_VERSION and this literal together
     assert (gate.GATE_VERSION, gate.rules_fingerprint()) == (
-        "0.10.1", "414c4cae285f1fa3cf39bbb0f92a65addb2737c43d6ced130f7fca7e132f29e7")
+        "0.11.0", "6dd2fd811c0a402c10a50af0f8e868aa169dc95fa5332784b74323088d30e6b7")
 
 
 def test_identity_fields(monkeypatch):
     ident = gate.identity()
-    assert set(ident) == {"gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat"}
+    assert set(ident) == {"gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "embedder"}
     assert ident["gate_version"] == gate.GATE_VERSION and ident["repeat"] == gate.REPEAT
+    assert ident["embedder"] == embed.EMBEDDER_PIN  # the pin, a code constant: an adopt needs no model files
     assert gate.identity(gate.REPEAT + 1)["repeat"] == gate.REPEAT + 1
     lf = persona_eval.PROBES.read_bytes().replace(b"\r\n", b"\n")
     assert gate.probe_sha256() == hashlib.sha256(lf).hexdigest() == ident["probe_sha256"]
     from riya.train import build_sft
     assert gate.prompt_fp() == build_sft.prompt_fingerprint() == ident["prompt_fp"]
     assert gate.SCORER_FILES[:3] == ("evaluation/style_metrics.py", "evaluation/gate_stats.py", "evaluation/gate.py")
+    assert "riya/core/memory.py" in gate.SCORER_FILES and "riya/core/embed.py" in gate.SCORER_FILES
     assert all((gate.ROOT / f).is_file() for f in gate.SCORER_FILES)
     before = gate.scorer_sha256()
     assert before == ident["scorer_sha256"] == gate.scorer_sha256()  # stable
@@ -73,6 +76,27 @@ def test_identity_fields(monkeypatch):
 
     monkeypatch.setattr(gate, "_read", patched)
     assert gate.scorer_sha256() != before
+
+
+def test_retrieval_sha256_follows_memory_and_embed(monkeypatch):
+    """Resolution 7: a verdict binds the retrieval code it ran (memory.py and embed.py), LF-normalised like the scorer
+    files; an edit to either changes it, and changes scorer_sha256 too (Resolution 6)."""
+    assert gate.RETRIEVAL_FILES == ("riya/core/memory.py", "riya/core/embed.py")
+    before, scorer = gate.retrieval_sha256(), gate.scorer_sha256()
+    assert len(before) == 64 and gate.retrieval_sha256() == before  # stable
+    real = gate._read
+    seen = {before}
+    for rel in gate.RETRIEVAL_FILES:
+        with monkeypatch.context() as m:
+            m.setattr(gate, "_read", lambda path, rel=rel: real(path) + b"\n# one more line"
+                      if path.as_posix().endswith(rel) else real(path))
+            got = gate.retrieval_sha256()
+            assert got not in seen and gate.scorer_sha256() != scorer
+            seen.add(got)
+    with monkeypatch.context() as m:
+        m.setattr(gate, "_read", lambda path: real(path).replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        assert gate.retrieval_sha256() == before  # CRLF doesn't change it
+    assert gate.retrieval_sha256() == before
 
 
 def test_the_scorer_hash_ignores_line_endings(monkeypatch):
@@ -122,6 +146,13 @@ def test_calibration_problem_names_the_mismatch(tmp_path):
     write_calibration(path)
     assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) is None
     assert gate.calibration_problem(gate.REPEAT, path, base_sha256=BASE_SHA256) is None
+
+
+def test_a_calibration_for_another_embedder_is_refused(tmp_path):
+    """A13: a record taken on another embedder (the hash fallback, an unverified bge) is refused by name."""
+    path = write_calibration(tmp_path / "cal.json", embedder="other")
+    assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) == (
+        "The gate calibration is for embedder other, this code has " + embed.EMBEDDER_PIN[:12] + ".")
 
 
 def test_a_calibration_for_another_base_model_is_refused(tmp_path, monkeypatch):

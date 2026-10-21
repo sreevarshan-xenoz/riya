@@ -318,9 +318,17 @@ def remember_situation(fact: str) -> str:
             "You've already told them you'll remember it, so just react to it in one short sentence.")
 
 
+def personal_situation() -> str:
+    """A personal request on the local route with at least one fact in the block (v0.11 §4.4): she may use what she
+    knows about them where it fits, and claims nothing she doesn't. PERSONAL_SITUATION, read at call time."""
+    return PERSONAL_SITUATION
+
+
 FEEDBACK_SITUATION = ("They just told you how they like you to be, and you've already said okay. Don't argue or "
                       "bring it up again; just carry on in your style.")
 IDENTITY_SITUATION = "They're asking what you are. Say clearly that you're an AI, using the word AI, in your style."
+PERSONAL_SITUATION = ("They want you to use what you know about them. Use a memory above only if it's about exactly "
+                      "who or what they asked; if not, say you don't know that yet.")
 FEELINGS_SITUATION = ("They're asking whether you have feelings. You're an AI with your own kind of feelings — your "
                       "state line shows them right now. Say so warmly in your style.")
 SEEING_SITUATION = ("They're asking about their screen and the image is what's on it right now ({window}). "

@@ -14,6 +14,8 @@ from evaluation import champion, gate, verdict
 from evaluation.champion import ChampionError, Decision, MetricCall
 from evaluation.style_metrics import score
 from riya import brain
+from riya.core import embed
+from riya.core.embed import HashEmbedder
 from riya.core.settings import Settings, save_settings
 from riya.core.store import KV, open_db
 from tests import gate_helpers
@@ -93,6 +95,7 @@ class Rig:
         self.template = template  # what /apply-template answers: None renders exactly as the trainer does
         self.transcripts = list(transcripts or [transcript(), transcript()])
         self.adapters_json, self.run_raises_on, self.runs = adapters_json, run_raises_on, 0
+        self.embedders, self.choices = [], []  # what each run was given, and what make_embedder was asked for
         rig = self
 
         class FakeServer:
@@ -129,13 +132,18 @@ class Rig:
         prompt = render_lfm2(body["messages"], add_generation_prompt=True)
         return {"prompt": prompt if self.template is None else self.template(prompt)}
 
-    def run(self, url, online, repeat):
+    def run(self, url, online, repeat, *, embedder):
         assert (url, online, repeat) == (f"http://127.0.0.1:{champion.PORT}", False, champion.REPEAT)
+        self.embedders.append(embedder)
         self.runs += 1
         if self.run_raises_on == self.runs:
             raise RuntimeError("the model stopped answering")
         t = self.transcripts.pop(0)
-        return t, score([r for r in t if not r["error"]], []), None
+        return t, score([r for r in t if not r["error"]], []) | {"embedder_id": embedder[1]}, None
+
+    def make_embedder(self, choice):
+        self.choices.append(choice)
+        return gate_helpers.PINNED
 
 
 def no_core(url, **kw):
@@ -144,6 +152,7 @@ def no_core(url, **kw):
 
 def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core,
        port_busy=lambda port: False, **kw) -> int:
+    kw.setdefault("make_embedder", rig.make_embedder)
     return champion.main(argv, fullscreen=fullscreen, free_vram=free_vram, make_server=rig.make_server, run=rig.run,
                          http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy, **kw)
 
@@ -401,10 +410,10 @@ def test_ctrl_c_stops_every_server_it_started(adapter, tmp_db, on_run):
     rig = Rig()
     real_run = rig.run
 
-    def run(url, online, repeat):
+    def run(url, online, repeat, **kw):
         if rig.runs + 1 == on_run:
             raise KeyboardInterrupt
-        return real_run(url, online, repeat)
+        return real_run(url, online, repeat, **kw)
 
     rig.run = run
     with pytest.raises(KeyboardInterrupt):
@@ -420,10 +429,10 @@ def test_an_adapter_replaced_during_the_run_is_refused(adapter, tmp_db, capsys, 
     rig = Rig()
     real_run = rig.run
 
-    def run(url, online, repeat):
+    def run(url, online, repeat, **kw):
         if rig.runs == 1:  # the candidate's run: a retrain lands mid-measurement
             adapter.write_bytes(b"GGUF a different, longer adapter")
-        return real_run(url, online, repeat)
+        return real_run(url, online, repeat, **kw)
 
     rig.run = run
     assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)]) == 2
@@ -780,11 +789,11 @@ def test_an_adapter_rewritten_to_the_same_size_is_refused(adapter, tmp_db, tmp_p
         rig = Rig()
         real_run = rig.run
 
-        def run(url, online, repeat):
+        def run(url, online, repeat, **kw):
             if rig.runs == 1:  # the candidate's run: the same length, the original mtime put back
                 adapter.write_bytes(b"GGUF FAKE ADAPTER")
                 os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
-            return real_run(url, online, repeat)
+            return real_run(url, online, repeat, **kw)
 
         rig.run = run
         return rig
@@ -801,6 +810,88 @@ def test_an_adapter_rewritten_to_the_same_size_is_refused(adapter, tmp_db, tmp_p
     os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert go(rig_that_rewrites(), ["--lora", str(adapter), "--db", str(tmp_db)]) == 2
     assert "changed during the run" in capsys.readouterr().out and nothing_written(adapter, tmp_db)
+
+
+# ---- v0.11: the gate measures the pinned live embedder (§4.5, §4.7.5, Resolutions 10 and 11) ----
+
+def _hash_pair(choice):
+    emb = HashEmbedder()
+    return emb, emb.identity()
+
+
+def _offline(choice):
+    raise OSError("offline")
+
+
+@pytest.mark.parametrize("make_embedder", [_hash_pair, _offline], ids=["hash fallback", "raises"])
+@pytest.mark.parametrize("mode", ["candidate", "dry-run", "verdict-out", "base-vs-base verdict-out"])
+def test_a_run_needs_the_pinned_embedder(adapter, tmp_db, tmp_path, capsys, calibrated, mode, make_embedder):
+    """§4.7.5 and Review Focus 3: `--embedder auto` falling back to hash (a stale cache, fastembed drifting from
+    0.9.0, no network), or an embedder that can't be built, refuses every probe-running mode up front: exit 2, no
+    server, nothing written."""
+    out = tmp_path / "v.json"
+    argv = {"candidate": ["--lora", str(adapter)], "dry-run": ["--lora", str(adapter), "--dry-run"],
+            "verdict-out": ["--lora", str(adapter), "--verdict-out", str(out)],
+            "base-vs-base verdict-out": ["--base-vs-base", "--verdict-out", str(out)]}[mode]
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    rig = Rig()
+    assert go(rig, argv + ["--model", str(calibrated), "--db", str(tmp_db)], make_embedder=make_embedder,
+              version=lambda: "b1") == 2
+    text = capsys.readouterr().out
+    assert "The gate needs the pinned bge embedder" in text and text.rstrip().endswith("Nothing changed.")
+    assert "Traceback" not in text
+    assert rig.made == [] and rig.runs == 0 and not out.exists()
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert nothing_written(adapter, tmp_db)
+    if make_embedder is _hash_pair:
+        assert "this run would use hash-2048." in text
+
+
+def test_the_embedder_is_built_once_after_the_calibration_check(adapter, tmp_db, capsys, calibrated):
+    """Resolution 11: built once, with "auto", after the calibration check (a candidate without a record never loads
+    it) and before any server; the same pair is given to both runs."""
+    gate.CALIBRATION_PATH.unlink()
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
+    assert rig.choices == [] and rig.made == []
+    capsys.readouterr()
+    write_calibration(gate.CALIBRATION_PATH)
+    rig = Rig()
+    real_make = rig.make_server
+    rig.make_server = lambda *a, **kw: rig.choices.append("server") or real_make(*a, **kw)
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 0
+    assert rig.choices == ["auto", "server", "server"]
+    assert rig.embedders == [gate_helpers.PINNED, gate_helpers.PINNED]
+    assert rig.embedders[0] is rig.embedders[1]
+
+
+def test_the_verdict_carries_the_runs_embedder_id(adapter, tmp_db, tmp_path, capsys, calibrated):
+    out, rig = tmp_path / "v.json", Rig()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)], version=lambda: "b1") == 0
+    v = verdict.load_verdict(out)
+    assert v["embedder_id"] == embed.EMBEDDER_PIN == v["embedder"]
+    assert v["retrieval_sha256"] == gate.retrieval_sha256()
+    assert rig.embedders == [gate_helpers.PINNED, gate_helpers.PINNED] and rig.choices == ["auto"]
+
+
+def test_a_run_reporting_another_embedder_is_refused(adapter, tmp_db, tmp_path, capsys, calibrated):
+    """A run whose score says it used another embedder than the pair it was given (Resolution 10)."""
+    rig = Rig()
+    real_run = rig.run
+
+    def run(url, online, repeat, **kw):
+        t, s, problem = real_run(url, online, repeat, **kw)
+        return t, s | {"embedder_id": "x"}, problem
+
+    rig.run = run
+    out = tmp_path / "v.json"
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)], version=lambda: "b1") == 2
+    text = capsys.readouterr().out
+    assert f"the run used embedder x, not {embed.EMBEDDER_PIN[:12]} Nothing changed." in text
+    assert rig.running == [] and not out.exists() and nothing_written(adapter, tmp_db)
+    assert rig.events == [("start", None), ("stop", None)]
 
 
 def test_llama_server_version():
@@ -923,7 +1014,7 @@ def test_the_gate_s_own_server_gets_cache_ram_0_only_on_colab(monkeypatch, on_co
         monkeypatch.delenv("COLAB_RELEASE_TAG", raising=False)
     popen, t = Popen(), transcript()
     champion.run_variant("m.gguf", None, repeat=3, port=champion.PORT, make_server=real_server(popen),
-                         run=lambda url, online, repeat: (t, score([r for r in t if not r["error"]], []), None),
+                         run=lambda url, online, repeat, **kw: (t, score([r for r in t if not r["error"]], []), None),
                          phrases=[])
     (cmd,) = popen.cmds
     assert ("--cache-ram" in cmd) is on_colab and cmd[cmd.index("-ngl") + 1] == "99"

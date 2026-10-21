@@ -16,7 +16,7 @@ from evaluation import champion, gate, gate_calibrate, persona_eval, verdict
 from riya import brain
 from tests.core.test_adopt_verdict import Cpu
 from tests.core.test_champion import Rig, no_core
-from tests.gate_helpers import calibrated  # noqa: F401
+from tests.gate_helpers import PINNED, calibrated  # noqa: F401
 from tests.real_paths import tmp_only
 
 CAND_BYTES = b"GGUF the candidate Colab measured"
@@ -69,7 +69,7 @@ def test_the_runbook_chain_runs_end_to_end(tmp_path, calibrated, capsys, monkeyp
     monkeypatch.setattr(gate_calibrate, "DRAWS", 20)  # the pre-registered count, smaller: the chain, not the statistics
     gate.CALIBRATION_PATH.unlink()  # the record the gate reads must be the one gate_calibrate writes below
     colab = dict(fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core, port_busy=lambda p: False,
-                 version=lambda: "version: 11780 (cuda)")
+                 version=lambda: "version: 11780 (cuda)", make_embedder=lambda choice: PINNED)
 
     def nothing_adopted() -> bool:
         return not adopted.exists() and not record.exists() and not db.exists()
