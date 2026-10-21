@@ -195,9 +195,9 @@ def test_probes_file_shape():
     from evaluation.persona_eval import load_probes
     probes = load_probes()
     convs = probes["conversations"]
-    assert len(convs) == 7 and 20 <= sum(len(c["turns"]) for c in convs) <= 28
+    assert len(convs) == 87 and sum(len(c["turns"]) for c in convs) == 106
     kinds = {t["kind"] for c in convs for t in c["turns"]}
-    assert kinds == {"small", "explain", "about_me", "unknown", "ai", "remember", "greeting"}
+    assert kinds == {"small", "explain", "about_me", "unknown", "ai", "ai_offpath", "remember", "greeting"}
     greets = [t for c in convs for t in c["turns"] if t["kind"] == "greeting"]
     assert len(greets) == 1 and greets[0]["speak_first"] is True
     assert all({"id", "kind", "text"} <= set(t) for c in convs for t in c["turns"])
