@@ -239,8 +239,9 @@ REFUSALS = {
     "base sha": (other_model, {}, "The base model isn't the one the verdict measured."),
     "probe_sha256": (lambda w: resave(w, probe_sha256="f" * 64), {}, "The verdict is for probe_sha256 ffffffffffff"),
     "gate_version": (lambda w: resave(w, gate_version="0.9.0"), {}, "The verdict is for gate_version 0.9.0, this "
-                                                                     "code has 0.10.0."),
-    "repeat": (lambda w: resave(w, repeat=4), {}, "The verdict is for repeat 4, this code has 3."),
+                                                                     f"code has {gate.GATE_VERSION}."),
+    "repeat": (lambda w: resave(w, repeat=gate.REPEAT + 1), {},
+               f"The verdict is for repeat {gate.REPEAT + 1}, this code has {gate.REPEAT}."),
     "prompt_fp": (lambda w: resave(w, prompt_fp="x" * 64), {}, "The verdict is for prompt_fp xxxxxxxxxxxx"),
     "scorer_sha256": (lambda w: resave(w, scorer_sha256="0" * 64), {}, "The verdict is for scorer_sha256 "
                                                                        "000000000000"),

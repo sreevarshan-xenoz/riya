@@ -117,6 +117,14 @@ def test_exact_p_on_one_stratum():
     assert m.flips_better == ("s.q",) and m.flips_worse == ()
 
 
+def test_exact_p_on_one_stratum_at_k_4():
+    """v0.10.1 runs at k = 4: 70 splits of 8 slots, the observed one the single most extreme, so p is 1/70."""
+    r = paired_test(probe_rows("s", "s.q", [1] * 4, [0] * 4), k=4, B=10_000, seed=0)
+    assert r.exact is True and r.delta == -100.0
+    assert abs(r.p_worse - 1 / 70) < TOL and r.p_better == 1.0
+    assert r.flips_worse == ("s.q",) and r.flips_better == () and (r.rows, r.probes) == (4, 1)
+
+
 def test_identical_outcomes_give_p_one():
     obs = []
     for i in range(30):

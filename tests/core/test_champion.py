@@ -23,7 +23,7 @@ from tests.real_paths import tmp_only
 
 def test_constants():
     assert (champion.REPEAT, champion.PORT, champion.MIN_FREE_VRAM_MB) == (gate.REPEAT, 8091, 2500)
-    assert champion.REPEAT == 3
+    assert champion.REPEAT == 4  # pinned: the pre-registered repeat after the v0.10.0 calibration failed
     assert issubclass(ChampionError, RuntimeError)
     # the decision lives in evaluation/gate.py now; the champion only runs it
     assert champion.decide is gate.decide and champion.scored is gate.scored and champion.Scored is gate.Scored
@@ -299,7 +299,7 @@ def test_adopt_writes_the_record_and_the_setting(adapter, tmp_db, capsys, monkey
     assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)]) == 0
     assert brain.read_local_adapter(tmp_db) == str(adapter)
     rec = brain.read_record(adapter)
-    assert rec["targets_candidate"] == 10 and rec["targets_base"] == 8 and rec["repeat"] == 3
+    assert rec["targets_candidate"] == 10 and rec["targets_base"] == 8 and rec["repeat"] == gate.REPEAT
     assert rec["weak"] == {"generic_share": "improved", "invented": "kept", "unknown_honesty": "kept",
                            "about_me_recall": "improved"}
     assert re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", rec["decided_at"])
@@ -662,10 +662,11 @@ def test_a_candidate_run_needs_a_matching_calibration(adapter, tmp_db, capsys, m
     assert rig.made == []
     assert "The gate calibration is for base model 000000000000, this run uses" in capsys.readouterr().out
 
-    write_calibration(gate.CALIBRATION_PATH, repeat=4)
+    write_calibration(gate.CALIBRATION_PATH, repeat=gate.REPEAT + 1)
     rig = Rig()
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
-    assert rig.made == [] and "is for repeat 4, this code has 3. Nothing changed." in capsys.readouterr().out
+    assert rig.made == [] and (f"is for repeat {gate.REPEAT + 1}, this code has {gate.REPEAT}. Nothing changed."
+                               in capsys.readouterr().out)
 
     write_calibration(gate.CALIBRATION_PATH)  # the base is hashed once, then the record is checked, then servers
     order, real_ident, real_problem = [], champion.file_identity, gate.calibration_problem
@@ -691,12 +692,12 @@ def test_an_unreadable_base_model_is_refused(adapter, tmp_db, capsys, tmp_path):
 
 
 def test_the_calibration_is_checked_at_the_run_s_own_repeat(adapter, tmp_db, capsys):
-    """M3: a --repeat 2 run under the default repeat-3 record is refused: it would decide on 2 passes under a 3-pass
+    """M3: a --repeat 2 run under the default-repeat record is refused: it would decide on 2 passes under a full-repeat
     calibration."""
     rig = Rig()
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--repeat", "2", "--db", str(tmp_db)]) == 2
     assert rig.made == []
-    assert "The gate calibration is for repeat 3, this code has 2. Nothing changed." in capsys.readouterr().out
+    assert f"The gate calibration is for repeat {gate.REPEAT}, this code has 2. Nothing changed." in capsys.readouterr().out
 
 
 # ---- v0.10: --verdict-out (Colab's checked verdict), and the adapter's sha256 held across the run ----

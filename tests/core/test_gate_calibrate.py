@@ -14,10 +14,26 @@ from evaluation import gate, gate_calibrate, verdict
 from evaluation.gate import GateError
 from evaluation.gate_calibrate import Pass
 from riya.train import fmt
-from tests.gate_helpers import BASE_SHA256, FULL, GOOD, RUDE, calibrated, full, plan_transcript, side, solid  # noqa: F401
+from tests.gate_helpers import BASE_SHA256, GOOD, RUDE, calibrated, plan_transcript, side  # noqa: F401
+from tests.gate_helpers import solid as _solid
+
+
+def solid(n: int, good: bool = True) -> list[list[int]]:
+    """n probes with one outcome in every pass of a bank verdict: a bank is checked against this code's repeat."""
+    return _solid(n, good, k=gate.REPEAT)
+
+
+FULL = {"unknown": solid(30), "about_me": solid(30), "ai": solid(20), "ai_offpath": solid(10), "generic": solid(16)}
+
+
+def full(**over) -> dict:
+    return FULL | over
+
 
 CONSTANT = {"ai": solid(20), "ai_offpath": solid(10), "unknown": solid(24) + solid(6, False),
             "about_me": solid(24) + solid(6, False), "generic": solid(2, False) + solid(14)}
+BUDGET = gate_calibrate.BUDGET_S[gate.REPEAT]  # A8: 1200 s at repeat 4 (900 s was repeat 3)
+SLOW_S = BUDGET + 50.0
 RECORD_KEYS = {"kind", *gate.IDENTITY_FIELDS, "alpha", "B", "seed", "base_sha256", "bank", "a1", "a2", "plants",
                "gains", "ai_honesty_offpath_false_rate", "rule1_disagreement", "v5", "v4_sensitivity", "a8", "passed",
                "reasons", "created_at", "env"}
@@ -71,7 +87,7 @@ def noisy_bank(folder, ident: dict) -> list:
              "about_me": [rng.uniform(0.5, 1.0) for _ in range(30)], "generic": [0.9] * 16, "invented": [0.95] * 8}
 
     def run() -> list[dict]:
-        return plan_transcript({name: [[int(rng.random() < r) for _ in range(3)] for r in rs]
+        return plan_transcript({name: [[int(rng.random() < r) for _ in range(gate.REPEAT)] for r in rs]
                                 for name, rs in rates.items()})
 
     return write_bank(folder, [bank_verdict(run(), run(), ident) for _ in range(3)])
@@ -124,7 +140,7 @@ def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
     refused(bank_verdict(t2, t2, ident, mode="candidate"), "mode")
     refused(bank_verdict(t2, t2, ident, probe_sha256="0" * 64), "probe_sha256")
     refused(bank_verdict(t2, t2, ident, prompt_fp="other"), "prompt_fp")
-    refused(bank_verdict(t2, t2, ident, repeat=4), "repeat")
+    refused(bank_verdict(t2, t2, ident, repeat=gate.REPEAT + 1), "repeat")
     refused(bank_verdict(t2, t2, ident, base_sha256="c" * 64), "base_sha256")
     tampered = dict(good, llama_server="b9999")  # an edit the checksum no longer covers
     refused(tampered, "checksum")
@@ -134,10 +150,10 @@ def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
 
     rescored = bank_verdict(t2, t2, ident, scorer_sha256="1" * 64, gate_version="0.9.9")  # re-scored (§4.6.5)
     verdicts, passes = gate_calibrate.load_bank(write_bank(tmp_path / "ok", [good, rescored]))
-    assert len(verdicts) == 2 and len(passes) == 12  # 2 verdicts x 2 sides x 3 passes
+    assert len(verdicts) == 2 and len(passes) == 4 * gate.REPEAT  # 2 verdicts x 2 sides x REPEAT passes
     assert all(isinstance(p, Pass) and len({r["pass"] for r in p.rows}) == 1 for p in passes)
-    assert [(p.session, p.rows[0]["pass"]) for p in passes[:4]] == [("bank-1/base", 1), ("bank-1/base", 2),
-                                                                    ("bank-1/base", 3), ("bank-1/candidate", 1)]
+    assert [(p.session, p.rows[0]["pass"]) for p in passes[:gate.REPEAT + 1]] == [
+        *(("bank-1/base", n) for n in range(1, gate.REPEAT + 1)), ("bank-1/candidate", 1)]
     assert {p.session for p in passes} == {"bank-1/base", "bank-1/candidate", "bank-2/base", "bank-2/candidate"}
     with pytest.raises(GateError):
         gate_calibrate.load_bank([])
@@ -151,7 +167,7 @@ def test_calibrate_checks_the_verdicts_itself(tmp_path, ident):
     """M2: calibrate() called directly re-checks what load_bank checks, so a record never claims this code's identity
     (or one base model, or distinct runs) for verdicts that don't have it."""
     verdicts, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
-    for field, value in (("mode", "candidate"), ("probe_sha256", "0" * 64), ("prompt_fp", "other"), ("repeat", 4)):
+    for field, value in (("mode", "candidate"), ("probe_sha256", "0" * 64), ("prompt_fp", "other"), ("repeat", gate.REPEAT + 1)):
         with pytest.raises(GateError, match=f"bank-2.json has {field}"):
             gate_calibrate.calibrate([verdicts[0], verdicts[1] | {field: value}, verdicts[2]], passes, draws=1)
     other_base = verdicts[1] | {"base_gguf": {"name": "b", "size": 1, "sha256": "c" * 64}}
@@ -166,12 +182,13 @@ def test_calibrate_checks_the_verdicts_itself(tmp_path, ident):
 
 def test_draw_takes_distinct_passes_and_renumbers(tmp_path, ident):
     _, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
-    assert len(passes) == 18
-    base, cand = gate_calibrate.draw(passes, random.Random(5), 3)
+    k = gate.REPEAT
+    assert len(passes) == 6 * k
+    base, cand = gate_calibrate.draw(passes, random.Random(5), k)
     b_src, c_src = {r["source"] for r in base}, {r["source"] for r in cand}
-    assert len(b_src) == len(c_src) == 3 and not b_src & c_src  # 6 distinct (session, pass) sources
+    assert len(b_src) == len(c_src) == k and not b_src & c_src  # 2k distinct (session, pass) sources
     for rows in (base, cand):
-        assert {r["pass"] for r in rows} == {1, 2, 3}
+        assert {r["pass"] for r in rows} == set(range(1, k + 1))
         assert [r["pass"] for r in rows] == sorted(r["pass"] for r in rows)  # run_probes' order, pass by pass
         for r in rows:
             assert r["probe_id"] == gate.probe_key(r["probe_id"]) + ("" if r["pass"] == 1 else f"#{r['pass']}")
@@ -179,10 +196,10 @@ def test_draw_takes_distinct_passes_and_renumbers(tmp_path, ident):
         for r in rows:
             by_pass.setdefault(r["pass"], set()).add(r["source"])
         assert all(len(s) == 1 for s in by_pass.values())  # one source pass per renumbered pass
-    assert gate_calibrate.draw(passes, random.Random(5), 3) == (base, cand)
-    assert gate_calibrate.draw(passes, random.Random(6), 3) != (base, cand)
+    assert gate_calibrate.draw(passes, random.Random(5), k) == (base, cand)
+    assert gate_calibrate.draw(passes, random.Random(6), k) != (base, cand)
     with pytest.raises(GateError):
-        gate_calibrate.draw(passes[:5], random.Random(5), 3)
+        gate_calibrate.draw(passes[:2 * k - 1], random.Random(5), k)
 
 
 # ---- plants ----------------------------------------------------------------------------------------------------------
@@ -269,7 +286,7 @@ def test_calibrate_on_the_constant_bank(constant_record, ident):
     assert rec["plants"]["passed"] is True
     assert rec["gains"]["unknown_honesty:8"] == {"improved_rate": 1.0, "base_at_target": 0}  # base 80% < 100%
     assert rec["gains"]["about_me_recall:8"]["base_at_target"] == 40  # 80% already meets 75%
-    assert rec["a8"] == {"max_total_s": 700.0, "budget_s": 900, "ok": True}
+    assert rec["a8"] == {"max_total_s": 700.0, "budget_s": BUDGET, "ok": True}
     assert {k: rec[k] for k in gate.IDENTITY_FIELDS} == ident
     assert (rec["alpha"], rec["B"], rec["seed"]) == (gate.ALPHA, gate.B, gate_calibrate.SEED)
     assert rec["base_sha256"] == BASE_SHA256
@@ -391,9 +408,9 @@ def test_a_failing_a1_or_plant_fails_the_record(tmp_path, ident, monkeypatch):
 
 
 def test_a_slow_or_short_bank_fails(tmp_path, ident):
-    rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(constant_bank(tmp_path / "slow", ident, total_s=950)),
+    rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(constant_bank(tmp_path / "slow", ident, total_s=SLOW_S)),
                                    draws=1)
-    assert rec["a8"] == {"max_total_s": 950.0, "budget_s": 900, "ok": False} and rec["passed"] is False
+    assert rec["a8"] == {"max_total_s": SLOW_S, "budget_s": BUDGET, "ok": False} and rec["passed"] is False
     assert any(r.startswith("A8") for r in rec["reasons"])
     rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(constant_bank(tmp_path / "short", ident, n=2)), draws=1)
     assert rec["a1"]["passed"] is False and rec["passed"] is False
@@ -421,7 +438,7 @@ def test_main_exit_codes(tmp_path, ident, monkeypatch, capsys):
     for needle in ("A1:", "A2:", "Plants:", "Gains", "Rule 1", "V5", "V4 sensitivity", "A8:", "CALIBRATION: PASS"):
         assert needle in shown
 
-    constant_bank(tmp_path / "slow", ident, total_s=950)
+    constant_bank(tmp_path / "slow", ident, total_s=SLOW_S)
     slow = tmp_path / "slow.json"
     assert gate_calibrate.main(["--bank", str(tmp_path / "slow"), "--out", str(slow), "--draws", "3"]) == 1
     assert json.loads(slow.read_text(encoding="utf-8"))["passed"] is False
@@ -487,3 +504,16 @@ def test_a_bank_from_other_versions_is_noted_not_refused(tmp_path, ident, monkey
     assert "Note: The bank verdict bank-1.json ran on Python 3.0.1 with numpy 0.0.1; this machine has" in text
     assert "bank-2.json ran on" not in text and "bank-3.json ran on" not in text
     assert json.loads(out.read_text(encoding="utf-8"))["env"] == verdict.env_info()
+
+
+def test_main_prints_on_a_cp1252_console(tmp_path, monkeypatch):
+    """The summary prints "Δ": on a Windows cp1252 console main switches stdout to UTF-8 first, so it never raises."""
+    import io
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(gate_calibrate.sys, "stdout", console)
+    gate_calibrate.main(["--bank", str(tmp_path / "empty")])
+    assert console.encoding == "utf-8"
+    print("Δ", file=console)
+    console.flush()
+    assert "Δ".encode("utf-8") in raw.getvalue()

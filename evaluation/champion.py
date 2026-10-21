@@ -1,6 +1,6 @@
 """The champion gate: adopt Riya v1 (her LoRA adapter) only when it measurably beats the base model.
 
-  python -m evaluation.champion [--lora riya-v1-candidate-lora.gguf] [--repeat 3] [--dry-run] [--base-vs-base]
+  python -m evaluation.champion [--lora riya-v1-candidate-lora.gguf] [--repeat 4] [--dry-run] [--base-vs-base]
                                 [--verdict-out PATH | --check-verdict PATH | --adopt-verdict PATH]
 
 Four ways to run it: a live gate on this machine's GPU (the default, which can adopt; --dry-run decides and writes
@@ -8,7 +8,7 @@ nothing); Colab's verdict run (--verdict-out, with a candidate or with --base-vs
 the laptop's two uses of a verdict, on the CPU (--check-verdict, --adopt-verdict). The runbook is
 colab/riya_v1/README.md.
 
-It runs the persona scorecard (`persona_eval`, --repeat 3, a temp DB per conversation) on the base model and then on
+It runs the persona scorecard (`persona_eval`, --repeat 4, a temp DB per conversation) on the base model and then on
 the base plus the candidate adapter (by default the candidate path next to the adopted adapter), each on its own
 llama-server on port 8091, one at a time, and always stops it. That server serves the candidate unconditionally (Riya's
 own server serves only an adopted file). Before any probe runs, the base model's server (the user's own llama-server

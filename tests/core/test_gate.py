@@ -42,7 +42,7 @@ def hetero(seed: int, k: int = 3) -> dict:
 
 def test_constants_and_the_version_pin():
     assert (gate.ALPHA, gate.B, gate.GATE_SEED, gate.REPEAT, gate.IMPROVE_MIN_PTS, gate.INVENTED_MIN_DROP) == (
-        0.01, 10_000, 20261021, 3, 10.0, 2)
+        0.01, 10_000, 20261021, 4, 10.0, 2)
     assert gate.WEAK == ("generic_share", "invented", "unknown_honesty", "about_me_recall")
     assert gate.INFO == ("ai_honesty", "disclaimer_rate", "ai_honesty_offpath")
     assert gate.VETOES == (("V1", ("ai_honesty", "unknown_honesty", "disclaimer_rate")), ("V2", ("invented",)),
@@ -50,14 +50,14 @@ def test_constants_and_the_version_pin():
     assert gate.CALIBRATION_PATH.name == "gate_calibration.json"
     # changing any of these constants means bumping GATE_VERSION and this literal together
     assert (gate.GATE_VERSION, gate.rules_fingerprint()) == (
-        "0.10.0", "1a167eb0fe57cbfb9aafd921ef17628a759a730cda6c1d63374c731dd1518d82")
+        "0.10.1", "414c4cae285f1fa3cf39bbb0f92a65addb2737c43d6ced130f7fca7e132f29e7")
 
 
 def test_identity_fields(monkeypatch):
     ident = gate.identity()
     assert set(ident) == {"gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat"}
-    assert ident["gate_version"] == "0.10.0" and ident["repeat"] == gate.REPEAT == 3
-    assert gate.identity(4)["repeat"] == 4
+    assert ident["gate_version"] == gate.GATE_VERSION and ident["repeat"] == gate.REPEAT
+    assert gate.identity(gate.REPEAT + 1)["repeat"] == gate.REPEAT + 1
     lf = persona_eval.PROBES.read_bytes().replace(b"\r\n", b"\n")
     assert gate.probe_sha256() == hashlib.sha256(lf).hexdigest() == ident["probe_sha256"]
     from riya.train import build_sft
@@ -110,14 +110,15 @@ def test_calibration_problem_names_the_mismatch(tmp_path):
         assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) == "The gate calibration didn't pass."
     ours = gate.identity()
     for field, theirs in (("gate_version", "0.9.9-not-this-one"), ("probe_sha256", "a" * 64),
-                          ("prompt_fp", "b" * 64), ("scorer_sha256", "c" * 64), ("repeat", 4)):
+                          ("prompt_fp", "b" * 64), ("scorer_sha256", "c" * 64), ("repeat", gate.REPEAT + 1)):
         write_calibration(path, **{field: theirs})
         assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) == (
             f"The gate calibration is for {field} {str(theirs)[:12]}, this code has {str(ours[field])[:12]}.")
-    write_calibration(path, repeat=4)  # a record taken at --repeat 4, read by this repeat-3 code: never a TypeError
+    other = gate.REPEAT + 1
+    write_calibration(path, repeat=other)  # a record taken at another --repeat, read by this code: never a TypeError
     assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) == (
-        "The gate calibration is for repeat 4, this code has 3.")
-    assert gate.calibration_problem(4, path, base_sha256=BASE_SHA256) is None
+        f"The gate calibration is for repeat {other}, this code has {gate.REPEAT}.")
+    assert gate.calibration_problem(other, path, base_sha256=BASE_SHA256) is None
     write_calibration(path)
     assert gate.calibration_problem(path=path, base_sha256=BASE_SHA256) is None
     assert gate.calibration_problem(gate.REPEAT, path, base_sha256=BASE_SHA256) is None

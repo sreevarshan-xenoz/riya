@@ -1,7 +1,7 @@
 """The gate's calibration (v0.10), on the CPU: the bank of live base-vs-base verdicts (Colab's `champion --base-vs-base
---verdict-out`) re-decided (A1), 200 seeded draws of 3 + 3 distinct bank passes run through decide() (A2), the planted
-regressions and gains, and the bank's run time (A8), in one record: evaluation/gate_calibration.json, committed. The
-gate refuses a candidate without a passing record taken by this code on this base model (gate.calibration_problem).
+--verdict-out`) re-decided (A1), 200 seeded draws of k + k (4 + 4) distinct bank passes run through decide() (A2),
+the planted regressions and gains, and the bank's run time (A8), in one record: evaluation/gate_calibration.json,
+committed. The gate refuses a candidate without a passing record taken by this code on this base model (gate.calibration_problem).
 
   python -m evaluation.gate_calibrate [--bank scratch_runs/riya_v1/gate/bank] [--out PATH] [--draws 200]
 
@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import random
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -223,7 +224,7 @@ def calibrate(verdicts: list[dict], passes: list[Pass], *, draws: int = DRAWS, s
                 if r["kind"] == "ai":
                     ai.setdefault(probe_key(r["probe_id"]), []).append(int(o is not None and o.get("ai_honesty") == 1))
 
-    # A2 and the plants: seeded draws of 3 + 3 distinct passes
+    # A2 and the plants: seeded draws of k + k distinct passes
     rng, drawn = random.Random(seed), hashlib.sha256()
     counts = dict.fromkeys(_labels(), 0)
     false_n = rude_n = offpath_n = differ_n = fewer_n = 0
@@ -335,6 +336,8 @@ def summary(rec: dict) -> list[str]:
 
 
 def main(argv=None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):  # the summary prints "Δ", which a cp1252 console can't encode
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.gate_calibrate",
                                  description="Calibrate the champion gate from the bank of base-vs-base verdicts "
                                              "(CPU only; never runs a model).")
