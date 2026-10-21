@@ -1,6 +1,12 @@
 """The champion gate: adopt Riya v1 (her LoRA adapter) only when it measurably beats the base model.
 
   python -m evaluation.champion [--lora riya-v1-candidate-lora.gguf] [--repeat 3] [--dry-run] [--base-vs-base]
+                                [--verdict-out PATH | --check-verdict PATH | --adopt-verdict PATH]
+
+Four ways to run it: a live gate on this machine's GPU (the default, which can adopt; --dry-run decides and writes
+nothing); Colab's verdict run (--verdict-out, with a candidate or with --base-vs-base for the calibration bank); and
+the laptop's two uses of a verdict, on the CPU (--check-verdict, --adopt-verdict). The runbook is
+colab/riya_v1/README.md.
 
 It runs the persona scorecard (`persona_eval`, --repeat 3, a temp DB per conversation) on the base model and then on
 the base plus the candidate adapter (by default the candidate path next to the adopted adapter), each on its own
@@ -416,12 +422,8 @@ def _from_verdict(args, *, adopt: bool, fullscreen, make_cpu_server, http_get, h
         took=f"; took {clock() - t0:.0f} s", stat=st)
 
 
-def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
-         run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
-         version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic,
-         make_cpu_server=RiyaServer, cpu_tmp_dir: str | Path | None = None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+def parser() -> argparse.ArgumentParser:
+    """The command line main() parses (the runbook test checks every flag it shows against this)."""
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
     ap.add_argument("--model", default=brain.DEFAULT_MODEL, help="the base GGUF she serves")
     ap.add_argument("--lora", default=str(brain.candidate_adapter()),
@@ -443,6 +445,16 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
                      help="re-decide a Colab verdict here and print it; writes nothing, starts nothing")
     use.add_argument("--adopt-verdict", metavar="PATH", default=None,
                      help="re-decide a Colab verdict, check her own llama-server on the CPU, then adopt")
+    return ap
+
+
+def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
+         run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
+         version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic,
+         make_cpu_server=RiyaServer, cpu_tmp_dir: str | Path | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    ap = parser()
     args = ap.parse_args(argv)
     fullscreen = fullscreen or make_idle_source().fullscreen
     free_vram = free_vram or free_vram_mb

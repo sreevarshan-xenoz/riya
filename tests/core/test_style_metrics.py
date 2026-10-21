@@ -302,6 +302,17 @@ def test_repeat_runs_every_probe_n_times_and_tags_later_passes():
     assert rows[2]["known_texts"] == ["hey"]  # every pass starts a fresh conversation
 
 
+def test_persona_eval_runs_the_larger_set_with_the_same_table():
+    from evaluation.persona_eval import TARGETS, format_table, load_probes, run_probes, score
+    from tests.fakes import FakeModel
+    rows = run_probes(load_probes(), FakeModel("local", ["Hmph, I'm an AI~"]), None, repeat=1)
+    assert len(rows) == 106
+    table = format_table(score(rows) | {"failed_turns": 0})
+    labels = [line[:34].rstrip() for line in table.splitlines()[1:1 + len(TARGETS)]]
+    assert labels == [t[1] for t in TARGETS] and len(TARGETS) == 12
+    assert "over 106 replies" in table
+
+
 def test_repeat_flag_is_parsed(monkeypatch, tmp_path, capsys):
     from evaluation import persona_eval
     seen = {}
