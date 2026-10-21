@@ -87,6 +87,11 @@ Drive for desktop syncs `teacher.jsonl` down on its own. Then:
 .venv\Scripts\python -m riya.train.filter_sft --teacher "G:/My Drive/riya_v1/teacher.jsonl"
 ```
 
+If it stops with "built under an older prompt (stale fingerprint)" on requests built before v0.11, adding
+`--allow-stale` is safe: v0.11 moved the fingerprint (its canary now carries the personal situation line), but no SFT
+prompt changed, since no SFT scenario is a personal request (`test_no_sft_scenario_is_a_personal_request`). That
+saves regenerating the teacher's answers. After any other prompt change, rebuild in step 1 instead.
+
 Read the keep-rate report. Any **FLAGGED** kind (fewer than 40 kept rows) means going back to step 1 with a larger
 `--n` before training. When it is clean, upload the kept rows:
 
@@ -178,7 +183,12 @@ python -c "from riya.core.embed import FastEmbedder; print(FastEmbedder(verify=T
 
 Kaggle follows the same flow with the same commands: the same `pip install -q fastembed==0.9.0`,
 `RIYA_MODEL_DIR=/tmp/riya/models` in every command (after `mkdir -p /tmp/riya/models`), and the same pinned-model
-check before the first run. `FastEmbedder(verify=True)` raises when the files don't match the pin: stop there.
+check before the first run. `FastEmbedder(verify=True)` raises when the files don't match the pin. fastembed 0.9.0
+downloads the repo's current revision, so any upstream commit (even a README-only one) renames the snapshot folder.
+When the only problem is `snapshot … expected aa8f8b06…`, use the offline copy: empty `RIYA_MODEL_DIR`, copy the
+`models--Qdrant--bge-small-en-v1.5-onnx-Q` folder in from Drive or the `riya-gate-inputs` dataset (keep a copy there
+ahead of time), and run the check again. Any other problem (a file's size or sha256) means a different model, so don't
+run the gate on it.
 
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
 It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.11.0,
@@ -237,8 +247,11 @@ cd /content/code && PYTHONPATH=/content/code python -c "from evaluation import g
 cd /content/code && RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models PYTHONPATH=/content/code python -c "from riya.core.embed import FastEmbedder; print(FastEmbedder(verify=True).embedder_id)"
 ```
 
-The laptop prints the same id with `python -c "from riya.core.embed import FastEmbedder;
-print(FastEmbedder(verify=True).embedder_id)"` once her model has downloaded there.
+The laptop prints the same id once her model has downloaded there:
+
+```powershell
+.venv\Scripts\python -c "from riya.core.embed import FastEmbedder; print(FastEmbedder(verify=True).embedder_id)"
+```
 
 **Then the bank.** `bank-1` goes alone first, so you can read its total against the 1200 s budget (and its RAM) before
 spending the other four:
