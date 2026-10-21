@@ -8,8 +8,8 @@ sft.jsonl built before the probes grew is cleaned too, and train_report.json say
 tokens only (riya.train.fmt's mask), writes the adapter, converts it with llama.cpp's convert_lora_to_gguf.py to
 riya-v1-lora.gguf, then proves llama-server loads it (--lora, /lora-adapters) and that the HF chat template renders
 the same prompt as llama-server's. train_report.json records the base, the config and the loss curve. LoRA weights
-in fp32 under autocast over fp16 base weights; nothing is quantised for training. A NaN or infinite loss stops the run before anything is exported (TRAIN_ABORTED, and the
-report says "aborted": "non-finite loss").
+in fp32 under autocast over fp16 base weights; nothing is quantised for training. A NaN or infinite loss stops the run
+before anything is exported (TRAIN_ABORTED, and the report says "aborted": "non-finite loss").
 
 torch, transformers, peft and huggingface_hub are imported inside the functions that need them, so the pure helpers
 (config, target regex, base resolution, command lines, report, batching) import and test on a CPU.
@@ -142,7 +142,7 @@ def smoke_problems(served: list[str], lora: str, server_prompt: str, hf_prompt: 
 
 def load_sft(path: Path, smoke: bool = False) -> tuple[list[dict], int]:
     """(the training rows, how many were dropped as probe overlaps): the file's rows, each validated, without the ones
-    that overlap a persona probe, then the first SMOKE_ROWS of them in a smoke run (so the drop comes before the slice)."""
+    that overlap a persona probe, then the first SMOKE_ROWS of them in a smoke run (the drop comes before the slice)."""
     rows = read_jsonl(path)
     for row in rows:
         validate_sft_row(row)

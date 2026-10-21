@@ -19,6 +19,7 @@ from riya.core.hands.types import ToolResult
 from riya.core.learn.dials import BANDS, DIALS, clamp
 from riya.core.memory import Thread
 from riya.core.persona import load_traits
+# PROBES_PATH is a snapshot taken at import: inside holdout.probes_at() it is stale, so read holdout.PROBES_PATH
 from riya.train.holdout import (HOLDOUT_N, PROBES_PATH, normalize, overlaps, probe_facts,  # noqa: F401 (re-exported)
                                 probe_texts)
 
