@@ -29,6 +29,8 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setattr(install_hooks, "default_token_path", lambda: riya_dir / "hook_token")
     monkeypatch.setattr(hooks, "default_token_path", lambda: riya_dir / "hook_token")
     real_paths.redirect_models(tmp_path, monkeypatch)
+    from riya import server
+    monkeypatch.setattr(server, "LLAMA_SERVER", str(tmp_path / "no-llama-server.exe"))  # nothing runs her real binary
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders
