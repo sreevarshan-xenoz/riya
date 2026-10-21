@@ -226,7 +226,9 @@ def _read(path: Path) -> bytes:
 
 
 def probe_sha256(path: Path | None = None) -> str:
-    return hashlib.sha256((path or persona_eval.PROBES).read_bytes()).hexdigest()
+    """The sha256 of the probe file's bytes, LF-normalised like the scorer files: a CRLF working tree on the laptop
+    hashes as Colab's LF checkout does (ruling, Task 5 fix round 1)."""
+    return hashlib.sha256((path or persona_eval.PROBES).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def scorer_sha256() -> str:

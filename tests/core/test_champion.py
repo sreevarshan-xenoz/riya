@@ -680,3 +680,12 @@ def test_an_unreadable_base_model_is_refused(adapter, tmp_db, capsys, tmp_path):
     out = capsys.readouterr().out
     assert rig.made == [] and "Traceback" not in out
     assert f"Couldn't read the base model {missing}: " in out and out.rstrip().endswith("Nothing changed.")
+
+
+def test_the_calibration_is_checked_at_the_run_s_own_repeat(adapter, tmp_db, capsys):
+    """M3: a --repeat 2 run under the default repeat-3 record is refused: it would decide on 2 passes under a 3-pass
+    calibration."""
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--repeat", "2", "--db", str(tmp_db)]) == 2
+    assert rig.made == []
+    assert "The gate calibration is for repeat 3, this code has 2. Nothing changed." in capsys.readouterr().out
