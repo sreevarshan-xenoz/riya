@@ -82,8 +82,10 @@ def record_path(adapter: Path) -> Path:
     return adapter.with_name(adapter.name + RECORD_SUFFIX)
 
 
-def write_record(adapter: Path, record: dict) -> Path:
-    st = adapter.stat()
+def write_record(adapter: Path, record: dict, stat: os.stat_result | None = None) -> Path:
+    """The champion record keyed to the adapter's size and mtime: `stat` when given (the stat a caller hashed the file
+    under), else the file as it is now."""
+    st = adapter.stat() if stat is None else stat
     out = record_path(adapter)
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(json.dumps({**record, "adapter": str(adapter), "size": st.st_size, "mtime_ns": st.st_mtime_ns},

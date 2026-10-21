@@ -3,8 +3,10 @@ locally, check her own llama-server on the CPU (-ngl 0, an empty CUDA_VISIBLE_DE
 only: no llama-server, no GPU, no real model, models folder or DB. The `calibrated` fixture's tiny base file is the
 model every verdict here names, and tests/conftest.py points the adopted path into tmp_path."""
 import json
+import os
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -108,12 +110,23 @@ class Never:
         raise AssertionError("the verdict modes never use this")
 
 
+CPU_TMP: list[Path] = []  # this test's directory for the CPU check's temp slot dir (never the real %TEMP%)
+
+
+@pytest.fixture(autouse=True)
+def cpu_tmp(tmp_path) -> Path:
+    d = tmp_path / "cpu-tmp"
+    d.mkdir()
+    CPU_TMP[:] = [d]
+    return d
+
+
 def go(cpu: Cpu, argv, *, fullscreen=lambda: False, port_busy=lambda port: False, connect=no_core, never=None,
        **kw) -> int:
     never = never or Never()
     return champion.main(argv, fullscreen=fullscreen, free_vram=never, make_server=never, run=never,
                          http_get=cpu.http_get, http_post=cpu.http_post, connect=connect, port_busy=port_busy,
-                         make_cpu_server=cpu.make_server, **kw)
+                         make_cpu_server=cpu.make_server, cpu_tmp_dir=CPU_TMP[0], **kw)
 
 
 @pytest.fixture
@@ -150,10 +163,13 @@ def tree(root: Path) -> dict:
 
 # ---- an adopt that passes ------------------------------------------------------------------------------------------
 
-def test_a_passing_verdict_adopts_and_records(world, capsys):
+def test_a_passing_verdict_adopts_and_records(world, capsys, monkeypatch):
     adopted, cpu = world["adopted"], Cpu()
     v = verdict.load_verdict(world["verdict"])
+    writes, real_write = [], brain.write_record
+    monkeypatch.setattr(brain, "write_record", lambda *a, **kw: writes.append(kw) or real_write(*a, **kw))
     assert go(cpu, argv(world)) == 0
+    assert [set(kw) for kw in writes] == [{"stat"}]  # keyed to the stat taken before the re-hash (M1)
     assert adopted.read_bytes() == CAND_BYTES and not world["candidate"].exists()
     rec = brain.read_record(adopted)
     assert rec is not None and rec["decision"] == "adopt" and rec["decided_on"] == "colab"
@@ -296,24 +312,30 @@ def test_a_stored_keep_that_re_decides_keep_is_not_adopted(world, capsys):
 
 def cpu_check(cpu: Cpu, lora="C:/m/cand.gguf", *, fullscreen=lambda: False, port_busy=lambda port: False):
     return champion.cpu_check("C:/m/base.gguf", lora, make_server=cpu.make_server, http_get=cpu.http_get,
-                              http_post=cpu.http_post, fullscreen=fullscreen, port_busy=port_busy)
+                              http_post=cpu.http_post, fullscreen=fullscreen, port_busy=port_busy,
+                              tmp_dir=CPU_TMP[0])
 
 
 def test_cpu_env_hides_the_gpu():
     assert champion.cpu_env({"PATH": "x", "CUDA_VISIBLE_DEVICES": "0"}) == {"PATH": "x", "CUDA_VISIBLE_DEVICES": ""}
     assert champion.cpu_env()["CUDA_VISIBLE_DEVICES"] == ""
     assert (champion.CPU_PORT, champion.CPU_CTX, champion.CPU_THREADS, champion.CPU_TIMEOUT_S) == (8091, 2048, 4, 60.0)
+    # M2: the slowest refusal (a load that never gets ready, then the template, the adapter list and the generation at
+    # their timeouts) stays inside the adopt step's 2 minutes
+    assert champion.CPU_READY_S + 10.0 + 1.5 + champion.CPU_TIMEOUT_S <= 120.0
     assert champion.CPU_GEN == {"prompt": "Hi", "n_predict": 4, "temperature": 0}
 
 
-def test_cpu_check_runs_on_cpu_and_always_stops(monkeypatch):
+def test_cpu_check_runs_on_cpu_and_always_stops(monkeypatch, cpu_tmp):
     cpu = Cpu()
     assert cpu_check(cpu) is None
     (srv,) = cpu.made
     assert srv.model == "C:/m/base.gguf" and srv.lora == "C:/m/cand.gguf"
     kw = srv.kw
     assert kw["env"]["CUDA_VISIBLE_DEVICES"] == "" and (kw["ctx"], kw["threads"], kw["port"]) == (2048, 4, 8091)
-    assert kw["vetted_only"] is False and kw["fallback_to_base"] is False and kw["slot_dir"]
+    assert kw["vetted_only"] is False and kw["fallback_to_base"] is False
+    assert kw["ready_timeout_s"] == champion.CPU_READY_S  # M2
+    assert Path(kw["slot_dir"]).parent == cpu_tmp and list(cpu_tmp.iterdir()) == []  # M4: made there, then removed
     assert cpu.events == [("start", False), ("stop",)]
 
     for bad in ({"template": lambda p: p + "x"}, {"listed": "[]"}, {"listed": "not json"},
@@ -340,11 +362,24 @@ def test_cpu_check_runs_on_cpu_and_always_stops(monkeypatch):
     assert cpu.events == [("start", False), ("stop",)]
 
     cpu = Cpu()
+
+    def no_binary(self, gpu=True):  # M3: LLAMA_SERVER points nowhere, so popen raises
+        cpu.events.append(("start", gpu))
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(cpu.make_server, "start", no_binary)
+    with pytest.raises(ChampionError, match=r"Couldn't start her llama-server \(The system cannot find the file"):
+        cpu_check(cpu)
+    assert cpu.events == [("start", False), ("stop",)]
+
+    cpu = Cpu()
     with pytest.raises(ChampionError, match="while you're gaming"):
         cpu_check(cpu, fullscreen=lambda: True)
     assert cpu.made == []
     with pytest.raises(ChampionError, match="port 8091"):
         cpu_check(cpu, port_busy=lambda port: port == 8091)
+    with pytest.raises(ChampionError, match="port 8091"):  # both at once: the port first, as in v0.8's _check_ready
+        cpu_check(cpu, fullscreen=lambda: True, port_busy=lambda port: True)
     assert cpu.made == []
 
 
@@ -371,12 +406,14 @@ def test_the_real_wrapper_gets_a_cpu_only_command_and_environment(tmp_path):
         launched.append((cmd, kw))
         return Proc()
 
-    def make_server(model, **kw):
+    def make_server(model, ready_timeout_s, **kw):
+        assert ready_timeout_s == champion.CPU_READY_S
         cpu.running = RiyaServer(model, popen=popen, healthy=lambda port: True, ready_timeout_s=0, **kw)
         return cpu.running
 
     champion.cpu_check("C:/m/base.gguf", str(lora), make_server=make_server, http_get=cpu.http_get,
-                       http_post=cpu.http_post, fullscreen=lambda: False, port_busy=lambda port: False)
+                       http_post=cpu.http_post, fullscreen=lambda: False, port_busy=lambda port: False,
+                       tmp_dir=CPU_TMP[0])
     (cmd, kw), stopped = launched
     flag = {f: cmd[cmd.index(f) + 1] for f in ("-ngl", "-c", "-t", "--port", "--lora")}
     assert flag == {"-ngl": "0", "-c": "2048", "-t": "4", "--port": "8091", "--lora": str(lora)}
@@ -430,6 +467,54 @@ def test_a_rehash_mismatch_after_install_writes_no_record(world, capsys, monkeyp
     assert brain.read_record(world["adopted"]) is None
     assert brain.vetted_adapter(str(world["adopted"])) is None  # she serves the base model
     assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
+
+
+def test_an_adopted_file_that_changes_while_it_is_hashed_gets_no_record(world, capsys, monkeypatch):
+    """M1: the record is keyed to the stat taken before the re-hash, and a file that changed by the stat after it is
+    refused: the record never names a size and mtime whose bytes weren't hashed."""
+    real_identity = champion.file_identity
+
+    def identity_then_replaced(path):
+        got = real_identity(path)
+        if Path(path) == world["adopted"]:  # the post-install re-hash: the right bytes, then replaced at once
+            world["adopted"].write_bytes(b"GGUF a second adopt landing in between")
+        return got
+
+    monkeypatch.setattr(champion, "file_identity", identity_then_replaced)
+    assert go(Cpu(), argv(world)) == 2
+    out = capsys.readouterr().out
+    assert "couldn't be written (it changed while it was hashed)" in out and "Nothing changed." not in out
+    assert brain.read_record(world["adopted"]) is None
+    assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
+
+
+def test_write_record_keys_to_a_given_stat(tmp_path):
+    f = tmp_path / "a.gguf"
+    f.write_bytes(b"GGUF")
+    rec = json.loads(brain.write_record(f, {"decision": "adopt"}, stat=SimpleNamespace(st_size=7, st_mtime_ns=9))
+                     .read_text(encoding="utf-8"))
+    assert (rec["size"], rec["mtime_ns"]) == (7, 9) and brain.read_record(f) is None  # not this file as it is now
+    brain.write_record(f, {"decision": "adopt"})  # v0.8's callers: the file as it is now
+    st = os.stat(f)
+    assert (brain.read_record(f)["size"], brain.read_record(f)["mtime_ns"]) == (st.st_size, st.st_mtime_ns)
+
+
+def test_a_missing_llama_server_is_refused_not_a_traceback(world, capsys, monkeypatch):
+    """M3: LLAMA_SERVER points nowhere."""
+    cpu = Cpu()
+
+    def no_binary(self, gpu=True):
+        cpu.events.append(("start", gpu))
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(cpu.make_server, "start", no_binary)
+    record_before = brain.record_path(world["adopted"]).read_text(encoding="utf-8")
+    assert go(cpu, argv(world)) == 2
+    out = capsys.readouterr().out
+    assert "Couldn't start her llama-server" in out and out.rstrip().endswith("Nothing changed.")
+    assert "Traceback" not in out and cpu.events == [("start", False), ("stop",)]
+    assert brain.record_path(world["adopted"]).read_text(encoding="utf-8") == record_before
+    assert world["candidate"].exists() and brain.read_local_adapter(world["db"]) == str(world["adopted"])
 
 
 def test_a_failed_install_writes_nothing(world, capsys, monkeypatch):

@@ -76,6 +76,9 @@ CPU_CTX = 2048
 CPU_THREADS = 4
 CPU_GEN = {"prompt": "Hi", "n_predict": 4, "temperature": 0}
 CPU_TIMEOUT_S = 60.0
+# how long her server may take to load on the CPU: with the template check (10 s), the adapter list (1.5 s) and the
+# generation (CPU_TIMEOUT_S) at their timeouts, the slowest refusal stays inside the adopt step's 2 minutes
+CPU_READY_S = 45.0
 
 
 class ChampionError(RuntimeError):
@@ -262,16 +265,20 @@ def cpu_env(environ: Mapping[str, str] = os.environ) -> dict:
 
 
 def cpu_check(model: str, lora: str, *, make_server=RiyaServer, http_get, http_post, fullscreen,
-              port_busy) -> None:
+              port_busy, tmp_dir: str | Path | None = None) -> None:
     """Her own llama-server build (Colab's isn't hers) on the CPU only: it renders her template, loads the adapter and
-    generates. ChampionError (or the server's RuntimeError) with the reason; the server is stopped whatever happens."""
+    generates. ChampionError (or the server's RuntimeError) with the reason; the server is stopped whatever happens.
+    tmp_dir: where its temporary slot dir goes (None: the system temp folder)."""
     _check_free(CPU_PORT, port_busy)
     _check_not_gaming(fullscreen)
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+    with tempfile.TemporaryDirectory(dir=tmp_dir, ignore_cleanup_errors=True) as root:
         srv = make_server(model, port=CPU_PORT, ctx=CPU_CTX, threads=CPU_THREADS, slot_dir=root, lora=lora,
-                          fallback_to_base=False, vetted_only=False, env=cpu_env())
+                          fallback_to_base=False, vetted_only=False, env=cpu_env(), ready_timeout_s=CPU_READY_S)
         try:
-            srv.start(gpu=False)
+            try:
+                srv.start(gpu=False)
+            except OSError as e:  # no llama-server at LLAMA_SERVER, or one Windows won't run
+                raise ChampionError(f"Couldn't start her llama-server ({e.strerror or e}).") from None
             url = f"http://127.0.0.1:{CPU_PORT}"
             check_template(url, http_post)
             if not any(same_path(p, lora) for p in served_adapters(http_get, url)):
@@ -341,10 +348,15 @@ def _unrecorded(adopted: Path, why) -> int:
     return 2
 
 
-def _record_and_switch(adopted: Path, record: dict, *, db: Path, ws_url: str, connect, took: str = "") -> int:
-    """After the install: the record for the installed file as it is now (its size and mtime), then the setting."""
+def _record_and_switch(adopted: Path, record: dict, *, db: Path, ws_url: str, connect, took: str = "",
+                       stat: os.stat_result | None = None) -> int:
+    """After the install: the record for the installed file (its size and mtime: `stat`, the one it was hashed under,
+    when given; else as it is now), then the setting."""
     try:
-        brain.write_record(adopted, record)
+        if stat is None:
+            brain.write_record(adopted, record)
+        else:
+            brain.write_record(adopted, record, stat=stat)
     except OSError as e:  # installed but unrecorded: the wrapper serves only a recorded file, so she stays on base
         return _unrecorded(adopted, e)
     try:
@@ -359,7 +371,7 @@ def _record_and_switch(adopted: Path, record: dict, *, db: Path, ws_url: str, co
 
 
 def _from_verdict(args, *, adopt: bool, fullscreen, make_cpu_server, http_get, http_post, connect, port_busy,
-                  clock: Callable[[], float]) -> int:
+                  clock: Callable[[], float], cpu_tmp_dir: str | Path | None = None) -> int:
     """--check-verdict (steps 1-3 and the table; writes nothing, starts nothing) and --adopt-verdict (then the CPU
     check, the install, the installed file hashed again, the record and the setting). Nothing is written before the
     install, and nothing here reads free VRAM or uses the GPU."""
@@ -380,30 +392,34 @@ def _from_verdict(args, *, adopt: bool, fullscreen, make_cpu_server, http_get, h
         if not d.adopt:
             raise ChampionError("The verdict's decision is to keep the base model.")
         cpu_check(args.model, lora, make_server=make_cpu_server, http_get=http_get, http_post=http_post,
-                  fullscreen=fullscreen, port_busy=port_busy)
+                  fullscreen=fullscreen, port_busy=port_busy, tmp_dir=cpu_tmp_dir)
         install(Path(lora), adopted)  # the adopted file is now the measured candidate, in one rename
     except RuntimeError as e:  # ChampionError, or her server never came up: nothing was written
         print(f"{e} Nothing changed.")
         return 2
-    try:
+    try:  # one stat, the hash, the stat again: the record is keyed only to a size and mtime whose bytes were hashed
+        st = adopted.stat()
         same = file_identity(adopted)["sha256"] == v["adapter"]["sha256"]
+        after = adopted.stat()
     except OSError as e:
         return _unrecorded(adopted, f"couldn't hash it again: {e.strerror or e}")
     if not same:  # a record certifies only the bytes the verdict measured
         return _unrecorded(adopted, "the installed file isn't the one the verdict measured")
+    if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        return _unrecorded(adopted, "it changed while it was hashed")
     return _record_and_switch(adopted, {
         "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "decided_on": "colab", "verdict_checksum": v["checksum"], "adapter_sha256": v["adapter"]["sha256"],
         "gate_version": v["gate_version"], "probe_sha256": v["probe_sha256"], "repeat": v["repeat"],
         "targets_base": d.targets_base, "targets_candidate": d.targets_candidate,
         "weak": {c.key: c.status for c in d.weak}}, db=Path(args.db), ws_url=args.url, connect=connect,
-        took=f"; took {clock() - t0:.0f} s")
+        took=f"; took {clock() - t0:.0f} s", stat=st)
 
 
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
          run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
          version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic,
-         make_cpu_server=RiyaServer) -> int:
+         make_cpu_server=RiyaServer, cpu_tmp_dir: str | Path | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
@@ -411,7 +427,9 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     ap.add_argument("--lora", default=str(brain.candidate_adapter()),
                     help="the candidate adapter (a .gguf LoRA); on adopt it is installed as the adopted adapter")
     ap.add_argument("--repeat", type=int, default=REPEAT, help="passes over the probes per variant")
-    ap.add_argument("--port", type=int, default=PORT, help="the gate's own llama-server port")
+    ap.add_argument("--port", type=int, default=None,
+                    help=f"the gate's own llama-server port (default {PORT}; the verdict modes' CPU check is fixed at "
+                         f"{CPU_PORT})")
     ap.add_argument("--db", default=str(brain.default_db()), help="the settings DB (used when no core answers)")
     ap.add_argument("--url", default=WS_URL, help="the running core's WebSocket")
     ap.add_argument("--dry-run", action="store_true", help="decide and print, write nothing")
@@ -435,14 +453,16 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         if path is None:
             continue
         for other, on in (("--verdict-out", args.verdict_out is not None), ("--base-vs-base", args.base_vs_base),
-                          ("--dry-run", args.dry_run)):
+                          ("--dry-run", args.dry_run), ("--port", args.port is not None)):
             if on:
                 ap.error(f"{flag} can't be combined with {other}")
         args.verdict = path  # the calibration check is in verdict_steps: it needs the verdict's repeat and base
         return _from_verdict(args, adopt=flag == "--adopt-verdict", fullscreen=fullscreen,
                              make_cpu_server=make_cpu_server, http_get=http_get,
                              http_post=http_post or _default_http_post, connect=connect, port_busy=port_busy,
-                             clock=clock)
+                             clock=clock, cpu_tmp_dir=cpu_tmp_dir)
+    if args.port is None:
+        args.port = PORT
     dry = args.dry_run or args.base_vs_base or args.verdict_out is not None
     args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
