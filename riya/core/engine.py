@@ -597,10 +597,10 @@ class RiyaCore:
         nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line). short (the twin's
         short greeting) makes the cap 1. The core times her first sentence: closed within BARGE_S of it, or a typed
         turn arriving within BARGE_S of it (note_typed_turn), is a barge-in (_last_barged, before after runs), and a
-        plain reply feeds the verbosity drift. A plain reply on the local route (no game, tool, small or seeing) asks
-        memory for the personal fill, and a personal request with a fact in the block adds personal_situation(); an
-        online-routed request ("plan my week for me" goes online on "plan") gets neither, a known limit (v0.11
-        §4.7.9)."""
+        plain reply feeds the verbosity drift. A plain reply on the local route (no game, tool, small or screen
+        question, even one she can't look for) asks memory for the personal fill, and a personal request with a fact
+        in the block adds personal_situation() after the situation; an online-routed request ("plan my week for me"
+        goes online on "plan") gets neither, even when it falls back to local, a known limit (v0.11 §4.7.9)."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
         tool, first_at = shape == "tool", None
@@ -639,8 +639,10 @@ class RiyaCore:
             cap = 1 if short else cap
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
-            # a plain reply on the local route only: the fill's facts never go online (v0.11 §4.4, §4.7.8)
-            personal = kind == "reply" and not (game or tool or small or seeing) and route == "local"
+            # a plain reply on the local route only, never a screen question (even one she can't look for): the fill's
+            # facts never go online (v0.11 §4.4, §4.7.8)
+            personal = (kind == "reply" and not (game or tool or small or seeing) and route == "local"
+                        and not is_screen_question(user_text or ""))
             retrieved = self._retrieve(query, threads, personal=personal)
             eyes, agents = self._eyes_context(), self._agents_context()
             if personal and retrieved.facts and personal_request(user_text or ""):
