@@ -1,12 +1,16 @@
 """evaluation/champion.py: the gate's run with fakes only. The decision itself is evaluation/gate.py (tests/core/
 test_gate.py). No llama-server, no live persona_eval, no GPU probe, no fullscreen probe, no real DB: every one of those
 is injected. The `calibrated` fixture points brain.DEFAULT_MODEL at a tiny tmp file and gives it a passing record."""
+import hashlib
 import json
+import os
 import re
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from evaluation import champion, gate
+from evaluation import champion, gate, verdict
 from evaluation.champion import ChampionError, Decision, MetricCall
 from evaluation.style_metrics import score
 from riya import brain
@@ -135,9 +139,9 @@ def no_core(url, **kw):
 
 
 def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, connect=no_core,
-       port_busy=lambda port: False) -> int:
+       port_busy=lambda port: False, **kw) -> int:
     return champion.main(argv, fullscreen=fullscreen, free_vram=free_vram, make_server=rig.make_server, run=rig.run,
-                         http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy)
+                         http_get=rig.http_get, http_post=rig.http_post, connect=connect, port_busy=port_busy, **kw)
 
 
 @pytest.fixture
@@ -662,15 +666,17 @@ def test_a_candidate_run_needs_a_matching_calibration(adapter, tmp_db, capsys, m
     assert rig.made == [] and "is for repeat 4, this code has 3. Nothing changed." in capsys.readouterr().out
 
     write_calibration(gate.CALIBRATION_PATH)  # the base is hashed once, then the record is checked, then servers
-    order, real_sha, real_problem = [], champion._sha256, gate.calibration_problem
-    monkeypatch.setattr(champion, "_sha256", lambda p: order.append(("hash", str(p))) or real_sha(p))
+    order, real_ident, real_problem = [], champion.file_identity, gate.calibration_problem
+    monkeypatch.setattr(champion, "file_identity", lambda p: order.append(("hash", str(p))) or real_ident(p))
     monkeypatch.setattr(gate, "calibration_problem",
                         lambda *a, **kw: order.append(("check", kw["base_sha256"])) or real_problem(*a, **kw))
     rig = Rig()
     real_make = rig.make_server
     rig.make_server = lambda *a, **kw: order.append(("server",)) or real_make(*a, **kw)
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 0
-    assert order == [("hash", str(calibrated)), ("check", gate_helpers.BASE_SHA256), ("server",), ("server",)]
+    # the model once, before any server; the adapter before the base run and again after the candidate run
+    assert order == [("hash", str(calibrated)), ("check", gate_helpers.BASE_SHA256), ("hash", str(adapter)),
+                     ("server",), ("server",), ("hash", str(adapter))]
 
 
 def test_an_unreadable_base_model_is_refused(adapter, tmp_db, capsys, tmp_path):
@@ -689,3 +695,129 @@ def test_the_calibration_is_checked_at_the_run_s_own_repeat(adapter, tmp_db, cap
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--repeat", "2", "--db", str(tmp_db)]) == 2
     assert rig.made == []
     assert "The gate calibration is for repeat 3, this code has 2. Nothing changed." in capsys.readouterr().out
+
+
+# ---- v0.10: --verdict-out (Colab's checked verdict), and the adapter's sha256 held across the run ----
+
+def sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class Clock:
+    """A fake monotonic clock: each call returns the next scripted reading."""
+
+    def __init__(self, *times):
+        self.times = list(times)
+
+    def __call__(self) -> float:
+        return self.times.pop(0)
+
+
+def test_verdict_out_writes_a_checked_verdict_and_nothing_else(adapter, tmp_db, tmp_path, capsys, calibrated):
+    out = tmp_path / "drive" / "verdict.json"
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)], version=lambda: "b1234", clock=Clock(100.0, 160.0, 250.0, 251.5)) == 0
+    v = verdict.load_verdict(out)
+    assert v["mode"] == "candidate"
+    assert {k: v[k] for k in gate.IDENTITY_FIELDS} == gate.identity()
+    assert v["adapter"] == {"name": adapter.name, "size": adapter.stat().st_size, "sha256": sha(adapter)}
+    assert v["base_gguf"] == verdict.file_identity(calibrated) == {
+        "name": "base.gguf", "size": len(gate_helpers.BASE_BYTES), "sha256": gate_helpers.BASE_SHA256}
+    assert (v["llama_server"], v["template_check"]) == ("b1234", "ok")
+    assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
+    for side in ("base", "candidate"):
+        assert v["transcripts"][side] and all("pass" in r for r in v["transcripts"][side])
+    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": 3, "candidate": 3}
+    assert v["decision"]["adopt"] is False and len(v["decision"]["weak"]) == 4
+    assert v["timings"] == {"base_s": 60.0, "candidate_s": 90.0, "total_s": 151.5}  # from the fake clock
+    assert nothing_written(adapter, tmp_db)
+    text = capsys.readouterr().out
+    assert "Dry run: nothing written." in text and f"Verdict written: {out} (total 152 s)" in text
+    assert rig.events == [("start", None), ("stop", None), ("start", str(adapter)), ("stop", str(adapter))]
+
+
+def test_verdict_out_needs_a_calibration_in_candidate_mode(adapter, tmp_db, tmp_path, capsys, calibrated):
+    gate.CALIBRATION_PATH.unlink()
+    out, rig = tmp_path / "v.json", Rig()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)]) == 2
+    assert rig.made == [] and not out.exists()
+    assert "There's no gate calibration record. Nothing changed." in capsys.readouterr().out
+
+
+def test_verdict_out_base_vs_base_needs_no_calibration(adapter, tmp_db, tmp_path, capsys, calibrated):
+    gate.CALIBRATION_PATH.unlink()
+    out, t = tmp_path / "bank.json", transcript()
+    rig = Rig(transcripts=[t, t])
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(out), "--model", str(calibrated), "--db", str(tmp_db)],
+              version=lambda: "b1") == 0
+    v = verdict.load_verdict(out)
+    assert v["mode"] == "base-vs-base" and v["adapter"] is None
+    assert v["base_gguf"] == verdict.file_identity(calibrated)
+    assert rig.events == [("start", None), ("stop", None), ("start", None), ("stop", None)]
+    assert nothing_written(adapter, tmp_db) and "Verdict written: " in capsys.readouterr().out
+
+
+def test_a_bank_run_refuses_an_unreadable_base_model(adapter, tmp_db, tmp_path, capsys):
+    out, missing, rig = tmp_path / "bank.json", tmp_path / "no-such-base.gguf", Rig()
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(out), "--model", str(missing), "--db", str(tmp_db)]) == 2
+    text = capsys.readouterr().out
+    assert rig.made == [] and not out.exists() and "Traceback" not in text
+    assert f"Couldn't read the base model {missing}: " in text and text.rstrip().endswith("Nothing changed.")
+
+
+def test_an_adapter_rewritten_to_the_same_size_is_refused(adapter, tmp_db, tmp_path, capsys, calibrated, monkeypatch):
+    monkeypatch.setattr(champion, "decide", adopt_decision)  # it would adopt: the sha256 must stop the write
+    st = adapter.stat()
+
+    def rig_that_rewrites() -> Rig:
+        rig = Rig()
+        real_run = rig.run
+
+        def run(url, online, repeat):
+            if rig.runs == 1:  # the candidate's run: the same length, the original mtime put back
+                adapter.write_bytes(b"GGUF FAKE ADAPTER")
+                os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
+            return real_run(url, online, repeat)
+
+        rig.run = run
+        return rig
+
+    out, rig = tmp_path / "v.json", rig_that_rewrites()
+    assert go(rig, ["--lora", str(adapter), "--verdict-out", str(out), "--model", str(calibrated), "--db",
+                    str(tmp_db)]) == 2
+    text = capsys.readouterr().out
+    assert f"The adapter at {adapter} changed during the run. Nothing changed." in text and "DECISION" not in text
+    assert (adapter.stat().st_size, adapter.stat().st_mtime_ns) == (st.st_size, st.st_mtime_ns)  # the snapshot is blind
+    assert not out.exists() and rig.running == [] and nothing_written(adapter, tmp_db)
+
+    adapter.write_bytes(b"GGUF fake adapter")  # the same holds for an adopting run without --verdict-out
+    os.utime(adapter, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert go(rig_that_rewrites(), ["--lora", str(adapter), "--db", str(tmp_db)]) == 2
+    assert "changed during the run" in capsys.readouterr().out and nothing_written(adapter, tmp_db)
+
+
+def test_llama_server_version():
+    def fake(out="", err=""):
+        seen = []
+
+        def run(cmd, **kw):
+            seen.append((cmd, kw))
+            return SimpleNamespace(stdout=out, stderr=err)
+
+        return run, seen
+
+    run, seen = fake(out="version: 4567 (abc)\nbuilt with gcc\n")
+    assert champion.llama_server_version(run) == "version: 4567 (abc)"
+    assert seen[0][0][-1] == "--version" and seen[0][1]["timeout"] == 10
+    assert champion.llama_server_version(fake(out="\n  \n", err="\nversion: 9 (z)\n")[0]) == "version: 9 (z)"
+    assert champion.llama_server_version(fake()[0]) == "unknown"
+
+    def raising(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+
+    def hangs(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 10)
+
+    assert champion.llama_server_version(raising) == "unknown" == champion.llama_server_version(hangs)

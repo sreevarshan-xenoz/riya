@@ -19,27 +19,32 @@ On adopt it installs the candidate as the adopted adapter (riya-v1-lora.gguf) in
 .champion.json record for the installed file and sets local_adapter to it (through the running core when one answers,
 else in the settings DB). On reject it changes nothing: the adopted file and its record stay. --dry-run writes
 nothing; --base-vs-base compares the base with itself (a sanity check: always "keep the base model") and implies
---dry-run. It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server starts and
-again before the candidate, and when the adapter file changed during the run. Exit 0 on a decision, 2 when it refused
+--dry-run. --verdict-out PATH (Colab's mode) implies --dry-run too and, after the table, writes the checksummed verdict
+(evaluation/verdict.py): both transcripts, the decision, the adapter's and the base's sha256 and size, llama-server's
+version and the timings. It combines with --base-vs-base to gather the calibration bank (no calibration record needed). It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server starts and
+again before the candidate, and when the adapter file changed during the run (its size and mtime, or its sha256). Exit 0 on a decision, 2 when it refused
 or failed.
 """
 import argparse
 import errno
-import hashlib
 import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 from evaluation import gate, persona_eval
 from evaluation.gate import Decision, MetricCall, Scored, decide, format_decision, scored  # noqa: F401
 from evaluation.health_check import WS_URL
-from riya import brain
+from evaluation.verdict import file_identity, make_verdict, write_verdict
+from evaluation.verdict import sha256_file as _sha256  # the one streaming hash
+from riya import brain, server
 from riya.brain import same_path, served_adapters
 from riya.core import health
 from riya.core.presence import make_idle_source
@@ -181,12 +186,18 @@ def _snapshot(lora: str | None) -> tuple[int, int] | None:
     return st.st_size, st.st_mtime_ns
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
+def llama_server_version(run=subprocess.run) -> str:
+    """The first non-empty line `llama-server --version` prints (stdout, then stderr), else "unknown"."""
+    try:
+        r = run([server.LLAMA_SERVER, "--version"], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10)
+        for text in (getattr(r, "stdout", None), getattr(r, "stderr", None)):
+            for line in (text or "").splitlines():
+                if line.strip():
+                    return line.strip()
+    except Exception:  # not installed, hung, not runnable: the verdict just says so
+        pass
+    return "unknown"
 
 
 def install(candidate: Path, adopted: Path) -> None:
@@ -216,7 +227,8 @@ def install(candidate: Path, adopted: Path) -> None:
 
 
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
-         run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use) -> int:
+         run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
+         version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
@@ -230,11 +242,14 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     ap.add_argument("--dry-run", action="store_true", help="decide and print, write nothing")
     ap.add_argument("--base-vs-base", action="store_true",
                     help="compare the base with itself (a sanity check; implies --dry-run)")
+    ap.add_argument("--verdict-out", metavar="PATH", default=None,
+                    help="write a checksummed verdict file (Colab's mode; implies --dry-run; combines with "
+                         "--base-vs-base to gather the calibration bank)")
     args = ap.parse_args(argv)
     fullscreen = fullscreen or make_idle_source().fullscreen
     free_vram = free_vram or free_vram_mb
     http_get = http_get or health.default_http_get
-    dry = args.dry_run or args.base_vs_base
+    dry = args.dry_run or args.base_vs_base or bool(args.verdict_out)
     args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
     adopted = brain.default_adapter()  # where an adopted candidate is installed, and what the setting names
@@ -247,22 +262,34 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
             except ValueError as e:
                 raise ChampionError(f"The adopted path can't be saved as local_adapter ({e}).") from None
         _check_ready(fullscreen, free_vram, cand_lora, args.port, port_busy)
-        if not args.base_vs_base:  # the bank is gathered with --base-vs-base: only a candidate needs a calibration
+        base_id = None
+        if not args.base_vs_base or args.verdict_out:  # the model is hashed once, before any server starts
             try:
-                base_sha256 = _sha256(Path(args.model))
+                base_id = file_identity(Path(args.model))
             except OSError as e:
                 raise ChampionError(f"Couldn't read the base model {args.model}: {e.strerror or e}.") from None
-            if problem := gate.calibration_problem(repeat, base_sha256=base_sha256):
+        if not args.base_vs_base:  # the bank is gathered with --base-vs-base: only a candidate needs a calibration
+            if problem := gate.calibration_problem(repeat, base_sha256=base_id["sha256"]):
                 print(f"{problem} Nothing changed.")
                 return 2
         measured = _snapshot(cand_lora)
+        adapter_id = None
+        if cand_lora is not None:
+            try:
+                adapter_id = file_identity(Path(cand_lora))
+            except OSError as e:
+                raise ChampionError(f"Couldn't read the adapter {cand_lora}: {e.strerror or e}.") from None
         phrases = persona_eval.style_phrases(persona_eval.load_probes())
+        t0 = clock()
         base = run_variant(args.model, None, phrases=phrases, template_post=http_post or _default_http_post,
                            **variant)
+        t1 = clock()
         _check_ready(fullscreen, free_vram, cand_lora, args.port, port_busy)
         cand = run_variant(args.model, cand_lora, phrases=phrases, **variant)
+        t2 = clock()
         try:
-            same_file = _snapshot(cand_lora) == measured
+            same_file = _snapshot(cand_lora) == measured and (
+                cand_lora is None or file_identity(Path(cand_lora)) == adapter_id)
         except OSError:
             same_file = False
         if not same_file:  # the scores belong to the file as it was; a record must never certify another one
@@ -271,6 +298,21 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         print(format_decision(base, cand, d))
         if dry:
             print("Dry run: nothing written.")
+            if args.verdict_out:
+                llama = (version or llama_server_version)()
+                total_s = clock() - t0
+                v = make_verdict(
+                    mode="base-vs-base" if args.base_vs_base else "candidate", identity=gate.identity(repeat),
+                    adapter=adapter_id, base_gguf=base_id, llama_server=llama, template_check="ok",
+                    base_transcript=list(base.transcript), cand_transcript=list(cand.transcript),
+                    decision=gate.decision_dict(d),
+                    timings={"base_s": t1 - t0, "candidate_s": t2 - t1, "total_s": total_s},
+                    failed={"base": base.failed, "candidate": cand.failed})
+                try:
+                    write_verdict(v, Path(args.verdict_out))
+                except OSError as e:
+                    raise ChampionError(f"Couldn't write the verdict {args.verdict_out}: {e.strerror or e}.") from None
+                print(f"Verdict written: {args.verdict_out} (total {total_s:.0f} s)")
             return 0
         if not d.adopt:  # the candidate stays where it is; the adopted file and its record are untouched
             return 0
