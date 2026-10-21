@@ -39,8 +39,9 @@ from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_S
 from riya.core.shaping import CAPS, emoji_limit, is_feelings_question, is_identity_question
 from riya.core.store import open_db
 from riya.train.fmt import request_hash, validate_request, write_jsonl
+from riya.train.holdout import holdout_violations
 from riya.train.scenarios import (DEFAULT_N, DEFAULT_SEED, KINDS, Scenario, ask_record, events_of, fact_record,
-                                  normalize, overlaps, probe_facts, probe_texts, scenarios, thread_of, tool_result)
+                                  probe_facts, probe_texts, scenarios, thread_of, tool_result)
 
 DEFAULT_OUT = Path("scratch_runs/riya_v1/requests.jsonl")
 REPLY_KINDS = frozenset({"small", "about_me", "unknown", "identity", "remember", "explain", "feedback"})
@@ -181,19 +182,6 @@ def request_for(s: Scenario, fp: str | None = None) -> dict:
 
 def messages_for(s: Scenario) -> list[dict]:
     return request_for(s)["messages"]
-
-
-def holdout_violations(rows: list[dict], probes: list[str], facts: list[str]) -> list[str]:
-    """The ids of rows where a user message overlaps a probe (equal, or a shared 6-word window), or the system message
-    holds a probe fact (both normalised)."""
-    normed = [n for n in (normalize(f) for f in facts) if n]
-    bad = []
-    for row in rows:
-        users = [m["content"] for m in row["messages"] if m["role"] == "user"]
-        system = normalize(" ".join(m["content"] for m in row["messages"] if m["role"] == "system"))
-        if any(overlaps(u, probes) for u in users) or any(f in system for f in normed):
-            bad.append(row["id"])
-    return bad
 
 
 def build(seed: int = DEFAULT_SEED, n: int = DEFAULT_N, kinds: Sequence[str] = KINDS) -> list[dict]:

@@ -10,6 +10,7 @@ from riya.train.filter_sft import (DEFAULT_REPORT, DEFAULT_SFT, MIN_KEPT_PER_KIN
                                    default_style_phrases, filter_rows, format_report, has_stage_direction, main,
                                    reasons)
 from riya.train.fmt import read_jsonl, request_hash, validate_sft_row, write_jsonl
+from riya.train.holdout import probe_texts
 from riya.train.scenarios import ask_record, fact_record
 
 STYLE = ["I remember you saying you want a purple dragon for your birthday"]
@@ -55,8 +56,8 @@ RULES = [
 def test_reasons_table_is_complete():
     assert REASONS == ("empty", "ack_only", "generic", "too_many_sentences", "too_many_emoji", "invented",
                        "missed_fact", "no_unknown_admission", "no_ai_admission", "disclaimer", "stage_direction",
-                       "label", "truncated")
-    assert [r[0] for r in RULES] == list(REASONS)
+                       "label", "truncated", "holdout")
+    assert [r[0] for r in RULES] == list(REASONS[:-1])  # a request-level reason has no reply-level keep/reject pair
     assert MIN_KEPT_PER_KIND == 40
     assert DEFAULT_SFT.name == "sft.jsonl" and DEFAULT_REPORT.name == "filter_report.json"
 
@@ -189,6 +190,17 @@ def test_filter_rows_report():
     for row in kept:
         validate_sft_row(row)
     json.dumps(report)
+
+
+def test_a_request_overlapping_a_probe_is_dropped_as_holdout():
+    """A9: filter_rows re-checks every answered request against the current probes."""
+    r = req(user=probe_texts()[0], id="p")
+    answers = teacher([("p", "Hmph, hi~")], [r])
+    kept, report = filter_rows([r], answers, STYLE)
+    assert kept == [] and report["reasons"]["holdout"] == 1
+    assert sum(report["reasons"].values()) == 1  # no other reason is counted
+    kept, report = filter_rows([r], answers, STYLE, probes=([], []))
+    assert [k["id"] for k in kept] == ["p"] and report["reasons"]["holdout"] == 0
 
 
 def test_missing_teacher_rows_are_counted():
