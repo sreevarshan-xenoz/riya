@@ -19,11 +19,12 @@ On adopt it installs the candidate as the adopted adapter (riya-v1-lora.gguf) in
 .champion.json record for the installed file and sets local_adapter to it (through the running core when one answers,
 else in the settings DB). On reject it changes nothing: the adopted file and its record stay. --dry-run writes
 nothing; --base-vs-base compares the base with itself (a sanity check: always "keep the base model") and implies
---dry-run. --verdict-out PATH (Colab's mode) implies --dry-run too and, after the table, writes the checksummed verdict
-(evaluation/verdict.py): both transcripts, the decision, the adapter's and the base's sha256 and size, llama-server's
-version and the timings. It combines with --base-vs-base to gather the calibration bank (no calibration record needed). It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server starts and
-again before the candidate, and when the adapter file changed during the run (its size and mtime, or its sha256). Exit 0 on a decision, 2 when it refused
-or failed.
+--dry-run. --verdict-out PATH (Colab's mode) implies --dry-run too and, after the table, writes the checksummed
+verdict (evaluation/verdict.py): both transcripts, the decision, the adapter's and the base's sha256 and size,
+llama-server's version and the timings. It combines with --base-vs-base to gather the calibration bank (no calibration
+record needed). It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server
+starts and again before the candidate, and when the adapter file changed during the run (its size and mtime, or its
+sha256). Exit 0 on a decision, 2 when it refused or failed.
 """
 import argparse
 import errno
@@ -249,7 +250,9 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     fullscreen = fullscreen or make_idle_source().fullscreen
     free_vram = free_vram or free_vram_mb
     http_get = http_get or health.default_http_get
-    dry = args.dry_run or args.base_vs_base or bool(args.verdict_out)
+    if args.verdict_out is not None and not args.verdict_out.strip():
+        ap.error("--verdict-out needs a path")  # an empty one must never turn into a live run that can adopt
+    dry = args.dry_run or args.base_vs_base or args.verdict_out is not None
     args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
     adopted = brain.default_adapter()  # where an adopted candidate is installed, and what the setting names
@@ -263,7 +266,7 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
                 raise ChampionError(f"The adopted path can't be saved as local_adapter ({e}).") from None
         _check_ready(fullscreen, free_vram, cand_lora, args.port, port_busy)
         base_id = None
-        if not args.base_vs_base or args.verdict_out:  # the model is hashed once, before any server starts
+        if not args.base_vs_base or args.verdict_out is not None:  # the model is hashed once, before any server starts
             try:
                 base_id = file_identity(Path(args.model))
             except OSError as e:
@@ -298,7 +301,7 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         print(format_decision(base, cand, d))
         if dry:
             print("Dry run: nothing written.")
-            if args.verdict_out:
+            if args.verdict_out is not None:
                 llama = (version or llama_server_version)()
                 total_s = clock() - t0
                 v = make_verdict(

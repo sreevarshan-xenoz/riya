@@ -821,3 +821,13 @@ def test_llama_server_version():
         raise subprocess.TimeoutExpired(cmd, 10)
 
     assert champion.llama_server_version(raising) == "unknown" == champion.llama_server_version(hangs)
+
+
+@pytest.mark.parametrize("empty", ["", " ", "\t "])
+def test_an_empty_verdict_out_is_a_usage_error_never_a_live_run(adapter, tmp_db, capsys, monkeypatch, empty):
+    monkeypatch.setattr(champion, "decide", adopt_decision)  # a live run would adopt
+    rig = Rig()
+    with pytest.raises(SystemExit) as e:
+        go(rig, ["--lora", str(adapter), "--verdict-out", empty, "--db", str(tmp_db)])
+    assert e.value.code == 2 and "--verdict-out needs a path" in capsys.readouterr().err
+    assert rig.made == [] and nothing_written(adapter, tmp_db)

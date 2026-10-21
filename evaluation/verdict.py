@@ -3,9 +3,11 @@ decision from. One JSON document holding the identity of the code that scored it
 sha256, both raw transcripts, the computed decision and a checksum of everything else.
 
 The checksum guards against corruption and stale or mixed-up files (a truncated sync, another run's file). It is not a
-signature: the threat is accidents, not a hostile Colab. Stdlib only. Also the repo's one streaming file hash."""
+signature: the threat is accidents, not a hostile Colab. Stdlib plus evaluation.gate (which brings numpy) and
+riya.train.fmt (its atomic writer). Also the repo's one streaming file hash."""
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,9 +16,10 @@ from riya.train import fmt
 
 KIND = "riya-gate-verdict"
 MODES = ("candidate", "base-vs-base")
-REQUIRED = ("kind", "mode", "gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "alpha", "B", "seed",
-            "adapter", "base_gguf", "llama_server", "template_check", "transcripts", "decision", "timings",
+REQUIRED = ("kind", "mode", "gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "alpha", "B",
+            "seed", "adapter", "base_gguf", "llama_server", "template_check", "transcripts", "decision", "timings",
             "failed_turns", "created_at", "checksum")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 class VerdictError(ValueError):
@@ -66,7 +69,8 @@ def write_verdict(v: dict, path: Path) -> None:
 
 def load_verdict(path: Path) -> dict:
     """The verdict at `path`, or a VerdictError with a one-line reason: unreadable or not JSON (a truncated sync), not
-    a verdict, a missing key, transcripts that aren't lists, or a checksum that doesn't hold."""
+    a verdict, a missing key, transcripts that aren't lists, an adapter or base without a sha256 (the adapter only
+    in candidate mode), or a checksum that doesn't hold."""
     try:
         v = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError as e:
@@ -84,6 +88,12 @@ def load_verdict(path: Path) -> dict:
     t = v["transcripts"]
     if not (isinstance(t, dict) and isinstance(t.get("base"), list) and isinstance(t.get("candidate"), list)):
         raise VerdictError("The verdict's transcripts aren't lists of rows.")
+    for key in ("adapter", "base_gguf"):  # a candidate verdict binds an adapter; every verdict names its base
+        if key == "adapter" and v["mode"] != "candidate":
+            continue
+        f = v[key]
+        if not (isinstance(f, dict) and isinstance(f.get("sha256"), str) and _HEX64.fullmatch(f["sha256"])):
+            raise VerdictError(f"The verdict's {key} has no sha256.")
     if v["checksum"] != checksum_of(v):
         raise VerdictError("The verdict's checksum doesn't match its contents (edited or corrupted).")
     return v
