@@ -408,3 +408,31 @@ Every decision taken on the user's behalf while executing the three plans. Each 
 - Ruling: verdict modes refuse a verdict whose transcripts don't hold exactly passes 1..repeat. `gate_calibrate` prints UTF-8, so "Δ" can't crash a cp1252 console.
 - Result of the second calibration (5 runs at repeat 4): A1 0 of 5 false, A2 3.0%, A8 304 s; the ai_honesty, unknown and invented plants were caught 100%. The about-me plant was caught only 82%.
 - Ruling: the about-me failure is real and upstream of the gate. On 27 of 30 about-me probes the base recalls about 0%, because memory retrieval doesn't surface the fact for applied questions ("pick a snack for me, you know what i like" against "obsessed with salted caramel popcorn": bge 0.52 < 0.60, no shared word). Live Riya has the same blind spot. The fix is a product change (v0.11, "she uses what she knows"), not a gate change. No record is committed until calibration passes.
+
+## v0.11 She uses what she knows
+
+- Ruling: the 11 builder-check decisions are spec §4.7. The plan's 27 resolutions are accepted, including two that go beyond the spec: embed.py also joins SCORER_FILES, and verdicts carry retrieval_sha256, which gate_calibrate requires to match (stricter). A6 failing means stop for a ruling. Cost if wrong: none.
+- Ruling: preflight CONFLICTs 1–15 (preflight.md) are accepted with the scan's fixes.
+  - **B01–B03:** Task 1 gets a redacted blind brief (task-1-brief-blind.md). It carries no floor, no counts, no "detector"/"fill" wording, no form list, and the layout and disjointness rules are inlined. The plan's Task 1 brief is never sent.
+  - **O06:** narrowed to the spec. Tightening is allowed only on a bank unknown or AI probe the detector fires on (§4.7.1).
+  - **D01/D02:** until Task 2's guard lands, every pytest run uses `--deselect tests/core/test_retrieval_set.py::test_retrieval_set_with_bge`, and Task 2 writes the guard before its RED run.
+  - **G06:** the contract allows commands a brief lists verbatim.
+  - **G05:** briefs carry the resolution text they cite.
+  - **T11a:** the Task 11 brief stops before the controller steps.
+  - The plan is amended in place and briefs 2–11 are regenerated.
+  - Cost if wrong: none.
+- Ruling: the deselect flag stays through Task 2's own full-suite run, and Task 3 lifts it. The Opus 5.5 trailer is confirmed. T10d is accepted. Briefs 2–11 were regenerated, and none contains K0–K7.
+- Ruling: no widening after the bank (§4.7.1); A4 at exactly 15 is a report. The broadness notes ("make … for me", "as far as you know") are known limits: no bank or dev turn fires on them, and tightening on hypotheticals after the bank is not done. Cost if wrong: an odd small-talk line pulls up to 3 personal facts.
+- Ruling: I1 is fixed with tests that bite.
+- Ruling: I2, M1 and M4 tighten the detector after the freeze. This is allowed because each is spec-mandated or honesty-protective and none is bank-informed: the leading "do you know what/how … i" exclusion (§4.1), apostrophe-less exclusions, and the AI words human / real person / sentient / conscious. The intent of §4.7.1 is "no widening, no bank-tuning". Any dev-positive drop is accepted and reported. Cost if wrong: slightly lower recall on leading phrasings.
+- Ruling: `retrieve(..., personal=False)` is the DEFAULT (opt-in); only the engine passes personal=True, for plain local replies (Task 7). That keeps build_sft, persona tools and every other caller unchanged by construction. Folded into the review fix round. Cost if wrong: none.
+- Ruling: A4 at 14/17 is accepted as a report (§4.7.1); no detector or floor change. The real bar is A16's about-me plant after recalibration. Cost if wrong: the about-me plant may still lack power; if so, the v0.10 remedies apply.
+- Ruling: any turn the existing screen detector classifies as a screen question gets no fill and no situation line, whether or not she can look. Folded into the review fix round. Stale SFT rows are accepted (plan). Cost if wrong: a screen-and-personal hybrid gets no personal facts.
+- Ruling:
+  - **I1 (fix):** a narrow exclusion for plural direct-attribute questions ("what are my X called/named", "where are my X from"). It is spec-mandated (§4.1) and only tightens; no dev or bank verdict changes.
+  - **I2:** the controller updates scratch_runs/kaggle_gate/run_gate.py (fastembed==0.9.0, RIYA_MODEL_DIR, pinned-model check). This is untracked.
+  - **I3 (sharpen the situation line now, before the calibration freezes prompt_fp):** use a remembered fact only if it's about exactly who or what was asked; otherwise say she doesn't know. It must stay ≤ 160 chars, with tests.
+  - **M1–M4 (fix):** README accuracy; offline-copy guidance on a pin mismatch; .venv python on the laptop; an --allow-stale note.
+  - **M5 is accepted:** a pin hash at startup costs about 0.1 s.
+  - Cost if wrong: none.
+- Ruling: merge v0.11 via a PR handled by Claude. Next, the Kaggle bank (5 runs, gate 0.11.0, bge shipped in the dataset) and calibration on the laptop CPU. The record lands via its own PR, then the round-2 verdict and --check-verdict. Adopting is the user's step. Cost if wrong: main carries v0.11, which is revertable.
