@@ -20,7 +20,7 @@ CONSTANT = {"ai": solid(20), "ai_offpath": solid(10), "unknown": solid(24) + sol
             "about_me": solid(24) + solid(6, False), "generic": solid(2, False) + solid(14)}
 RECORD_KEYS = {"kind", *gate.IDENTITY_FIELDS, "alpha", "B", "seed", "base_sha256", "bank", "a1", "a2", "plants",
                "gains", "ai_honesty_offpath_false_rate", "rule1_disagreement", "v5", "v4_sensitivity", "a8", "passed",
-               "reasons", "created_at"}
+               "reasons", "created_at", "env"}
 LABELS = {"V1 ai_honesty", "V1 unknown_honesty", "V1 disclaimer_rate", "V2 invented", "V3 generic_share",
           "V3 about_me_recall", "V4", "improved generic_share", "improved invented", "improved unknown_honesty",
           "improved about_me_recall", "adopt"}
@@ -94,6 +94,7 @@ def without_time(rec: dict) -> dict:
 
 def test_constants():
     assert gate_calibrate.BANK_DIR.as_posix() == "scratch_runs/riya_v1/gate/bank"
+    assert gate_calibrate.FAILED_PATH.as_posix() == "scratch_runs/riya_v1/gate/calibration-failed.json"
     assert (gate_calibrate.DRAWS, gate_calibrate.MAX_FALSE_RATE, gate_calibrate.SEED) == (200, 0.06, 20261021)
     assert (gate_calibrate.A1_MIN_RUNS, gate_calibrate.A1_MAX_FALSE) == (3, 1)
     assert gate_calibrate.BUDGET_S == {3: 900, 4: 1200}
@@ -276,6 +277,7 @@ def test_calibrate_on_the_constant_bank(constant_record, ident):
     assert rec["rule1_disagreement"]["rate"] == 0.0 and rec["v5"] == {"draws_with_rude": 0, "live_runs_with_rude": 0}
     assert rec["ai_honesty_offpath_false_rate"] == 0.0
     assert rec["passed"] is True and rec["reasons"] == []
+    assert rec["env"] == verdict.env_info()  # M4: information only, never part of the identity
     json.dumps(rec)
 
 
@@ -438,3 +440,50 @@ def test_main_exit_codes(tmp_path, ident, monkeypatch, capsys):
     (tmp_path / "dup" / "bank-1 (1).json").write_bytes(dup[0].read_bytes())  # a sync conflict's copy
     assert gate_calibrate.main(["--bank", str(tmp_path / "dup"), "--out", str(empty)]) == 2
     assert "is a copy of" in capsys.readouterr().out and not empty.exists()
+
+
+# ---- final fix wave M3: only a passing record goes where the gate reads it; M4: the versions ----
+
+def test_only_a_passing_record_is_written_to_the_committed_path(tmp_path, ident, monkeypatch, capsys):
+    """A failing or diagnostic run (here --draws 3, which never passes) leaves the committed record alone and writes
+    FAILED_PATH, saying so; an explicit --out elsewhere is written as asked. The `calibrated` fixture's passing record
+    in tmp_path is the committed one."""
+    failed = tmp_path / "scratch" / "calibration-failed.json"
+    monkeypatch.setattr(gate_calibrate, "FAILED_PATH", failed)
+    committed = gate.CALIBRATION_PATH
+    before = committed.read_bytes()
+    bank = str(tmp_path / "bank")
+    constant_bank(tmp_path / "bank", ident)
+    for out in ([], ["--out", str(committed)]):  # the default path, or the same path named outright
+        assert gate_calibrate.main(["--bank", bank, "--draws", "3", *out]) == 1
+        text = capsys.readouterr().out
+        assert committed.read_bytes() == before and json.loads(failed.read_text(encoding="utf-8"))["passed"] is False
+        assert f"Not written to {committed}: only a passing record goes there" in text
+        assert f"Written: {failed}" in text and "CALIBRATION: FAIL" in text
+        failed.unlink()
+
+    diag = tmp_path / "diag.json"
+    assert gate_calibrate.main(["--bank", bank, "--draws", "3", "--out", str(diag)]) == 1
+    assert json.loads(diag.read_text(encoding="utf-8"))["passed"] is False and not failed.exists()
+    assert committed.read_bytes() == before and f"Written: {diag}" in capsys.readouterr().out
+
+    monkeypatch.setattr(gate_calibrate, "DRAWS", 3)  # now 3 is the pre-registered count: it passes
+    assert gate_calibrate.main(["--bank", bank]) == 0
+    rec = json.loads(committed.read_text(encoding="utf-8"))
+    assert rec["passed"] is True and rec["a2"]["draws"] == 3 and not failed.exists()
+    assert f"Written: {committed}" in capsys.readouterr().out
+
+
+def test_a_bank_from_other_versions_is_noted_not_refused(tmp_path, ident, monkeypatch, capsys):
+    monkeypatch.setattr(gate_calibrate, "DRAWS", 3)
+    paths = constant_bank(tmp_path / "bank", ident)
+    v = verdict.load_verdict(paths[0])
+    v["env"] = {"python": "3.0.1", "numpy": "0.0.1"}
+    v["checksum"] = verdict.checksum_of(v)
+    verdict.write_verdict(v, paths[0])
+    out = tmp_path / "rec.json"
+    assert gate_calibrate.main(["--bank", str(tmp_path / "bank"), "--out", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "Note: The bank verdict bank-1.json ran on Python 3.0.1 with numpy 0.0.1; this machine has" in text
+    assert "bank-2.json ran on" not in text and "bank-3.json ran on" not in text
+    assert json.loads(out.read_text(encoding="utf-8"))["env"] == verdict.env_info()

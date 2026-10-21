@@ -30,7 +30,8 @@ verdict (evaluation/verdict.py): both transcripts, the decision, the adapter's a
 llama-server's version and the timings. It combines with --base-vs-base to gather the calibration bank (no calibration
 record needed). It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server
 starts and again before the candidate, and when the adapter file changed during the run (its size and mtime, or its
-sha256). Exit 0 on a decision, 2 when it refused or failed.
+sha256). On Colab (COLAB_RELEASE_TAG set) the gate's own llama-server gets --cache-ram 0: its default host prompt
+cache has OOM-killed it there. Exit 0 on a decision, 2 when it refused or failed.
 
 The laptop's side of a Colab verdict, on the CPU only (no VRAM check, nothing on the GPU):
   --check-verdict PATH  reads it: the checksum, a candidate verdict, this code's identity and a passing calibration
@@ -42,7 +43,8 @@ The laptop's side of a Colab verdict, on the CPU only (no VRAM check, nothing on
                         template check, the adapter listed in /lora-adapters and one 4-token generation, always
                         stopped. Then the atomic install, the installed file hashed again, the record (decided_on
                         "colab", the verdict's checksum and the adapter's sha256) and the setting.
-The two exclude each other and --verdict-out, --base-vs-base and --dry-run.
+The two exclude each other and --verdict-out, --base-vs-base, --dry-run, --port and --repeat (the verdict's own
+repeat is the one used). Both print a note when the verdict ran on another Python or numpy (information only).
 """
 import argparse
 import errno
@@ -61,7 +63,8 @@ from pathlib import Path
 from evaluation import gate, persona_eval
 from evaluation.gate import Decision, MetricCall, Scored, decide, format_decision, scored  # noqa: F401
 from evaluation.health_check import WS_URL
-from evaluation.verdict import VerdictError, file_identity, load_verdict, make_verdict, write_verdict
+from evaluation.verdict import (VerdictError, env_info, env_note, env_versions, file_identity, load_verdict,
+                                make_verdict, write_verdict)
 from evaluation.verdict import sha256_file as _sha256  # the one streaming hash
 from riya import brain, server
 from riya.brain import same_path, served_adapters
@@ -85,6 +88,8 @@ CPU_TIMEOUT_S = 60.0
 # how long her server may take to load on the CPU: with the template check (10 s), the adapter list (1.5 s) and the
 # generation (CPU_TIMEOUT_S) at their timeouts, the slowest refusal stays inside the adopt step's 2 minutes
 CPU_READY_S = 45.0
+# llama-server flags only Colab gets: its default 8 GiB host prompt cache has OOM-killed the server in Colab's 12.7 GB
+COLAB_LLAMA_EXTRA = ("--cache-ram", "0")
 
 
 class ChampionError(RuntimeError):
@@ -106,6 +111,13 @@ def _default_http_post(url: str, body: dict, timeout: float) -> dict:
     return fmt._post_json(url, body, timeout)
 
 
+def colab_extra(environ: Mapping[str, str] | None = None) -> list[str]:
+    """COLAB_LLAMA_EXTRA when this runs on Colab (COLAB_RELEASE_TAG, which every Colab runtime sets), else none. Only
+    the gate's own servers ask (run_variant); the laptop's CPU check never does."""
+    environ = os.environ if environ is None else environ
+    return list(COLAB_LLAMA_EXTRA) if environ.get("COLAB_RELEASE_TAG") else []
+
+
 def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_server=RiyaServer,
                 run=persona_eval.run, http_get=health.default_http_get, phrases: list[str],
                 template_post=None) -> Scored:
@@ -113,7 +125,8 @@ def run_variant(model: str, lora: str | None, *, repeat: int, port: int, make_se
     check the chat template on this server first (check_template) with that poster."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         # its own server serves the candidate as it is (no vetted-only rule): this is how a candidate gets vetted
-        srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False, vetted_only=False)
+        srv = make_server(model, port=port, slot_dir=root, lora=lora, fallback_to_base=False, vetted_only=False,
+                          extra=colab_extra())
         try:
             srv.start(gpu=True)
             url = f"http://127.0.0.1:{port}"
@@ -314,6 +327,8 @@ def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision,
         raise ChampionError(str(e)) from None
     if v["mode"] != "candidate":
         raise ChampionError("That's a base-vs-base verdict: it can't adopt anything.")
+    if note := env_note(v.get("env"), "The verdict"):  # M4: information only, never a refusal
+        print(note)
     ours = gate.identity(v["repeat"])
     for field in gate.IDENTITY_FIELDS:
         if v[field] != ours[field]:
@@ -344,7 +359,8 @@ def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision,
     stored = v["decision"].get("adopt") if isinstance(v["decision"], dict) else None
     if stored is not d.adopt:
         raise ChampionError(f"The verdict says {_said(stored)}, but this code decides {_said(d.adopt)}: not adopting "
-                            "on a disagreement.")
+                            f"on a disagreement. The verdict ran on {env_versions(v.get('env'))}; this machine has "
+                            f"{env_versions(env_info())}.")
     return v, d, base, cand
 
 
@@ -428,7 +444,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", default=brain.DEFAULT_MODEL, help="the base GGUF she serves")
     ap.add_argument("--lora", default=str(brain.candidate_adapter()),
                     help="the candidate adapter (a .gguf LoRA); on adopt it is installed as the adopted adapter")
-    ap.add_argument("--repeat", type=int, default=REPEAT, help="passes over the probes per variant")
+    ap.add_argument("--repeat", type=int, default=None,
+                    help=f"passes over the probes per variant (default {REPEAT}; a verdict mode uses the verdict's)")
     ap.add_argument("--port", type=int, default=None,
                     help=f"the gate's own llama-server port (default {PORT}; the verdict modes' CPU check is fixed at "
                          f"{CPU_PORT})")
@@ -465,7 +482,8 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
         if path is None:
             continue
         for other, on in (("--verdict-out", args.verdict_out is not None), ("--base-vs-base", args.base_vs_base),
-                          ("--dry-run", args.dry_run), ("--port", args.port is not None)):
+                          ("--dry-run", args.dry_run), ("--port", args.port is not None),
+                          ("--repeat", args.repeat is not None)):
             if on:
                 ap.error(f"{flag} can't be combined with {other}")
         args.verdict = path  # the calibration check is in verdict_steps: it needs the verdict's repeat and base
@@ -479,7 +497,7 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
     adopted = brain.default_adapter()  # where an adopted candidate is installed, and what the setting names
-    repeat = max(1, args.repeat)
+    repeat = max(1, REPEAT if args.repeat is None else args.repeat)
     variant = dict(repeat=repeat, port=args.port, make_server=make_server, run=run, http_get=http_get)
     try:
         if not dry:  # the setting an adopt would write must be one the core takes, before anything is written

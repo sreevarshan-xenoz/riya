@@ -18,6 +18,7 @@ from riya.core.store import KV, open_db
 from riya.train.fmt import render_lfm2
 from tests import gate_helpers
 from tests.gate_helpers import calibrated, write_calibration  # noqa: F401
+from tests.real_paths import tmp_only
 
 CAND_BYTES = b"GGUF the candidate Colab measured"
 URL = "http://127.0.0.1:8091"  # CPU_PORT
@@ -133,11 +134,11 @@ def go(cpu: Cpu, argv, *, fullscreen=lambda: False, port_busy=lambda port: False
 def world(tmp_path, calibrated):
     """An adopted adapter with its record, a candidate next to it, a settings DB naming the adopted file and a passing
     verdict for the candidate on the calibrated base model."""
-    adopted = brain.default_adapter()
+    adopted = tmp_only(tmp_path, brain.default_adapter())  # C1: fake adapters only ever go under tmp_path
     adopted.parent.mkdir(parents=True, exist_ok=True)
     adopted.write_bytes(b"GGUF the adapter adopted earlier")
     brain.write_record(adopted, {"decision": "adopt", "targets_base": 8, "targets_candidate": 9})
-    candidate = brain.candidate_adapter()
+    candidate = tmp_only(tmp_path, brain.candidate_adapter())
     candidate.write_bytes(CAND_BYTES)
     db = tmp_path / "settings" / "riya.db"
     conn = open_db(db)
@@ -292,8 +293,11 @@ def test_a_verdict_whose_decision_disagrees_is_refused_both_ways(world, capsys):
     keep_forced_adopt(world)  # stored adopt, re-decided keep
     cpu = Cpu()
     assert go(cpu, argv(world)) == 2
-    assert ("The verdict says adopt, but this code decides keep: not adopting on a disagreement. Nothing changed."
-            in capsys.readouterr().out)
+    out = capsys.readouterr().out
+    assert "The verdict says adopt, but this code decides keep: not adopting on a disagreement." in out
+    ours = verdict.env_info()  # M4: both sides' versions are named, since numpy's stream can differ between them
+    assert (f"The verdict ran on Python {ours['python']} with numpy {ours['numpy']}; this machine has Python "
+            f"{ours['python']} with numpy {ours['numpy']}. Nothing changed.") in out
     assert cpu.made == [] and brain.read_local_adapter(world["db"]) == str(world["adopted"])
 
 
@@ -527,3 +531,17 @@ def test_a_failed_install_writes_nothing(world, capsys, monkeypatch):
     assert "Couldn't install" in capsys.readouterr().out
     assert brain.record_path(world["adopted"]).read_text(encoding="utf-8") == record_before
     assert world["candidate"].exists() and brain.read_local_adapter(world["db"]) == str(world["adopted"])
+
+
+# ---- final fix wave M4: another Python or numpy is a note, never a refusal ----
+
+def test_another_python_or_numpy_is_a_note_never_a_refusal(world, tmp_path, capsys):
+    base_t, cand_t = world["transcripts"]
+    v = save(verdict_for(base_t, cand_t, world["candidate"], world["model"],
+                         env={"python": "3.0.1", "numpy": "0.0.1"}), tmp_path / "other-env.json")
+    assert go(Cpu(), argv(world, "--check-verdict", v)) == 0
+    out = capsys.readouterr().out
+    assert "Note: The verdict ran on Python 3.0.1 with numpy 0.0.1; this machine has Python " in out
+    assert "DECISION: adopt Riya v1" in out and "Check only: nothing written." in out
+    assert go(Cpu(), argv(world, "--check-verdict")) == 0  # the same versions: no note
+    assert "Note:" not in capsys.readouterr().out

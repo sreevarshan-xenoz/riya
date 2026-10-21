@@ -18,6 +18,7 @@ from riya.core.settings import Settings, save_settings
 from riya.core.store import KV, open_db
 from tests import gate_helpers
 from tests.gate_helpers import calibrated, write_calibration  # noqa: F401
+from tests.real_paths import tmp_only
 
 
 def test_constants():
@@ -86,18 +87,19 @@ class Rig:
     that lists the adapter the running server was given, and no core on the socket."""
 
     def __init__(self, transcripts=None, adapters_json=None, run_raises_on=None, template=None):
-        self.events, self.running, self.made, self.templates = [], [], [], []
+        self.events, self.running, self.made, self.templates, self.extras = [], [], [], [], []
         self.template = template  # what /apply-template answers: None renders exactly as the trainer does
         self.transcripts = list(transcripts or [transcript(), transcript()])
         self.adapters_json, self.run_raises_on, self.runs = adapters_json, run_raises_on, 0
         rig = self
 
         class FakeServer:
-            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base, vetted_only):
+            def __init__(self, model, *, port, slot_dir, lora, fallback_to_base, vetted_only, extra):
                 # the gate's own server measures the candidate as it is: no fallback, no vetted-only rule
                 assert port == champion.PORT and fallback_to_base is False and vetted_only is False
                 self.lora = lora
                 rig.made.append((model, lora, slot_dir))
+                rig.extras.append(list(extra))  # llama-server's extra flags: --cache-ram 0 on Colab, else none
 
             def start(self, gpu=True):
                 assert not rig.running, "one server at a time"
@@ -146,7 +148,7 @@ def go(rig: Rig, argv, *, fullscreen=lambda: False, free_vram=lambda: 6000, conn
 
 @pytest.fixture
 def adapter(tmp_path):
-    p = brain.default_adapter()  # tests/conftest.py points this into tmp_path
+    p = tmp_only(tmp_path, brain.default_adapter())  # tests/conftest.py (and `calibrated`) point this into tmp_path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF fake adapter")
     return p
@@ -453,7 +455,7 @@ def test_base_vs_base_on_noisy_samples_never_adopts(adapter, tmp_db, capsys):
 @pytest.fixture
 def adopted(tmp_path):
     """The adapter the gate adopted earlier: the file at the adopted path and its matching record."""
-    p = brain.default_adapter()
+    p = tmp_only(tmp_path, brain.default_adapter())
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF the adopted adapter")
     brain.write_record(p, {"decision": "adopt", "targets_base": 8, "targets_candidate": 9})
@@ -462,7 +464,7 @@ def adopted(tmp_path):
 
 @pytest.fixture
 def candidate(tmp_path):
-    p = brain.candidate_adapter()
+    p = tmp_only(tmp_path, brain.candidate_adapter())
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"GGUF a retrained candidate, never measured")
     return p
@@ -854,7 +856,8 @@ def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, c
     for mode in ("--adopt-verdict", "--check-verdict"):
         combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
                    ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run"),
-                   ([mode, str(v), "--port", "8097"], "--port")]  # I1: the CPU check is fixed at 8091
+                   ([mode, str(v), "--port", "8097"], "--port"),  # I1: the CPU check is fixed at 8091
+                   ([mode, str(v), "--repeat", "4"], "--repeat")]  # M6: a verdict's repeat is the verdict's own
     for args, named in combos:
         rig = Rig()
         with pytest.raises(SystemExit) as e:
@@ -886,3 +889,63 @@ def test_port_still_reaches_the_gate_s_server_in_a_run_mode(adapter, tmp_db, cap
     rig.make_server = make_server
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--port", "8097", "--db", str(tmp_db)]) == 0
     assert seen == [8097, 8097]
+
+
+# ---- final fix wave: --cache-ram 0 for the gate's own llama-server on Colab, never on the laptop's CPU check ----
+
+COLAB_TAG = "release-colab-20261021"
+
+
+def test_the_colab_flags_come_from_the_environment():
+    assert champion.colab_extra({}) == [] and champion.colab_extra({"COLAB_RELEASE_TAG": ""}) == []
+    assert champion.colab_extra({"COLAB_RELEASE_TAG": COLAB_TAG}) == ["--cache-ram", "0"]
+
+
+def real_server(popen):
+    """RiyaServer itself on a fake popen: the command line llama-server would really get."""
+    from riya.server import RiyaServer
+
+    def make_server(model, **kw):
+        return RiyaServer(model, popen=popen, healthy=lambda port: True, **({"ready_timeout_s": 0} | kw))
+
+    return make_server
+
+
+@pytest.mark.parametrize("on_colab", [True, False])
+def test_the_gate_s_own_server_gets_cache_ram_0_only_on_colab(monkeypatch, on_colab):
+    from tests.test_server import Popen
+    if on_colab:
+        monkeypatch.setenv("COLAB_RELEASE_TAG", COLAB_TAG)
+    else:
+        monkeypatch.delenv("COLAB_RELEASE_TAG", raising=False)
+    popen, t = Popen(), transcript()
+    champion.run_variant("m.gguf", None, repeat=3, port=champion.PORT, make_server=real_server(popen),
+                         run=lambda url, online, repeat: (t, score([r for r in t if not r["error"]], []), None),
+                         phrases=[])
+    (cmd,) = popen.cmds
+    assert ("--cache-ram" in cmd) is on_colab and cmd[cmd.index("-ngl") + 1] == "99"
+    if on_colab:
+        assert cmd[cmd.index("--cache-ram") + 1] == "0"
+    assert popen.procs[0].calls[0] == "terminate"  # stopped as always
+
+
+def test_the_laptop_s_cpu_check_never_gets_the_colab_flags(tmp_path, monkeypatch):
+    """Even with COLAB_RELEASE_TAG set, her own server's CPU check is the laptop's: no --cache-ram."""
+    from riya.train.fmt import render_lfm2
+    from tests.test_server import Popen
+    monkeypatch.setenv("COLAB_RELEASE_TAG", COLAB_TAG)
+    lora = tmp_path / "cand.gguf"
+    lora.write_bytes(b"GGUF candidate")
+    popen = Popen()
+
+    def http_post(url, body, timeout):
+        if url.endswith("/apply-template"):
+            return {"prompt": render_lfm2(body["messages"], add_generation_prompt=True)}
+        return {"content": "Hi there"}
+
+    champion.cpu_check("m.gguf", str(lora), make_server=real_server(popen),
+                       http_get=lambda url, t: json.dumps([{"id": 0, "path": str(lora), "scale": 1.0}]).encode(),
+                       http_post=http_post, fullscreen=lambda: False, port_busy=lambda port: False, tmp_dir=tmp_path)
+    (cmd,) = popen.cmds
+    assert "--cache-ram" not in cmd and cmd[cmd.index("-ngl") + 1] == "0" and cmd[cmd.index("--lora") + 1] == str(lora)
+    assert popen.kws[0]["env"]["CUDA_VISIBLE_DEVICES"] == ""
