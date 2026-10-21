@@ -269,6 +269,41 @@ def test_runbook_cells():
     assert to_models and all(line.rstrip().endswith('riya-v1-candidate-lora.gguf"') for line in to_models)
 
 
+def test_runbook_installs_the_pinned_embedder():
+    """v0.11 §4.7.4: the gate's embedder is the pinned bge, so the runbook installs fastembed, points RIYA_MODEL_DIR at a
+    kept folder and verifies the model before the first champion command; section 8 compares five code fields."""
+    text = _runbook()
+    first = text.index("python -m evaluation.champion")
+    assert 0 <= text.index("pip install -q fastembed==0.9.0") < first
+    assert 0 <= text.index("RIYA_MODEL_DIR=") < first
+    assert text.index("FastEmbedder(verify=True)") < first
+    sec8 = text.split("## 8. Colab: calibrating the gate", 1)[1].split("## 9.", 1)[0]
+    ident = sec8.split("**Then the bank.**", 1)[0]
+    assert "five code fields" in ident and "`embedder`" in ident
+    assert "FastEmbedder(verify=True).embedder_id" in ident
+    assert "five live" in sec8 and "four code fields" not in text and "three live" not in text
+    assert "/tmp/riya/models" in text and "models--Qdrant--bge-small-en-v1.5-onnx-Q" in text
+    # every champion command (and only those that run probes) carries the model dir
+    for cmd in _joined_commands(text):
+        if "python -m evaluation.champion" in cmd and ("--verdict-out" in cmd):
+            assert "RIYA_MODEL_DIR=" in cmd, cmd
+    # the bank's second block is separate, so the first two loops keep their needles
+    assert text.index("for n in 1;") < text.index("for n in 2 3;") < text.index("for n in 4 5;")
+
+
+def test_runbook_final_review_notes():
+    """Final review M2-M4: a snapshot-only pin mismatch points to the offline copy, the laptop's embedder check uses
+    the venv's python, and the filter step says --allow-stale is safe for the pre-v0.11 requests."""
+    text = _runbook()
+    sec7 = text.split("## 7. Colab: the gate's verdict", 1)[1].split("## 8.", 1)[0]
+    assert "stop there" not in sec7 and "expected aa8f8b06" in sec7 and "offline copy" in sec7
+    laptop = [c for c in _joined_commands(text) if "FastEmbedder(verify=True).embedder_id" in c and "%%bash" not in c
+              and "/content" not in c]
+    assert laptop and all(".venv\\Scripts\\python -c" in c for c in laptop), laptop
+    sec4 = text.split("## 4. Local: filter the teacher's answers", 1)[1].split("## 5.", 1)[0]
+    assert "--allow-stale" in sec4 and "v0.11" in sec4
+
+
 def _joined_commands(text: str) -> list[str]:
     """The README's lines with every continuation (a trailing backslash in bash, a backtick in PowerShell) joined onto
     the next line, so a flag on a continuation line is checked like any other."""

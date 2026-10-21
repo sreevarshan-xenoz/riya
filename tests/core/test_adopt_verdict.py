@@ -13,6 +13,7 @@ import pytest
 from evaluation import champion, gate, persona_eval, verdict
 from evaluation.champion import ChampionError
 from riya import brain
+from riya.core import embed
 from riya.core.settings import Settings, save_settings
 from riya.core.store import KV, open_db
 from riya.train.fmt import render_lfm2
@@ -43,7 +44,7 @@ def verdict_for(base_t: list[dict], cand_t: list[dict], adapter: Path, model: Pa
         base_gguf=verdict.file_identity(model), llama_server="b1234", template_check="ok", base_transcript=base_t,
         cand_transcript=cand_t, decision=gate.decision_dict(d),
         timings={"base_s": 60.0, "candidate_s": 90.0, "total_s": 150.0},
-        failed={"base": base.failed, "candidate": cand.failed})
+        failed={"base": base.failed, "candidate": cand.failed}, embedder_id=embed.EMBEDDER_PIN)
     v.update(json.loads(json.dumps(over)))
     v["checksum"] = verdict.checksum_of(v)
     return v
@@ -127,7 +128,7 @@ def go(cpu: Cpu, argv, *, fullscreen=lambda: False, port_busy=lambda port: False
     never = never or Never()
     return champion.main(argv, fullscreen=fullscreen, free_vram=never, make_server=never, run=never,
                          http_get=cpu.http_get, http_post=cpu.http_post, connect=connect, port_busy=port_busy,
-                         make_cpu_server=cpu.make_server, cpu_tmp_dir=CPU_TMP[0], **kw)
+                         make_cpu_server=cpu.make_server, cpu_tmp_dir=CPU_TMP[0], make_embedder=never, **kw)
 
 
 @pytest.fixture
@@ -490,6 +491,34 @@ def test_check_verdict_refuses_with_the_reason(world, capsys):
     changed_candidate(world)
     assert go(Cpu(), argv(world, "--check-verdict")) == 2
     assert "This adapter isn't the one the verdict measured. Nothing changed." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["--check-verdict", "--adopt-verdict"])
+def test_check_verdict_refuses_another_embedder_id(world, tmp_path, capsys, mode):
+    """§4.7.5: a verdict whose runs used another embedder (the hash fallback, an unverified bge) is refused by name,
+    with nothing on disk changed and nothing started."""
+    resave(world, embedder_id="x")
+    before, cpu, never = tree(tmp_path), Cpu(), Never()
+    assert go(cpu, argv(world, mode), never=never) == 2
+    out = capsys.readouterr().out
+    assert ("The verdict's runs used embedder x, this code pins " + embed.EMBEDDER_PIN[:12] + ". Nothing changed."
+            in out) and "Traceback" not in out
+    assert tree(tmp_path) == before and cpu.made == [] and never.calls == []
+    assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
+
+
+@pytest.mark.parametrize("mode", ["--check-verdict", "--adopt-verdict"])
+def test_a_verdict_from_other_retrieval_code_is_refused_by_name(world, tmp_path, capsys, mode):
+    """Fix round 1, M3: the verdict's own retrieval_sha256 is checked too, not only through scorer_sha256 (which holds
+    memory.py and embed.py today); here only that field differs, so only that check can refuse it."""
+    resave(world, retrieval_sha256="0" * 64)
+    before, cpu, never = tree(tmp_path), Cpu(), Never()
+    assert go(cpu, argv(world, mode), never=never) == 2
+    out = capsys.readouterr().out
+    assert (f"The verdict's runs used retrieval code 000000000000, this code has {gate.retrieval_sha256()[:12]}. "
+            "Nothing changed.") in out and "Traceback" not in out
+    assert tree(tmp_path) == before and cpu.made == [] and never.calls == []
+    assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
 
 
 # ---- after the install: the installed bytes must be the measured ones ------------------------------------------------

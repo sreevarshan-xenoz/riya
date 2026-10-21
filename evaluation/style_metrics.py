@@ -182,6 +182,36 @@ def about_me_recalls(reply: str, facts: list[str]) -> bool:
     return not DENIAL.search(_plain(reply)) and bool(words & set(_content(reply)))
 
 
+# Over-common words: saying one of these doesn't mean she "used" a fact (probed on the six annotated distractors:
+# "I'd love to help", "in that case", "play it safe" and "learning is fun" all flagged a hiking, phone-case, chess or
+# bass-guitar fact). Short on purpose; stems as _content gives them ("loves" is "love").
+OVER_COMMON = {"love", "case", "play", "learning"}
+
+
+def _words(texts: Sequence[str]) -> set[str]:
+    """Content words of some texts, possessives folded ("friend's" is "friend", "user's" is "user"), without the
+    subject every fact shares ("the user", via NOT_RECALL)."""
+    return {w for t in texts for x in _content(t) if len(w := x.rstrip("'")) >= 3} - NOT_RECALL
+
+
+def irrelevant_fact_used(reply: str, relevant: Sequence[str], others: Sequence[str], user_text: str = "") -> bool:
+    """Informational, never scored (v0.11 §4.4). True when the reply holds a content word of a non-relevant fact that
+    occurs in no relevant fact and not in the user's text (and isn't in OVER_COMMON): she dragged a distractor into
+    her answer. A denial counts too ("I don't know about your bass guitar yet" names a distractor): bringing it in at
+    all is the thing measured, and the share is read by a human, never gated."""
+    words = _words(others) - _words(relevant) - _words([user_text]) - OVER_COMMON
+    return bool(words & _words([reply]))
+
+
+def irrelevant_share(rows: Sequence[dict]) -> tuple[float | None, int]:
+    """(share, n) of the answered rows that carry `relevant` whose reply used an irrelevant fact. `others` are the
+    row's facts that are not in its `relevant`. The remember_aboutme conversation is excluded. No rows: (None, 0)."""
+    used = [irrelevant_fact_used(r["reply"], r["relevant"], [f for f in r.get("facts", []) if f not in r["relevant"]],
+                                 r.get("text", ""))
+            for r in rows if "relevant" in r and not r.get("error") and r.get("conversation") != "remember_aboutme"]
+    return (sum(used) / len(used) if used else None), len(used)
+
+
 def has_disclaimer(reply: str) -> bool:
     """ "I'm just a chatbot", "I don't have feelings", "as an AI": the disclaimers that kill her small talk."""
     return bool(DISCLAIMER.search(_plain(reply)))

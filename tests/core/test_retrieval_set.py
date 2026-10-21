@@ -1,13 +1,13 @@
 import json
 from pathlib import Path
 
-import pytest
-
+from evaluation.recorded_vectors import RecordedEmbedder
 from evaluation.retrieval_eval import recall_at_5
 from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder, content_tokens
 from riya.core.memory import Memory
 from riya.core.store import open_db
+from tests.bge_cache import live_bge
 
 
 def _data() -> dict:
@@ -36,13 +36,15 @@ def test_retrieval_set_answers_last_time_and_about_me_questions():
     assert res["episode_recall"] == 1.0 and res["about_me_recall"] == 1.0, res
 
 
-def test_retrieval_set_with_bge():
-    pytest.importorskip("fastembed")
-    from riya.core.embed import FastEmbedder
-    try:
-        embedder = FastEmbedder()
-    except Exception as e:  # model not downloaded and no network
-        pytest.skip(f"bge model unavailable: {e}")
+def test_retrieval_set_with_bge(tmp_path, monkeypatch):
+    embedder = live_bge(tmp_path, monkeypatch)
     res = recall_at_5(lambda: Memory(open_db(":memory:"), embedder, FakeClock()), _data())
+    assert res["recall@5"] >= 0.9 and res["never_said_empty"] >= 0.75, res
+    assert res["episode_recall"] == 1.0 and res["about_me_recall"] == 1.0, res
+
+
+def test_retrieval_set_with_recorded_bge():
+    """The same bar on the recorded vectors, so the default suite answers it without loading the model."""
+    res = recall_at_5(lambda: Memory(open_db(":memory:"), RecordedEmbedder(), FakeClock()), _data())
     assert res["recall@5"] >= 0.9 and res["never_said_empty"] >= 0.75, res
     assert res["episode_recall"] == 1.0 and res["about_me_recall"] == 1.0, res

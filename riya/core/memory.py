@@ -19,6 +19,7 @@ LIVE = "('active','conflict')"
 EPISODE_FORGET_SIM = 0.6
 DAY = 86400.0
 ABOUT_ME_FACTS = 8
+PERSONAL_EXTRA = 3  # a personal request's fill: at most this many facts beyond the eligible ones (v0.11 §4.2)
 MAX_EPISODES = 3
 RECENT_EPISODE_S = 7 * DAY  # the second-latest episode is always shown while it's this fresh
 STALE_THREAD_S = 7 * DAY  # an open thread this far past due is dropped by the daily purge
@@ -34,6 +35,76 @@ def about_me(query: str) -> bool:
     you remember" counts only at the end of the sentence (", Riya" may follow) or followed by "about me", not
     "...about my sister's X"."""
     return ABOUT_ME_RE.search(query) is not None
+
+
+NAMING = frozenset({"call", "calls", "called", "name", "names", "named"})  # never shared content (v0.11 §4.3)
+_HEDGE = (r"as far as you (?:know|can tell)|going by what you(?:'ve| have)? (?:know|seen|heard)"
+          r"|from what you(?:'ve| have)? (?:know|seen|heard|can tell)|as you see it")
+PERSONAL_RE = re.compile("|".join((
+    # applied: an action for them, or "me" as the object
+    r"\b(?:pick|choose|suggest|recomm?end|plan|make(?! it\b)|find|book|sort out|cook|order) (?:\w+ ){0,3}?for me\b",
+    r"\b(?:pick|choose|book|sort|plan|find|cook|order)(?: out)? me (?:out )?(?:a|an|some|something|anything|one)\b",
+    r"\bwhich (?:\w+ ){1,3}(?:would|should|do) you (?:book|pick|choose|order|recomm?end) (?:for )?me\b",
+    r"\bhelp me (?:pick|choose|decide|plan|find)\b",
+    r"(?:^|[,.!?;]\s*|\b(?:please|pls|can you|could you|would you|will you|just) )(?:suggest|recomm?end|recomend)\b",
+    r"\b(?:what|which \w+) (?:would|do|can|could) you (?:suggest|recomm?end|recomend)\b",
+    r"\bany (?:picks|suggestions|recommendations|recs)\b",
+    r"\bgive me (?:a |an |some )?(?:\w+ ){0,2}(?:routine|plan|idea|ideas|recipe|playlist|suggestions?)\b",
+    r"\bneed (?:some |a )(?:music|tunes|songs|playlist|film|movie|book|show)\b",
+    r"\byou know (?:what i (?:like|enjoy|love)|how i am|my tastes?)\b",
+    r"\b(?:what|how|when|where|which \w+) (?:should|shall) i (?:eat|get|order|watch|listen to|wear|cook|drink|have"
+    r"|make|read|play|buy|book|travel|go|start|do)\b",
+    r"\b(?:what|which \w+) (?:should|shall|do) i (?:ask (?:\w+ ){0,2}for|tell (?:\w+ ){0,2}to get me)\b",
+    r"\bshould i (?:buy|book)\b",
+    r"\b(?:no (?:clue|idea)|thoughts on|any ideas? (?:on|for)) what to (?:eat|get|order|watch|listen to|wear|cook"
+    r"|drink|make|read|buy)\b",
+    r"\b(?:something|anything|that|stuff|things?) (?:i'd|i would|i'll|i will) (?:actually |really )?"
+    r"(?:like|enjoy|love)\b",
+    r"\b(?:is|are|would|does) (?:\w+ ){0,4}(?:very|so) me\b",
+    r"\bwhat (?:can't|cannot|can not|shouldn't) i (?:eat|drink)\b",
+    # topical: what she knows about a part of their life
+    r"\bwhat (?:do|did) you (?:actually |really )?(?:know|remember) about (?:my|where i|how i|what i)\b",
+    r"\b(?:anything|what) (?:else )?you (?:know|remember) about (?:my\b|(?:the )?(?:\w+ ){0,4}(?:to|of|around) me\b)",
+    r"\b(?:you(?:'ve|ve| have)?|have you) (?:\w+ )?(?:noticed|figured out|picked up|learned|learnt|gathered"
+    r"|worked out) about (?:me|my|them|how i|what i|where i)\b",
+    r"\bdescribe (?:me|my)\b",
+    r"\bwhat (?:kind|sort|type) of (?:person|guy|girl|man|woman) am i\b",
+    r"\b(?:what|which) (?:sort|kind|type)s? of (?:\w+ ){1,2}i (?:go for|tend to)\b",
+    r"\b(?:your|ur) (?:read|take|impression|sense) (?:on|of) (?:me|my)\b",
+    r"\bhow (?:do|does) my\b(?: \S+){1,8}? (?:usually|normally|typically) go\s*(?:[?.!,~]|$)",
+    rf"\b(?:{_HEDGE})\b",
+)))
+_APOS = "['‘ʼ]?"  # the exclusions also catch phone typing: "whats", "dont", "lets", and ‘ or ʼ
+NOT_PERSONAL_RE = re.compile("|".join((
+    # direct attribute questions
+    rf"\b(?:what|who|when|where)(?:{_APOS}s| is| was) my\b", r"\bhow old (?:is|was|am)\b",
+    r"\bwhat (?:did|do) i (?:name|call)\b",
+    # plural ones (final review I1): "who are my best friends", "what are my kids called", "where are my parents from"
+    rf"\bwho(?:{_APOS}re| are| were) my\b",
+    rf"\b(?:what|where)(?:{_APOS}re| are| were) my\b(?:\s+\S+){{0,4}}?\s+(?:called|named|names?|from)\b",
+    # shared history and remember-that turns
+    r"\bwhat did i (?:tell|say|mention)\b", r"\bdid i (?:ever )?(?:tell|say|mention)\b", r"\bremember (?:when|that)\b",
+    r"\bkeep in mind\b", rf"\bdon{_APOS}t forget\b",
+    # leading questions
+    r"\b(?:do|did) you (?:happen to |even )?(?:know|remember) my\b",
+    r"\b(?:do|did) you (?:happen to |even )?(?:know|remember) (?:what|how|where|which|who) i\b",
+    r"\byou (?:already )?(?:know|remember) my\b(?! tastes?\b)",
+    r"\bnow that you know\b", r"\bsince you (?:already )?know\b", r",? right\?",
+    # "we", and identity or AI questions
+    r"\b(?:should|shall|can|could) we\b", rf"\blet{_APOS}s\b", r"\byou and i\b", r"\bthe two of us\b", r"\bjust us\b",
+    r"\b(?:ai|a\.i\.|bot|chatbot|robot|language model|llm|chatgpt|programmed|human|real person|sentient|conscious)\b",
+)))
+
+
+def personal_request(query: str) -> bool:
+    """Asks her to apply what she knows about them ("pick a snack for me, you know what i like") or about a part of
+    their life ("what have you noticed about my nights"): v0.11 §4.1. Never a direct attribute, shared-history,
+    leading, "we", identity or remember-that question, and never an about-me one (that path wins). Case and curly
+    apostrophes don't matter."""
+    q = query.replace("’", "'").lower()
+    if about_me(query) or about_me(q):
+        return False
+    return PERSONAL_RE.search(q) is not None and NOT_PERSONAL_RE.search(q) is None
 
 
 @dataclass
@@ -85,6 +156,7 @@ class Retrieved:
     facts: list[Fact]
     episodes: list[Episode]
     threads: list[Thread]
+    filled: tuple[int, ...] = ()  # the ids a personal request's fill added, in rank order (they end `facts`)
 
 
 _FACT_COLS = "id, text, key, source, confidence, valid_from, valid_until, status, supersedes_id"
@@ -128,12 +200,13 @@ class Memory:
         self.lock = threading.RLock()
 
     def eligible(self, sim: float, query_tokens: set[str], text: str) -> bool:
-        """Strongly similar, or weakly similar and sharing at least one content word with the query."""
+        """Strongly similar, or weakly similar and sharing at least one content word with the query. Naming words
+        ("called", "named") aren't shared content: "...dog called?" never reaches "...friend is called X"."""
         if self.min_sim is not None:
             return sim >= self.min_sim
         strong = getattr(self.embedder, "strong_sim", 0.2)
         weak = getattr(self.embedder, "weak_sim", strong)
-        return sim >= strong or (sim >= weak and not query_tokens.isdisjoint(content_tokens(text)))
+        return sim >= strong or (sim >= weak and not (query_tokens - NAMING).isdisjoint(content_tokens(text) - NAMING))
 
     def _embed(self, text: str) -> np.ndarray:
         return self.embedder.embed([text])[0]
@@ -427,21 +500,50 @@ class Memory:
     def _score(sim: float, age_s: float, quality: float) -> float:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
+    def _fill(self, kept: list[Fact], candidates: list[Fact], rows: dict, room: int) -> list[Fact]:
+        """Up to room candidates, in order, skipping one on the key of a fact already chosen or a near-duplicate of
+        one (add_fact's dedup rule), so no slot goes to a second version of something already there."""
+        chosen, added = list(kept), []
+        for f in candidates:
+            if len(added) >= room:
+                break
+            v = _vec(rows[f.id]["embedding"])
+            if any((f.key is not None and c.key == f.key) or self._duplicate(v, f.text, rows[c.id]) for c in chosen):
+                continue
+            chosen.append(f)
+            added.append(f)
+        return added
+
     @_locked
-    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2) -> Retrieved:
+    def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2,
+                 personal: bool = False) -> Retrieved:
         """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
         it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets the
         facts that pass the gate first, then is filled to 8 with her best facts by trust and recency. Due threads
-        pass the same gate as facts."""
+        pass the same gate as facts.
+
+        A personal request ("pick a snack for me, you know what i like") gets the eligible facts first, then up to
+        PERSONAL_EXTRA more live facts whose cosine is at least the embedder's personal_sim, ranked by score, never
+        more than k_facts in all; `filled` names them. A fill slot is never spent on a fact sharing a key with one
+        already chosen, or a near-duplicate of one (add_fact's rule). It ignores min_sim, and an embedder without
+        personal_sim (HashEmbedder) gets no fill. The fill is opt-in: only the engine's local reply passes
+        personal=True, so an online-routed request ("plan my week for me" goes online on "plan") gets no fill, a
+        known limit (v0.11 §4.7.9). Every other query, and every other caller, retrieves exactly what it did before."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         mine = about_me(query)
-        facts, rest, episodes = [], [], []
+        floor = getattr(self.embedder, "personal_sim", None)
+        fill = personal and not mine and floor is not None and personal_request(query)
+        facts, rest, extra, episodes, rows = [], [], [], [], {}
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["text"]):
                 facts.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
             elif mine:
                 rest.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            elif fill and sim >= floor:
+                extra.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            if fill:
+                rows[r["id"]] = r  # the fill's duplicate check reads the vectors of what it may sit beside
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["summary"]):
@@ -454,8 +556,11 @@ class Memory:
             e for _, e in episodes[:k_episodes]]
         unique = list({e.id: e for e in picked}.values())  # in order of first appearance
         chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
-        return Retrieved([f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]], chosen,
-                         self._relevant_threads(vec, qtokens, k_threads))
+        kept = [f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]]
+        extra.sort(key=lambda p: p[0], reverse=True)  # empty unless a personal request
+        added = self._fill(kept, [f for _, f in extra], rows, max(0, min(PERSONAL_EXTRA, k_facts - len(kept))))
+        return Retrieved(kept + added, chosen, self._relevant_threads(vec, qtokens, k_threads),
+                         tuple(f.id for f in added))
 
     # --- legacy import ---
 

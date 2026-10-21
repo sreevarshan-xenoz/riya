@@ -17,7 +17,7 @@ from riya.core.feelings import FeelingState
 from riya.core.initiative import Action
 from riya.core.learn.dials import clamp
 from riya.core.learn.feedback import detect_feedback
-from riya.core.memory import Memory, about_me
+from riya.core.memory import Memory, about_me, personal_request
 from riya.core.prompt import hands_situation
 from riya.core.router import needs_thinking
 from riya.core.shaping import CAPS, cap_for, emoji_limit, turn_kind
@@ -26,8 +26,8 @@ from riya.train import build_sft
 from riya.train.build_sft import (DEFAULT_OUT, build, holdout_violations, main, messages_for, prompt_fingerprint,
                                   request_for)
 from riya.train.fmt import EXPECT_KEYS, REQUEST_KEYS, read_jsonl, request_hash, validate_request, write_jsonl
-from riya.train.scenarios import (KINDS, events_of, fact_attr, normalize, probe_facts, probe_texts, scenario, thread_of,
-                                  tool_result)
+from riya.train.scenarios import (FOODS, KINDS, events_of, fact_attr, normalize, probe_facts, probe_texts, scenario,
+                                  scenarios, thread_of, tool_result)
 from tests.fakes import make_core
 
 GOLDEN_KINDS = ("small", "about_me", "unknown", "identity", "remember", "explain", "feedback", "greeting", "bid",
@@ -210,6 +210,8 @@ def test_prompt_fingerprint_is_stamped_and_follows_the_prompt(monkeypatch):
         (build_sft, "IDENTITY_SITUATION", build_sft.IDENTITY_SITUATION.replace("clearly", "plainly")),
         (build_sft, "persona_prompt", lambda kind: real_persona(kind) + " Hm."),
         (build_sft, "style_examples", lambda: real_examples() + " Hm."),
+        (prompt, "PERSONAL_SITUATION", prompt.PERSONAL_SITUATION.replace("know", "remember")),
+        (build_sft, "personal_situation", lambda: ""),  # v0.11: the canary carries the personal situation line
     ]
     for target, name, value in changes:
         monkeypatch.setattr(target, name, value)
@@ -266,6 +268,13 @@ def test_no_request_overlaps_a_probe(monkeypatch):
         monkeypatch.setattr(build_sft, "scenarios", lambda seed, n, kinds, bad=bad: [bad])
         with pytest.raises(ValueError, match="probe overlap"):
             build(0, 1)
+
+
+def test_no_sft_scenario_is_a_personal_request():
+    """v0.11 §4.7.6: training data stays out of scope, so no SFT row may be a personal request, including the
+    scenarios.py near-match "should i have {food} or something else for lunch?" with every food."""
+    assert [s.id for seed in (0, 1, 2) for s in scenarios(seed) if s.user_text and personal_request(s.user_text)] == []
+    assert [f for f in FOODS if personal_request(f"should i have {f} or something else for lunch?")] == []
 
 
 def test_build_is_deterministic_and_the_cli_writes_it(tmp_path, capsys):

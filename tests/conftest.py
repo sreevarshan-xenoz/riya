@@ -3,6 +3,14 @@ import pytest
 from tests import real_paths  # first: it records the real paths before any fixture redirects them
 
 
+def pytest_configure(config):
+    """Before any fixture of any scope and any collection-time code: nothing loads fastembed, through the loader or by
+    constructing TextEmbedding directly. Never undone: the opt-in live_bge tests use real_paths.allow_real_fastembed."""
+    from riya.core import embed
+    embed._load_text_embedding = real_paths.no_fastembed
+    real_paths.guard_text_embedding()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def real_models_untouched():
     """The session fails if anything under the user's real models folder (%USERPROFILE%\\models) was added, removed
@@ -34,6 +42,10 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders
+    from riya.core import embed
+
+    monkeypatch.setattr(embed, "_load_text_embedding", real_paths.no_fastembed)  # a test may swap it; undone after
+    monkeypatch.delenv("RIYA_MODEL_DIR", raising=False)
     keystore.forget_all()
     yield
     keystore.forget_all()

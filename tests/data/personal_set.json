@@ -1,0 +1,973 @@
+{
+ "version": 1,
+ "facts": [
+  {
+   "id": "f01",
+   "text": "The user is allergic to shellfish."
+  },
+  {
+   "id": "f02",
+   "text": "The user's little brother is Kasim."
+  },
+  {
+   "id": "f03",
+   "text": "The user's spaniel is named Biscuit."
+  },
+  {
+   "id": "f04",
+   "text": "The user plays the cello in a community orchestra."
+  },
+  {
+   "id": "f05",
+   "text": "The user does a few shifts a week at a warehouse."
+  },
+  {
+   "id": "f06",
+   "text": "The user is studying for a nursing exam in spring."
+  },
+  {
+   "id": "f07",
+   "text": "The user gets motion sick on buses."
+  },
+  {
+   "id": "f08",
+   "text": "The user loves old jazz records."
+  },
+  {
+   "id": "f09",
+   "text": "The user wakes up at five on weekdays."
+  },
+  {
+   "id": "f10",
+   "text": "The user cannot stand cilantro."
+  },
+  {
+   "id": "f11",
+   "text": "The user bites their nails when nervous."
+  },
+  {
+   "id": "f12",
+   "text": "The user wants to visit Lisbon next year."
+  },
+  {
+   "id": "f13",
+   "text": "The user has a bad left knee."
+  },
+  {
+   "id": "f14",
+   "text": "The user is vegetarian."
+  },
+  {
+   "id": "f15",
+   "text": "The user lives in a small flat above a bakery."
+  },
+  {
+   "id": "f16",
+   "text": "The user's mum calls every Sunday evening."
+  },
+  {
+   "id": "f17",
+   "text": "The user is afraid of heights."
+  },
+  {
+   "id": "f18",
+   "text": "The user drinks green tea instead of coffee."
+  },
+  {
+   "id": "f19",
+   "text": "The user is learning to knit."
+  },
+  {
+   "id": "f20",
+   "text": "The user goes swimming on Thursday mornings."
+  },
+  {
+   "id": "f21",
+   "text": "The user hates loud restaurants."
+  },
+  {
+   "id": "f22",
+   "text": "The user is trying to cut down on sugar."
+  },
+  {
+   "id": "f23",
+   "text": "The user's old tabby cat is called Pudding."
+  },
+  {
+   "id": "f24",
+   "text": "The user reads crime novels before bed."
+  },
+  {
+   "id": "f25",
+   "text": "The user has a stammer that shows up on phone calls."
+  },
+  {
+   "id": "f26",
+   "text": "The user prefers train travel to flying."
+  },
+  {
+   "id": "f27",
+   "text": "The user shares the flat with a flatmate who snores."
+  },
+  {
+   "id": "f28",
+   "text": "The user takes an antihistamine every morning in summer."
+  },
+  {
+   "id": "f29",
+   "text": "The user's grandfather taught them to play chess."
+  },
+  {
+   "id": "f30",
+   "text": "The user dislikes surprises and likes plans made early."
+  },
+  {
+   "id": "f31",
+   "text": "The user paints small watercolour landscapes on Sunday afternoons."
+  },
+  {
+   "id": "f32",
+   "text": "The user volunteers at a food bank on Saturdays."
+  },
+  {
+   "id": "f33",
+   "text": "The user keeps a bullet journal."
+  },
+  {
+   "id": "f34",
+   "text": "The user cannot digest dairy."
+  },
+  {
+   "id": "f35",
+   "text": "The user has a strict budget of forty pounds a week for fun."
+  },
+  {
+   "id": "f36",
+   "text": "The user is learning Portuguese on a phone app."
+  },
+  {
+   "id": "f37",
+   "text": "The user cannot sleep without a fan running."
+  },
+  {
+   "id": "f38",
+   "text": "The user's closest mate Oswin is getting married in June."
+  },
+  {
+   "id": "f39",
+   "text": "The user loves very hot curries."
+  },
+  {
+   "id": "f40",
+   "text": "The user is colour blind to red and green."
+  },
+  {
+   "id": "f41",
+   "text": "The user hates scary movies."
+  }
+ ],
+ "requests": [
+  {
+   "id": "r01",
+   "kind": "applied",
+   "q": "i'm hosting dinner tomorrow evening and have no clue what to cook",
+   "relevant": [
+    "f14",
+    "f10"
+   ],
+   "memory": [
+    "f14",
+    "f10",
+    "f08",
+    "f13"
+   ]
+  },
+  {
+   "id": "r02",
+   "kind": "applied",
+   "q": "got any thoughts on what to order from the thai place tonight",
+   "relevant": [
+    "f01",
+    "f39",
+    "f14"
+   ],
+   "memory": [
+    "f01",
+    "f39",
+    "f14",
+    "f24"
+   ]
+  },
+  {
+   "id": "r03",
+   "kind": "applied",
+   "q": "my birthday's creeping up, what do i tell people to get me?",
+   "relevant": [
+    "f08",
+    "f19"
+   ],
+   "memory": [
+    "f08",
+    "f19",
+    "f10",
+    "f41"
+   ]
+  },
+  {
+   "id": "r04",
+   "kind": "applied",
+   "q": "how should i travel across town tomorrow, it's miles away",
+   "relevant": [
+    "f07",
+    "f13"
+   ],
+   "memory": [
+    "f07",
+    "f13",
+    "f31",
+    "f24"
+   ]
+  },
+  {
+   "id": "r05",
+   "kind": "applied",
+   "q": "i've got a whole free stretch today and zero plans, suggest something",
+   "relevant": [
+    "f31",
+    "f19",
+    "f33"
+   ],
+   "memory": [
+    "f31",
+    "f19",
+    "f33",
+    "f05",
+    "f17"
+   ]
+  },
+  {
+   "id": "r06",
+   "kind": "applied",
+   "q": "sort me out a little getaway somewhere not too far",
+   "relevant": [
+    "f26",
+    "f13",
+    "f30"
+   ],
+   "memory": [
+    "f26",
+    "f13",
+    "f30",
+    "f10",
+    "f41"
+   ]
+  },
+  {
+   "id": "r07",
+   "kind": "applied",
+   "q": "what should i have for breakfast tmrw, im sick of the usual",
+   "relevant": [
+    "f34",
+    "f22",
+    "f14"
+   ],
+   "memory": [
+    "f34",
+    "f22",
+    "f14",
+    "f03"
+   ]
+  },
+  {
+   "id": "r08",
+   "kind": "applied",
+   "q": "can you pick something for me to put on the telly tonight",
+   "relevant": [
+    "f41",
+    "f24"
+   ],
+   "memory": [
+    "f41",
+    "f24",
+    "f10",
+    "f16"
+   ]
+  },
+  {
+   "id": "r09",
+   "kind": "applied",
+   "q": "wanna get fit propperly this year, what would you recommend",
+   "relevant": [
+    "f13",
+    "f20"
+   ],
+   "memory": [
+    "f13",
+    "f20",
+    "f24",
+    "f10"
+   ]
+  },
+  {
+   "id": "r10",
+   "kind": "applied",
+   "q": "which hotel room would you book me, top floor with a view or somewhere lower",
+   "relevant": [
+    "f17"
+   ],
+   "memory": [
+    "f17",
+    "f10",
+    "f24"
+   ]
+  },
+  {
+   "id": "r11",
+   "kind": "applied",
+   "q": "help me pick a snack to bring to my mate's party tonight",
+   "relevant": [
+    "f22",
+    "f34",
+    "f14"
+   ],
+   "memory": [
+    "f22",
+    "f34",
+    "f14",
+    "f04"
+   ]
+  },
+  {
+   "id": "r12",
+   "kind": "applied",
+   "q": "i need to leave the house by nine on tuesday, when should i start my day",
+   "relevant": [
+    "f09"
+   ],
+   "memory": [
+    "f09",
+    "f37",
+    "f11"
+   ]
+  },
+  {
+   "id": "r13",
+   "kind": "applied",
+   "q": "i get to choose where the team eats lunch, any picks",
+   "relevant": [
+    "f21",
+    "f14",
+    "f39"
+   ],
+   "memory": [
+    "f21",
+    "f14",
+    "f39",
+    "f24",
+    "f13"
+   ]
+  },
+  {
+   "id": "r14",
+   "kind": "applied",
+   "q": "need some music for getting ready to go out later",
+   "relevant": [
+    "f08",
+    "f04"
+   ],
+   "memory": [
+    "f08",
+    "f04",
+    "f15",
+    "f27"
+   ]
+  },
+  {
+   "id": "r15",
+   "kind": "applied",
+   "q": "give me a relaxing routine for late evening, i'm properly wired",
+   "relevant": [
+    "f24",
+    "f37",
+    "f18"
+   ],
+   "memory": [
+    "f24",
+    "f37",
+    "f18",
+    "f10",
+    "f02"
+   ]
+  },
+  {
+   "id": "r16",
+   "kind": "applied",
+   "q": "suggest some new pastime i could pick up this winter",
+   "relevant": [
+    "f19",
+    "f31",
+    "f35",
+    "f13"
+   ],
+   "memory": [
+    "f19",
+    "f31",
+    "f35",
+    "f13",
+    "f10",
+    "f41"
+   ]
+  },
+  {
+   "id": "r17",
+   "kind": "applied",
+   "q": "theres a problem with the council and i have to contact them, best route?",
+   "relevant": [
+    "f25"
+   ],
+   "memory": [
+    "f25",
+    "f10",
+    "f41"
+   ]
+  },
+  {
+   "id": "r18",
+   "kind": "applied",
+   "q": "recomend something to curl up with on the sofa tonight",
+   "relevant": [
+    "f24",
+    "f41"
+   ],
+   "memory": [
+    "f24",
+    "f41",
+    "f31",
+    "f10"
+   ]
+  },
+  {
+   "id": "r19",
+   "kind": "applied",
+   "q": "what shall i wear to the wedding in summer? i can never tell what clashes",
+   "relevant": [
+    "f40",
+    "f38"
+   ],
+   "memory": [
+    "f40",
+    "f38",
+    "f24"
+   ]
+  },
+  {
+   "id": "r20",
+   "kind": "applied",
+   "q": "should i buy one of those huge sofas that seats six",
+   "relevant": [
+    "f15"
+   ],
+   "memory": [
+    "f15",
+    "f10",
+    "f24"
+   ]
+  },
+  {
+   "id": "t01",
+   "kind": "topical",
+   "q": "what's your read on my meals and cravings",
+   "relevant": [
+    "f14",
+    "f10",
+    "f34"
+   ],
+   "memory": [
+    "f14",
+    "f10",
+    "f34",
+    "f08",
+    "f13"
+   ]
+  },
+  {
+   "id": "t02",
+   "kind": "topical",
+   "q": "how do my first couple of hours each day usually go?",
+   "relevant": [
+    "f09",
+    "f18",
+    "f28"
+   ],
+   "memory": [
+    "f09",
+    "f18",
+    "f28",
+    "f16"
+   ]
+  },
+  {
+   "id": "t03",
+   "kind": "topical",
+   "q": "tell me what youve noticed about how i cope under pressure",
+   "relevant": [
+    "f11",
+    "f30"
+   ],
+   "memory": [
+    "f11",
+    "f30",
+    "f10",
+    "f41"
+   ]
+  },
+  {
+   "id": "t04",
+   "kind": "topical",
+   "q": "so who's in my family as far as you know",
+   "relevant": [
+    "f02",
+    "f16",
+    "f29"
+   ],
+   "memory": [
+    "f02",
+    "f16",
+    "f29",
+    "f15",
+    "f13"
+   ]
+  },
+  {
+   "id": "t05",
+   "kind": "topical",
+   "q": "do you know which animals share my home",
+   "relevant": [
+    "f03",
+    "f23"
+   ],
+   "memory": [
+    "f03",
+    "f23",
+    "f27",
+    "f09"
+   ]
+  },
+  {
+   "id": "t06",
+   "kind": "topical",
+   "q": "what have you gathered about my nights",
+   "relevant": [
+    "f24",
+    "f37"
+   ],
+   "memory": [
+    "f24",
+    "f37",
+    "f05",
+    "f12"
+   ]
+  },
+  {
+   "id": "t07",
+   "kind": "topical",
+   "q": "how's my body treating me, as far as you can tell",
+   "relevant": [
+    "f13",
+    "f25",
+    "f28"
+   ],
+   "memory": [
+    "f13",
+    "f25",
+    "f28",
+    "f19",
+    "f33"
+   ]
+  },
+  {
+   "id": "t08",
+   "kind": "topical",
+   "q": "got any idea what sort of tunes i go for",
+   "relevant": [
+    "f08",
+    "f04"
+   ],
+   "memory": [
+    "f08",
+    "f04",
+    "f15"
+   ]
+  },
+  {
+   "id": "t09",
+   "kind": "topical",
+   "q": "how would you describe my days off, from what you know",
+   "relevant": [
+    "f31",
+    "f32",
+    "f16"
+   ],
+   "memory": [
+    "f31",
+    "f32",
+    "f16",
+    "f13"
+   ]
+  },
+  {
+   "id": "t10",
+   "kind": "topical",
+   "q": "which far-off spots am i dreaming about, as far as you know",
+   "relevant": [
+    "f12",
+    "f26"
+   ],
+   "memory": [
+    "f12",
+    "f26",
+    "f24",
+    "f10"
+   ]
+  },
+  {
+   "id": "t11",
+   "kind": "topical",
+   "q": "sum up my job and classes for me, as you see it",
+   "relevant": [
+    "f05",
+    "f06"
+   ],
+   "memory": [
+    "f05",
+    "f06",
+    "f10",
+    "f18"
+   ]
+  },
+  {
+   "id": "t12",
+   "kind": "topical",
+   "q": "what are my pet peeves, as far as you can tell",
+   "relevant": [
+    "f10",
+    "f21",
+    "f41",
+    "f30"
+   ],
+   "memory": [
+    "f10",
+    "f21",
+    "f41",
+    "f30",
+    "f08"
+   ]
+  },
+  {
+   "id": "t13",
+   "kind": "topical",
+   "q": "how careful am i with my pennies, going by what you know",
+   "relevant": [
+    "f35"
+   ],
+   "memory": [
+    "f35",
+    "f19",
+    "f22"
+   ]
+  },
+  {
+   "id": "t14",
+   "kind": "topical",
+   "q": "anything you know about the people nearest and dearest to me",
+   "relevant": [
+    "f38",
+    "f27",
+    "f02",
+    "f16"
+   ],
+   "memory": [
+    "f38",
+    "f27",
+    "f02",
+    "f16",
+    "f04"
+   ]
+  },
+  {
+   "id": "t15",
+   "kind": "topical",
+   "q": "what am i good at, going by what you've seen",
+   "relevant": [
+    "f04",
+    "f29",
+    "f31"
+   ],
+   "memory": [
+    "f04",
+    "f29",
+    "f31",
+    "f13",
+    "f35"
+   ]
+  }
+ ],
+ "negatives": [
+  {
+   "id": "d1",
+   "kind": "direct",
+   "q": "what's my dog called again",
+   "memory": [
+    "f03",
+    "f15",
+    "f09"
+   ]
+  },
+  {
+   "id": "d2",
+   "kind": "direct",
+   "q": "do i have any allergies you know of",
+   "memory": [
+    "f01",
+    "f28",
+    "f08"
+   ]
+  },
+  {
+   "id": "d3",
+   "kind": "direct",
+   "q": "tell me where i live, i keep blanking on it",
+   "memory": [
+    "f15",
+    "f26",
+    "f19"
+   ]
+  },
+  {
+   "id": "d4",
+   "kind": "direct",
+   "q": "which instrument is it that i play",
+   "memory": [
+    "f04",
+    "f08",
+    "f31",
+    "f12"
+   ]
+  },
+  {
+   "id": "h1",
+   "kind": "shared_history",
+   "q": "remind me what we were chatting about before lunch",
+   "memory": [
+    "f05",
+    "f21"
+   ]
+  },
+  {
+   "id": "h2",
+   "kind": "shared_history",
+   "q": "how did that story i started telling you on tuesday end?",
+   "memory": [
+    "f03",
+    "f16",
+    "f33"
+   ]
+  },
+  {
+   "id": "h3",
+   "kind": "shared_history",
+   "q": "did i ever finish explaining the mix up with my parcel",
+   "memory": [
+    "f15",
+    "f09",
+    "f35"
+   ]
+  },
+  {
+   "id": "h4",
+   "kind": "shared_history",
+   "q": "which restaurant did i say i was booking earlier in this chat",
+   "memory": [
+    "f21",
+    "f39",
+    "f14"
+   ]
+  },
+  {
+   "id": "l1",
+   "kind": "leading",
+   "q": "since you already know where i went to school, guess my old teacher's name",
+   "memory": [
+    "f06",
+    "f05",
+    "f29"
+   ]
+  },
+  {
+   "id": "l2",
+   "kind": "leading",
+   "q": "you remember my blood type, right? is it a rare one",
+   "memory": [
+    "f01",
+    "f28",
+    "f13"
+   ]
+  },
+  {
+   "id": "l3",
+   "kind": "leading",
+   "q": "now that you know what i earn, am i doing alright for my age",
+   "memory": [
+    "f35",
+    "f12",
+    "f05"
+   ]
+  },
+  {
+   "id": "l4",
+   "kind": "leading",
+   "q": "you know my ex's surname so what do you think it says about him",
+   "memory": [
+    "f16",
+    "f27",
+    "f11"
+   ]
+  },
+  {
+   "id": "m1",
+   "kind": "near_miss",
+   "q": "how's my sister getting on lately",
+   "memory": [
+    "f02",
+    "f16",
+    "f38"
+   ]
+  },
+  {
+   "id": "m2",
+   "kind": "near_miss",
+   "q": "what breed is my rabbit again",
+   "memory": [
+    "f03",
+    "f15",
+    "f27"
+   ]
+  },
+  {
+   "id": "m3",
+   "kind": "near_miss",
+   "q": "do i play the violin or something else",
+   "memory": [
+    "f04",
+    "f08",
+    "f31"
+   ]
+  },
+  {
+   "id": "m4",
+   "kind": "near_miss",
+   "q": "am i allergic to peanuts or is that someone else",
+   "memory": [
+    "f01",
+    "f28",
+    "f34"
+   ]
+  },
+  {
+   "id": "s1",
+   "kind": "small_talk",
+   "q": "ugh my phone keeps freezing today, so annoying",
+   "memory": [
+    "f33",
+    "f12"
+   ]
+  },
+  {
+   "id": "s2",
+   "kind": "small_talk",
+   "q": "haha my brain is mush after that meeting",
+   "memory": [
+    "f05",
+    "f09",
+    "f30"
+   ]
+  },
+  {
+   "id": "s3",
+   "kind": "small_talk",
+   "q": "me and the weather are not getting along today",
+   "memory": [
+    "f13",
+    "f37",
+    "f19"
+   ]
+  },
+  {
+   "id": "s4",
+   "kind": "small_talk",
+   "q": "i swear my bus is always late when its raining",
+   "memory": [
+    "f33",
+    "f15"
+   ]
+  },
+  {
+   "id": "w1",
+   "kind": "we",
+   "q": "let's plan something fun for the two of us this weekend",
+   "memory": [
+    "f31",
+    "f32",
+    "f26"
+   ]
+  },
+  {
+   "id": "w2",
+   "kind": "we",
+   "q": "can you and i put together a playlist for a long drive",
+   "memory": [
+    "f24",
+    "f35",
+    "f09"
+   ]
+  },
+  {
+   "id": "w3",
+   "kind": "we",
+   "q": "want to start a silly story together, you go first",
+   "memory": [
+    "f24",
+    "f41"
+   ]
+  },
+  {
+   "id": "w4",
+   "kind": "we",
+   "q": "should we try a word game, just us two",
+   "memory": [
+    "f29",
+    "f33",
+    "f19"
+   ]
+  },
+  {
+   "id": "i1",
+   "kind": "identity",
+   "q": "how old are you, and where do you live",
+   "memory": [
+    "f03",
+    "f26"
+   ]
+  },
+  {
+   "id": "k1",
+   "kind": "remember",
+   "q": "keep in mind that my passport runs out in the autumn",
+   "memory": [
+    "f12",
+    "f26",
+    "f36"
+   ]
+  }
+ ]
+}
