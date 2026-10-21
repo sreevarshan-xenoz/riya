@@ -160,7 +160,8 @@ cp /content/drive/MyDrive/riya_v1/riya-v1-lora.gguf /content/riya_v1/riya-v1-can
 ```
 
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
-It takes about 20 minutes and prints the table and `Verdict written: ... (total N s)`:
+It takes about 12-15 minutes (the gate's budget is 900 s; section 8 checks it on `bank-1`) and prints the table and
+`Verdict written: ... (total N s)`:
 
 ```bash
 %%bash
@@ -174,11 +175,13 @@ python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruc
 The verdict lands in `G:/My Drive/riya_v1/verdict-<sha8>.json`. A different adapter file gets a different name.
 
 Colab has about 12.7 GB of RAM. llama-server's host-side prompt cache defaults to 8 GiB, which has OOM-killed it here
-before (`colab.gen_riya_v1` starts its own with `--cache-ram 0`). The gate's own launch doesn't pass `--cache-ram`, so
-the commands set the same thing through llama-server's environment variable `LLAMA_ARG_CACHE_RAM=0` (the server
-inherits the notebook's environment). The gate's server also keeps its default context of 16384 with a q8_0 KV cache
-and one slot, which is small next to the model. If a run dies with the server killed and no error, suspect the RAM:
-watch Colab's RAM meter during `bank-1` (section 8).
+before (`colab.gen_riya_v1` starts its own with `--cache-ram 0`). On Colab the gate passes `--cache-ram 0` to its own
+llama-server itself: it knows it is on Colab from `COLAB_RELEASE_TAG`, which every Colab runtime sets (and `%%bash`
+cells inherit). The commands also set `LLAMA_ARG_CACHE_RAM=0`, llama-server's environment variable for the same
+setting, as a second guard; drop neither. On the laptop nothing changes: the CPU check in section 9 never gets the
+flag. The gate's server also keeps its default context of 16384 with a q8_0 KV cache and one slot, which is small next
+to the model. If a run dies with the server killed and no error, suspect the RAM: watch Colab's RAM meter during
+`bank-1` (section 8).
 
 ## 8. Colab: calibrating the gate (after any probe, prompt, scorer, repeat or base-model change)
 
@@ -187,6 +190,10 @@ Each one scores the base against itself, so every "improvement" or veto the gate
 criteria were fixed before any run (at most one of the three may be false; 200 simulated draws from the bank at a false
 rate of at most 6%; the planted regressions caught; each run inside 900 s). A failing calibration is reported, never
 tuned.
+
+On a first calibration (no record yet), run section 7's **Ship the code** and **Check the inputs** cells first: this
+section starts in `/content/code` and writes to `riya_v1/gate/`, which those cells make. The adapter copy in the check
+cell fails if there's no adapter yet; that's fine here, since the bank needs none.
 
 **First, check that Colab runs your code.** Print the gate's identity on Colab and on the laptop and compare the four
 code fields (`gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`). If any differs, the zip is stale or its line
@@ -233,8 +240,11 @@ Copy-Item "G:/My Drive/riya_v1/gate/bank-*.json" scratch_runs/riya_v1/gate/bank/
 ```
 
 It prints each criterion and ends with `CALIBRATION: PASS` or `CALIBRATION: FAIL (reasons)`. Its seed and its 200 draws
-are pre-registered in the code; any other number never passes. It writes `evaluation/gate_calibration.json` either way,
-and the gate refuses a record that did not pass. On PASS, **commit that file** and ship the code again (section 7): the
+are pre-registered in the code; any other number never passes. It writes `evaluation/gate_calibration.json` only on
+PASS. A run that fails (or a diagnostic one, such as `--draws 50`) never touches that file: it writes
+`scratch_runs/riya_v1/gate/calibration-failed.json` instead (or the `--out` path you name) and says where it went. Each
+verdict and the record also name the Python and numpy they ran on, for information only: a note is printed when the
+bank's differ from the laptop's. On PASS, **commit that file** and ship the code again (section 7): the
 record is part of the code the gate checks. After a scorer-only change the same bank is re-scored on the CPU with this
 same command; a change to the probes, the prompt, the repeat count or the base model needs three new live runs.
 
