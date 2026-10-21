@@ -44,6 +44,26 @@ def test_fast_never_falls_back():
         persona_eval.make_embedder("fast")
 
 
+def _unpinned_bge(monkeypatch, tmp_path):
+    """A loadable bge stand-in whose snapshot does NOT match the pin (no pin_to): verify=True must refuse it."""
+    snap = fake_snapshot(tmp_path / "snap", rev="not-the-pinned-revision")
+    monkeypatch.setattr(embed, "_load_text_embedding", fake_loader(snap, {}))
+
+
+def test_fast_verifies_the_pin(monkeypatch, tmp_path):
+    _unpinned_bge(monkeypatch, tmp_path)
+    with pytest.raises(embed.EmbedderPinError):
+        persona_eval.make_embedder("fast")
+
+
+def test_auto_falls_back_to_hash_when_the_model_loads_but_fails_the_pin(monkeypatch, tmp_path, capsys):
+    _unpinned_bge(monkeypatch, tmp_path)
+    emb, embedder_id = persona_eval.make_embedder("auto")
+    assert embedder_id == "hash-2048" and isinstance(emb, HashEmbedder)
+    out = capsys.readouterr().out
+    assert "Note: the bge embedder didn't load (EmbedderPinError" in out
+
+
 def test_hash_is_hash():
     emb, embedder_id = persona_eval.make_embedder("hash")
     assert embedder_id == "hash-2048" and isinstance(emb, HashEmbedder)
@@ -79,9 +99,9 @@ def test_one_embedder_per_run(monkeypatch, tmp_path):
 
     cores.clear()
     mine = HashEmbedder()
-    _, score, problem = persona_eval.run("u", repeat=2, embedder=(mine, "x"))
+    _, score, problem = persona_eval.run("u", repeat=2, embedder=(mine, "explicit-id"))
     assert problem is None and seen["calls"] == 1  # no further load
-    assert len(cores) == 4 and all(c is mine for c in cores) and score["embedder_id"] == "x"
+    assert len(cores) == 4 and all(c is mine for c in cores) and score["embedder_id"] == "explicit-id"
 
 
 def test_an_unreachable_server_builds_no_embedder_in_run(monkeypatch):
