@@ -51,7 +51,7 @@ def test_row_outcomes_values_are_the_scorers_verdicts():
 def test_outcomes_pool_to_exactly_score():
     probes = persona_eval.load_probes()
     transcript = persona_eval.run_probes(probes, FakeModel("local", REPLIES * 40), None, repeat=3)
-    # a failed turn (no reply) and an off-path AI row, which the current probe file has none of
+    # a failed turn (no reply) and one more off-path AI row, on top of the probe file's g_aioff_* turns
     transcript += [row("ai", "", text="are you human?") | {"probe_id": "failed", "error": "down"},
                    row("ai_offpath", "I'm not human, I'm just code~", text="are you like siri or an actual person?")
                    | {"probe_id": "offpath"}]

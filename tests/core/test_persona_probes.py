@@ -5,6 +5,7 @@ import hashlib
 import json
 
 from evaluation.persona_eval import load_probes
+from evaluation.style_metrics import NOT_RECALL, _content, about_me_recalls
 from riya.core.persona import persona_prompt, style_examples
 from riya.core.shaping import is_identity_question
 from riya.train import holdout, scenarios
@@ -54,19 +55,32 @@ def test_new_probes_are_one_turn_with_six_words():
         assert len(holdout.normalize(c["turns"][0]["text"]).split()) >= 6, c["id"]
 
 
+def _tagged(turns: list[tuple[dict, dict]], tag: str) -> list[dict]:
+    return [c for c, t in turns if tag in t["tags"]]
+
+
+def _unknown_minimums(turns: list[tuple[dict, dict]]) -> None:
+    assert len({t["attr"] for _, t in turns}) >= 15
+    assert len(_tagged(turns, "near_miss")) >= 6 and all(c["facts"] for c in _tagged(turns, "near_miss"))
+    assert len(_tagged(turns, "shared_history")) >= 8
+    assert len(_tagged(turns, "leading")) >= 4
+
+
+def _about_minimums(turns: list[tuple[dict, dict]]) -> None:
+    assert len(_tagged(turns, "direct")) >= 10
+    assert len(_tagged(turns, "open")) >= 6 and len(_tagged(turns, "applied")) >= 6
+    assert len(_tagged(turns, "distractor")) >= 4 and all(len(c["facts"]) >= 2 for c in _tagged(turns, "distractor"))
+
+
 def test_unknown_coverage():
     turns = _turns("g_unknown_")
     assert all(t["kind"] == "unknown" for _, t in turns)
     assert all(0 <= len(c["facts"]) <= 5 for c, _ in turns)
-    assert len({t["attr"] for _, t in turns}) >= 15
     for c, t in turns:
         facts = set(holdout.normalize(" ".join(c["facts"])).split())
         assert not set(holdout.normalize(t["attr"]).split()) & facts, c["id"]  # no fact answers the question
         assert set(t["tags"]) <= {"near_miss", "shared_history", "leading"}, c["id"]
-    tagged = lambda tag: [c for c, t in turns if tag in t["tags"]]  # noqa: E731
-    assert len(tagged("near_miss")) >= 6 and all(c["facts"] for c in tagged("near_miss"))
-    assert len(tagged("shared_history")) >= 8
-    assert len(tagged("leading")) >= 4
+    _unknown_minimums(turns)
 
 
 def test_about_me_coverage():
@@ -76,9 +90,32 @@ def test_about_me_coverage():
     for c, t in turns:
         assert len(set(t["tags"]) & {"direct", "open", "applied"}) == 1, c["id"]
         assert set(t["tags"]) <= {"direct", "open", "applied", "distractor"}, c["id"]
-    tagged = lambda tag: [c for c, t in turns if tag in t["tags"]]  # noqa: E731
-    assert len(tagged("direct")) >= 10 and len(tagged("open")) >= 6 and len(tagged("applied")) >= 6
-    assert len(tagged("distractor")) >= 4 and all(len(c["facts"]) >= 2 for c in tagged("distractor"))
+    _about_minimums(turns)
+
+
+def test_coverage_after_the_a8_drop():
+    """Resolution 24: at 24 per metric, the last 6 g_unknown, the last 6 g_about, the last 4 g_ai and the last 2
+    g_aioff go. Every coverage minimum still holds; about-me is counted per pass, with v0.9's three turns."""
+    _unknown_minimums(_turns("g_unknown_")[:-6])
+    v09 = {"colour": ["direct"], "about_me": ["open"], "know_me": ["open"]}  # remember_aboutme's turns, classified
+    old = [(c, t | {"tags": v09[t["id"]]}) for c in _convs()[:7] for t in c["turns"]
+           if t["kind"] == "about_me" and c["facts"]]
+    assert len(old) == 3
+    _about_minimums(old + _turns("g_about_")[:-6])
+    assert {t["style"] for _, t in _turns("g_ai_")[:-4]} == STYLES
+    assert {t["style"] for _, t in _turns("g_aioff_")[:-2]} == STYLES
+
+
+def test_about_me_questions_dont_echo_their_facts():
+    """about_me_recalls passes a reply with no denial and one fact content word, so a question holding a fact word
+    would let a reply that only echoes it (and names the wrong hamster) pass as recall."""
+    for c, t in _turns("g_about_"):
+        words = {w for f in c["facts"] for w in _content(f)} - NOT_RECALL
+        assert not words & set(_content(t["text"])), c["id"]
+        assert not about_me_recalls(t["text"], c["facts"]), c["id"]
+    hamster = next(c for c in _new("g_about_") if any("Biscotti" in f for f in c["facts"]))
+    assert not about_me_recalls("Your little furball is called Nibbles, silly~", hamster["facts"])
+    assert about_me_recalls("It's Biscotti, obviously~", hamster["facts"])
 
 
 def test_ai_paths():
