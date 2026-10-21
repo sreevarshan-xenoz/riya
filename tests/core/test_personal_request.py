@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from riya.core.clock import FakeClock
-from riya.core.memory import Memory, about_me, personal_request
+from riya.core.memory import PERSONAL_RE, Memory, about_me, personal_request
 from riya.core.store import open_db
 from tests.embed_stubs import TableEmbedder
 
@@ -26,10 +26,48 @@ def test_never_fires_on_the_dev_set_s_negatives():
     assert [n["id"] for n in negatives if personal_request(n["q"])] == []
 
 
+def _fires_raw(q: str) -> bool:
+    """PERSONAL_RE alone, before the exclusions and the about-me guard."""
+    return PERSONAL_RE.search(q.replace("’", "'").lower()) is not None
+
+
 def test_about_me_wins():
     for q in ("what do you remember about me?", "tell me everything you know about me", "what have i told you"):
         assert about_me(q), q
         assert not personal_request(q), q
+    both = ("what do you remember about me? pick something for me", "what have i told you? describe me")
+    assert [q for q in both if not (about_me(q) and _fires_raw(q))] == []
+    assert [q for q in both if personal_request(q)] == []
+
+
+def test_exclusions_beat_a_fire_form():
+    """Each line holds a fire form and an exclusion: only NOT_PERSONAL_RE keeps it from firing."""
+    mixed = (
+        "what's my dog called? you know what i like", "how old is my brother? as far as you know",
+        "what did i name my dog? you know how i am", "what did i tell you about my flatmate, as far as you know?",
+        "do you know my favourite snack? pick one for me", "you know my cat's name, right? pick one for me",
+        "now that you know what i like, pick a film", "don't forget to pick something for me",
+        "let's pick something for me", "are you an ai? pick a film for me",
+    )
+    assert [q for q in mixed if not _fires_raw(q)] == []
+    assert [q for q in mixed if personal_request(q)] == []
+
+
+def test_leading_typed_and_identity_exclusions():
+    """Fix round 1: "do you know what i like" is a leading question (§4.1); apostrophes dropped or typed as ‘ or ʼ
+    still hit the exclusions; "human", "real person", "sentient" and "conscious" are identity words."""
+    mixed = (
+        "do you know what i like to eat?", "do you know what i like?", "do you know how i am?",
+        "did you remember where i like to eat? pick one for me",
+        "whats my mums name, as far as you know?", "whos my best friend, as far as you know?",
+        "wheres my brother these days, as far as you can tell?", "what‘s my dog called? you know what i like",
+        "whatʼs my dog called? you know what i like", "dont forget to pick something for me",
+        "lets pick something for me", "let‘s pick something for me",
+        "are you human? pick a film for me", "are you a real person? pick a film for me",
+        "are you sentient? suggest something", "are you conscious? pick a film for me",
+    )
+    assert [q for q in mixed if not _fires_raw(q)] == []
+    assert [q for q in mixed if personal_request(q)] == []
 
 
 def test_the_spec_s_never_forms():
@@ -87,7 +125,7 @@ def test_bank_about_me_hits_are_reported():
     assert isinstance(hits, list)
 
 
-PEREGRINE ="The user's best friend is called Peregrine"
+PEREGRINE = "The user's best friend is called Peregrine"
 ROLO = "The user's dog is called Rolo"
 BUBBLES = "The user's goldfish is called Bubbles"
 

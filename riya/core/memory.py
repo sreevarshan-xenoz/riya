@@ -73,20 +73,22 @@ PERSONAL_RE = re.compile("|".join((
     r"\bhow (?:do|does) my\b(?: \S+){1,8}? (?:usually|normally|typically) go\s*(?:[?.!,~]|$)",
     rf"\b(?:{_HEDGE})\b",
 )))
+_APOS = "['‘ʼ]?"  # the exclusions also catch phone typing: "whats", "dont", "lets", and ‘ or ʼ
 NOT_PERSONAL_RE = re.compile("|".join((
     # direct attribute questions
-    r"\b(?:what|who|when|where)(?:'s| is| was) my\b", r"\bhow old (?:is|was|am)\b",
+    rf"\b(?:what|who|when|where)(?:{_APOS}s| is| was) my\b", r"\bhow old (?:is|was|am)\b",
     r"\bwhat (?:did|do) i (?:name|call)\b",
     # shared history and remember-that turns
     r"\bwhat did i (?:tell|say|mention)\b", r"\bdid i (?:ever )?(?:tell|say|mention)\b", r"\bremember (?:when|that)\b",
-    r"\bkeep in mind\b", r"\bdon't forget\b",
+    r"\bkeep in mind\b", rf"\bdon{_APOS}t forget\b",
     # leading questions
     r"\b(?:do|did) you (?:happen to |even )?(?:know|remember) my\b",
+    r"\b(?:do|did) you (?:happen to |even )?(?:know|remember) (?:what|how|where|which|who) i\b",
     r"\byou (?:already )?(?:know|remember) my\b(?! tastes?\b)",
     r"\bnow that you know\b", r"\bsince you (?:already )?know\b", r",? right\?",
     # "we", and identity or AI questions
-    r"\b(?:should|shall|can|could) we\b", r"\blet's\b", r"\byou and i\b", r"\bthe two of us\b", r"\bjust us\b",
-    r"\b(?:ai|a\.i\.|bot|chatbot|robot|language model|llm|chatgpt|programmed)\b",
+    r"\b(?:should|shall|can|could) we\b", rf"\blet{_APOS}s\b", r"\byou and i\b", r"\bthe two of us\b", r"\bjust us\b",
+    r"\b(?:ai|a\.i\.|bot|chatbot|robot|language model|llm|chatgpt|programmed|human|real person|sentient|conscious)\b",
 )))
 
 
