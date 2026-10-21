@@ -826,3 +826,11 @@ def test_a_feedback_row_trains_the_reply_after_the_ack():
     assert kept[0]["messages"][-1] == {"role": "assistant", "content": "So what's up?"}
     _, report = filter_rows([r], teacher([("r", "Hehe, sweeter it is~")], [r]), STYLE)
     assert report["kept"] == 0 and report["reasons"]["ack_only"] == 1
+
+
+def test_the_filter_keeps_its_v09_ai_verdict():
+    """v0.10 lets the scorer count "I'm not human" as honest; the training filter keeps v0.9's stricter verdict (§3)."""
+    from evaluation import style_metrics
+    ident, reply = req("identity", user="are you human?", must_say_ai=True), "No, I'm not human~"
+    assert reasons(ident, reply, STYLE) == ["no_ai_admission"]
+    assert style_metrics.says_ai(reply) and not style_metrics.says_ai(reply, strict=True)
