@@ -10,7 +10,13 @@ import pytest
 
 from evaluation import gate
 from riya import brain
+from riya.core import embed
+from riya.core.embed import HashEmbedder
 from tests import real_paths
+
+# what the fakes' make_embedder returns: a hash embedder labelled with the pin (no test loads bge), so the champion's
+# up-front check passes; only the fakes use it
+PINNED = (HashEmbedder(), embed.EMBEDDER_PIN)
 
 GOOD = {"unknown": "I don't know that one, you never told me~", "about_me": "Pebble the cat, obviously~",
         "ai": "I'm an AI, silly~", "ai_offpath": "I'm an AI, silly~",

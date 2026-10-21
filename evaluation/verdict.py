@@ -20,9 +20,9 @@ from riya.train import fmt
 
 KIND = "riya-gate-verdict"
 MODES = ("candidate", "base-vs-base")
-REQUIRED = ("kind", "mode", "gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "alpha", "B",
-            "seed", "adapter", "base_gguf", "llama_server", "template_check", "transcripts", "decision", "timings",
-            "failed_turns", "created_at", "checksum")
+REQUIRED = ("kind", "mode", "gate_version", "probe_sha256", "prompt_fp", "scorer_sha256", "repeat", "embedder",
+            "embedder_id", "retrieval_sha256", "alpha", "B", "seed", "adapter", "base_gguf", "llama_server",
+            "template_check", "transcripts", "decision", "timings", "failed_turns", "created_at", "checksum")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -77,8 +77,12 @@ def env_note(theirs, what: str) -> str | None:
 
 def make_verdict(*, mode: str, identity: dict, adapter: dict | None, base_gguf: dict, llama_server: str,
                  template_check: str, base_transcript: list[dict], cand_transcript: list[dict], decision: dict,
-                 timings: dict, failed: dict) -> dict:
+                 timings: dict, failed: dict, embedder_id: str, retrieval_sha256: str | None = None) -> dict:
+    """The checksummed verdict. `embedder_id` is what the runs used (persona_eval's score); `retrieval_sha256` is the
+    retrieval code they ran (None: this code's own, gate.retrieval_sha256())."""
     body = {"kind": KIND, "mode": mode, **{k: identity[k] for k in gate.IDENTITY_FIELDS},
+            "embedder_id": embedder_id,
+            "retrieval_sha256": gate.retrieval_sha256() if retrieval_sha256 is None else retrieval_sha256,
             "alpha": gate.ALPHA, "B": gate.B, "seed": gate.GATE_SEED, "adapter": adapter, "base_gguf": base_gguf,
             "llama_server": llama_server, "template_check": template_check,
             "transcripts": {"base": base_transcript, "candidate": cand_transcript}, "decision": decision,

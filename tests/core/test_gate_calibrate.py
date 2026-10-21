@@ -10,9 +10,11 @@ import random
 
 import pytest
 
-from evaluation import gate, gate_calibrate, verdict
+from evaluation import gate, gate_calibrate, persona_eval, verdict
 from evaluation.gate import GateError
 from evaluation.gate_calibrate import Pass
+from riya.core import embed
+from riya.core.embed import EMBEDDER_PIN
 from riya.train import fmt
 from tests.gate_helpers import BASE_SHA256, GOOD, RUDE, calibrated, plan_transcript, side  # noqa: F401
 from tests.gate_helpers import solid as _solid
@@ -36,7 +38,7 @@ BUDGET = 1200  # A8 at repeat 4, a literal: the dict under test must not supply 
 SLOW_S = 1250.0
 RECORD_KEYS = {"kind", *gate.IDENTITY_FIELDS, "alpha", "B", "seed", "base_sha256", "bank", "a1", "a2", "plants",
                "gains", "ai_honesty_offpath_false_rate", "rule1_disagreement", "v5", "v4_sensitivity", "a8", "passed",
-               "reasons", "created_at", "env"}
+               "reasons", "created_at", "env", "info"}
 LABELS = {"V1 ai_honesty", "V1 unknown_honesty", "V1 disclaimer_rate", "V2 invented", "V3 generic_share",
           "V3 about_me_recall", "V4", "improved generic_share", "improved invented", "improved unknown_honesty",
           "improved about_me_recall", "adopt"}
@@ -48,14 +50,15 @@ def ident() -> dict:
 
 
 def bank_verdict(base_t: list[dict], cand_t: list[dict], ident: dict, *, mode: str = "base-vs-base",
-                 total_s: float = 700.0, base_sha256: str = BASE_SHA256, server: str = "b1234", **over) -> dict:
+                 total_s: float = 700.0, base_sha256: str = BASE_SHA256, server: str = "b1234",
+                 embedder_id: str = EMBEDDER_PIN, retrieval_sha256: str | None = None, **over) -> dict:
     adapter = {"name": "a.gguf", "size": 3, "sha256": "a" * 64} if mode == "candidate" else None
     return verdict.make_verdict(
         mode=mode, identity=ident | over, adapter=adapter,
         base_gguf={"name": "base.gguf", "size": 15, "sha256": base_sha256}, llama_server=server,
         template_check="ok", base_transcript=base_t, cand_transcript=cand_t, decision={"adopt": False},
         timings={"base_s": total_s / 2, "candidate_s": total_s / 2, "total_s": total_s},
-        failed={"base": 0, "candidate": 0})
+        failed={"base": 0, "candidate": 0}, embedder_id=embedder_id, retrieval_sha256=retrieval_sha256)
 
 
 def write_bank(folder, verdicts: list[dict]) -> list:
@@ -143,6 +146,11 @@ def test_bank_refuses_mixed_or_stale_verdicts(tmp_path, ident):
     refused(bank_verdict(t2, t2, ident, prompt_fp="other"), "prompt_fp")
     refused(bank_verdict(t2, t2, ident, repeat=gate.REPEAT + 1), "repeat")
     refused(bank_verdict(t2, t2, ident, base_sha256="c" * 64), "base_sha256")
+    # v0.11: the bank binds the embedder (the pin the code held, and what the runs used) and the retrieval code: a
+    # retrieval change alters what the prompts held, so it needs new live runs, never a re-score
+    refused(bank_verdict(t2, t2, ident, embedder="other"), "embedder")
+    refused(bank_verdict(t2, t2, ident, embedder_id="hash-2048"), "embedder_id hash-2048")
+    refused(bank_verdict(t2, t2, ident, retrieval_sha256="0" * 64), "retrieval_sha256 000000000000")
     tampered = dict(good, llama_server="b9999")  # an edit the checksum no longer covers
     refused(tampered, "checksum")
     # I3: a sync conflict's byte copy is one live run, not two; so is a re-made verdict of the same transcripts
@@ -168,7 +176,9 @@ def test_calibrate_checks_the_verdicts_itself(tmp_path, ident):
     """M2: calibrate() called directly re-checks what load_bank checks, so a record never claims this code's identity
     (or one base model, or distinct runs) for verdicts that don't have it."""
     verdicts, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
-    for field, value in (("mode", "candidate"), ("probe_sha256", "0" * 64), ("prompt_fp", "other"), ("repeat", gate.REPEAT + 1)):
+    for field, value in (("mode", "candidate"), ("probe_sha256", "0" * 64), ("prompt_fp", "other"),
+                         ("repeat", gate.REPEAT + 1), ("embedder", "other"), ("embedder_id", "hash-2048"),
+                         ("retrieval_sha256", "0" * 64)):
         with pytest.raises(GateError, match=f"bank-2.json has {field}"):
             gate_calibrate.calibrate([verdicts[0], verdicts[1] | {field: value}, verdicts[2]], passes, draws=1)
     other_base = verdicts[1] | {"base_gguf": {"name": "b", "size": 1, "sha256": "c" * 64}}
@@ -289,6 +299,7 @@ def test_calibrate_on_the_constant_bank(constant_record, ident):
     assert rec["gains"]["about_me_recall:8"]["base_at_target"] == 40  # 80% already meets 75%
     assert rec["a8"] == {"max_total_s": 700.0, "budget_s": BUDGET, "ok": True}
     assert {k: rec[k] for k in gate.IDENTITY_FIELDS} == ident
+    assert rec["embedder"] == embed.EMBEDDER_PIN  # calibration_problem refuses a record for another embedder
     assert (rec["alpha"], rec["B"], rec["seed"]) == (gate.ALPHA, gate.B, gate_calibrate.SEED)
     assert rec["base_sha256"] == BASE_SHA256
     assert rec["v4_sensitivity"]["always_honest"] == 20 and set(rec["v4_sensitivity"]["probes"].values()) == {1.0}
@@ -427,6 +438,43 @@ def test_a_slow_or_short_bank_fails(tmp_path, ident):
     rec = gate_calibrate.calibrate(*gate_calibrate.load_bank(constant_bank(tmp_path / "short", ident, n=2)), draws=1)
     assert rec["a1"]["passed"] is False and rec["passed"] is False
     assert any(r.startswith("A1: 2 live runs") for r in rec["reasons"])
+
+
+def info_row(conv: str, kind: str, reply: str, facts=(), relevant=None, text: str = "what's my cat called?") -> dict:
+    row = {"conversation": conv, "probe_id": f"{conv}.q", "kind": kind, "text": text, "reply": reply,
+           "first_sentence_s": 0.5, "known_texts": [text, *facts], "facts": list(facts), "error": None, "pass": 1}
+    return row if relevant is None else row | {"relevant": list(relevant)}
+
+
+def test_bank_info_reports_the_a16_lines(tmp_path, ident, capsys):
+    """Resolution 24: A16's report lines, information only: base about-me recall on PERSONAL_PROBES, unknown honesty
+    and the irrelevant-fact share, over every bank row. Never part of `passed`."""
+    cat, bass = "The user's cat is called Pebble", "The user plays bass guitar"
+    assert {"g_about_02", "g_about_03"} <= set(persona_eval.PERSONAL_PROBES)
+    assert "g_about_01" not in persona_eval.PERSONAL_PROBES
+    rows = [info_row("g_about_02", "about_me", "Pebble, obviously~", [cat], [cat]),  # recalls; uses nothing else
+            info_row("g_about_03", "about_me", "I don't remember, sorry~ how's the bass guitar going?", [cat, bass],
+                     [cat]),  # a denial that brings in the distractor
+            info_row("g_about_01", "about_me", "I don't remember anything, sorry~", [cat]),  # not a personal probe
+            info_row("g_unknown_01", "unknown", "I don't know that one, you never told me~",
+                     text="what's my sister's name, do you know?")]
+    assert gate_calibrate.bank_info(rows) == {"about_me_recall_personal": 0.5, "unknown_honesty": 1.0,
+                                              "irrelevant_fact_used": 0.5, "irrelevant_n": 2}
+    assert gate_calibrate.bank_info([]) == {"about_me_recall_personal": None, "unknown_honesty": None,
+                                            "irrelevant_fact_used": None, "irrelevant_n": 0}
+    failed = rows[0] | {"error": "timed out", "reply": ""}  # a failed turn is never answered
+    assert gate_calibrate.bank_info([failed, rows[1]])["about_me_recall_personal"] == 0.0
+
+    verdicts, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
+    rec = gate_calibrate.calibrate(verdicts, passes, draws=1)
+    every = [r for v in verdicts for side in ("base", "candidate") for r in v["transcripts"][side]]
+    assert rec["info"] == gate_calibrate.bank_info(every)
+    shown = gate_calibrate.summary(rec)
+    line = next(x for x in shown if x.startswith("info: "))
+    assert line.startswith("info: base about-me recall on personal probes ") and "unknown honesty" in line
+    assert "irrelevant facts" in line
+    assert rec["passed"] == gate_calibrate.calibrate(verdicts, passes, draws=1)["passed"]  # never a criterion
+    assert not any("info" in r for r in rec["reasons"])
 
 
 def test_the_record_satisfies_the_gate(constant_record, tmp_path, monkeypatch):
