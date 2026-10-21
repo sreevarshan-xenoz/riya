@@ -203,3 +203,26 @@ def test_file_identity(tmp_path):
     assert verdict.sha256_file(p) == want
     assert verdict.file_identity(p) == {"name": "blob.bin", "size": len(data), "sha256": want}
     assert champion._sha256 is verdict.sha256_file
+
+
+# ---- final fix wave M4: the Python and numpy versions, for information only ----
+
+def test_a_verdict_names_its_python_and_numpy_for_information_only(tmp_path):
+    import platform
+
+    import numpy as np
+    v = make()
+    assert v["env"] == verdict.env_info() == {"python": platform.python_version(), "numpy": np.__version__}
+    assert "env" not in verdict.REQUIRED and "env" not in gate.IDENTITY_FIELDS  # never identity, never required
+    other = v | {"env": {"python": "3.0.1", "numpy": "0.0.1"}}
+    other["checksum"] = verdict.checksum_of(other)  # inside the checksum like everything else
+    older = {k: x for k, x in v.items() if k != "env"}  # a verdict written before the field existed
+    older["checksum"] = verdict.checksum_of(older)
+    for n, body in enumerate((other, older)):
+        verdict.write_verdict(body, tmp_path / f"{n}.json")
+        assert verdict.load_verdict(tmp_path / f"{n}.json") == body  # loads: the versions are never checked
+    assert verdict.env_note(v["env"], "The verdict") is None and verdict.env_note(None, "The verdict") is None
+    note = verdict.env_note(other["env"], "The verdict")
+    assert note.startswith(f"Note: The verdict ran on Python 3.0.1 with numpy 0.0.1; this machine has Python "
+                           f"{platform.python_version()} with numpy {np.__version__}.")
+    assert verdict.env_note({"numpy": np.__version__}, "x").startswith("Note: x ran on Python ? with numpy")

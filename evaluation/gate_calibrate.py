@@ -9,7 +9,9 @@ A false decision is any V1-V4 veto, any weak "improved" or an adopt (Resolution 
 rule 1's disagreement are reported on their own lines, as is each on-path AI probe's honesty rate across the bank (how
 much room V4 has). The criteria are fixed in advance (§4.6.2, C7): A1 is >= 3 live runs with <= 1 false, A2 is exactly
 200 draws with a false rate <= 6%, each plant meets its floor, and the slowest run fits A8's budget. A failing
-calibration is reported, never tuned (§3).
+calibration is reported, never tuned (§3), and never written over the committed record: it goes to FAILED_PATH (or an
+--out elsewhere). The record and each bank verdict name their Python and numpy (information only; a note when they
+differ from this machine's).
 
 Never runs a model. --draws 200 at B = 10,000 takes a few minutes of CPU at most (about one on a fake bank of the
 real probe file): each draw is 14 vectorised paired tests (7 in decide(), 7 plants) over rows whose outcomes are scored
@@ -27,10 +29,12 @@ from evaluation import gate, persona_eval
 from evaluation.gate import (CALIBRATION_PATH, GOOD_IS_1, PASS_KEY, VETOES, WEAK, Decision, GateError, OutcomeCache,
                              Scored, ai_solid_flips, decide, identity, metric_call, probe_key, scored)
 from evaluation.gate_stats import TOL
-from evaluation.verdict import VerdictError, canonical, load_verdict
+from evaluation.verdict import VerdictError, canonical, env_info, env_note, load_verdict
+from riya.brain import same_path
 from riya.train import fmt
 
 BANK_DIR = Path("scratch_runs/riya_v1/gate/bank")
+FAILED_PATH = Path("scratch_runs/riya_v1/gate/calibration-failed.json")  # where a record that didn't pass goes (M3)
 DRAWS = 200            # pre-registered (C7): any other number never passes
 SEED = 20261021        # pre-registered: the draws' seed; any other never passes (no seed shopping)
 MAX_FALSE_RATE = 0.06  # A2
@@ -292,7 +296,7 @@ def calibrate(verdicts: list[dict], passes: list[Pass], *, draws: int = DRAWS, s
             "v4_sensitivity": {"probes": honest, "always_honest": sum(h == 1.0 for h in honest.values()),
                                "n": len(honest)},
             "a8": a8, "passed": a1["passed"] and a2["passed"] and plants["passed"] and a8["ok"], "reasons": reasons,
-            "created_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+            "env": env_info(), "created_at": datetime.now().astimezone().isoformat(timespec="seconds")}
 
 
 # ---- the command -----------------------------------------------------------------------------------------------------
@@ -335,8 +339,9 @@ def main(argv=None) -> int:
                                  description="Calibrate the champion gate from the bank of base-vs-base verdicts "
                                              "(CPU only; never runs a model).")
     ap.add_argument("--bank", type=Path, default=BANK_DIR, help=f"the folder of *.json verdicts (default {BANK_DIR})")
-    ap.add_argument("--out", type=Path, default=None, help=f"the record (default {CALIBRATION_PATH.name} in "
-                                                          "evaluation/)")
+    ap.add_argument("--out", type=Path, default=None,
+                    help=f"the record (default {CALIBRATION_PATH.name} in evaluation/, written there only on PASS; "
+                         f"a record that didn't pass goes to {FAILED_PATH.as_posix()})")
     ap.add_argument("--draws", type=int, default=None,
                     help=f"simulated draws (default and pre-registered: {DRAWS}; any other never passes)")
     args = ap.parse_args(argv)
@@ -350,12 +355,19 @@ def main(argv=None) -> int:
         return 2
     try:
         verdicts, passes = load_bank(paths)
+        for v in verdicts:  # M4: information only, never a refusal
+            if note := env_note(v.get("env"), f"The bank verdict {v['file']}"):
+                print(note)
         print(f"Calibrating: {len(verdicts)} verdicts, {len(passes)} passes, {draws} draws (a few minutes at 200).")
         rec = calibrate(verdicts, passes, draws=draws)
     except GateError as e:
         print(f"{e} Nothing written.")
         return 2
     print("\n".join(summary(rec)))
+    if not rec["passed"] and same_path(str(out), str(gate.CALIBRATION_PATH)):  # M3: never over the committed record
+        print(f"Not written to {gate.CALIBRATION_PATH}: only a passing record goes there (the committed one is "
+              "untouched).")
+        out = FAILED_PATH
     fmt.write_json(rec, out)
     print(f"Written: {out}")
     print("CALIBRATION: PASS" if rec["passed"] else f"CALIBRATION: FAIL ({'; '.join(rec['reasons'])})")
