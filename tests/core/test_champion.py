@@ -23,7 +23,7 @@ from tests.real_paths import tmp_only
 
 def test_constants():
     assert (champion.REPEAT, champion.PORT, champion.MIN_FREE_VRAM_MB) == (gate.REPEAT, 8091, 2500)
-    assert champion.REPEAT == 3
+    assert champion.REPEAT == 4  # pinned: the pre-registered repeat after the v0.10.0 calibration failed
     assert issubclass(ChampionError, RuntimeError)
     # the decision lives in evaluation/gate.py now; the champion only runs it
     assert champion.decide is gate.decide and champion.scored is gate.scored and champion.Scored is gate.Scored
@@ -42,7 +42,9 @@ def row(kind: str, n: int, i: int, reply: str = "Hmph, fine~", text: str = "hey"
             "facts": list(facts), "error": error, "pass": n}
 
 
-def transcript(unknown_per_pass=(3, 3, 2), generic_in_pass1=False) -> list[dict]:
+def transcript(unknown_per_pass=None, generic_in_pass1=False) -> list[dict]:
+    """A run_probes-shaped transcript with gate.REPEAT passes (a verdict holds exactly its repeat's passes)."""
+    unknown_per_pass = unknown_per_pass or (3, 3, 2, *[3] * (gate.REPEAT - 3))[:gate.REPEAT]
     rows = []
     for n, unknown in enumerate(unknown_per_pass, start=1):
         rows.append(row("small", n, 1, "How can I help you today?" if generic_in_pass1 and n == 1 else "Hmph~"))
@@ -63,7 +65,7 @@ def scored_of(t: list[dict]) -> gate.Scored:
 
 
 def test_scored_keeps_the_transcript_and_counts_failed_turns():
-    t = transcript(generic_in_pass1=True)
+    t = transcript((3, 3, 2), generic_in_pass1=True)  # the scorer's own arithmetic: three passes, whatever REPEAT is
     s = scored_of(t)
     assert (s.failed, s.k) == (3, 3) and s.transcript == tuple(t)
     assert s.pooled == score([r for r in t if not r["error"]], [])  # pooled over the answered rows
@@ -71,7 +73,7 @@ def test_scored_keeps_the_transcript_and_counts_failed_turns():
 
 
 def test_rows_and_probes_are_printed():
-    s = scored_of(transcript())
+    s = scored_of(transcript((3, 3, 2)))
     text = champion.format_decision(s, s, champion.decide(s, s))
     assert re.search(r"^unknown_honesty .*\(8 rows, 3 probes\)$", text, re.M)
     assert re.search(r"^ai_honesty .*\(3 rows, 1 probes\)$", text, re.M)
@@ -299,7 +301,7 @@ def test_adopt_writes_the_record_and_the_setting(adapter, tmp_db, capsys, monkey
     assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)]) == 0
     assert brain.read_local_adapter(tmp_db) == str(adapter)
     rec = brain.read_record(adapter)
-    assert rec["targets_candidate"] == 10 and rec["targets_base"] == 8 and rec["repeat"] == 3
+    assert rec["targets_candidate"] == 10 and rec["targets_base"] == 8 and rec["repeat"] == gate.REPEAT
     assert rec["weak"] == {"generic_share": "improved", "invented": "kept", "unknown_honesty": "kept",
                            "about_me_recall": "improved"}
     assert re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", rec["decided_at"])
@@ -607,7 +609,7 @@ def test_a_template_mismatch_refuses(adapter, tmp_db, capsys, dry):
 # ---- final fix wave: carried T6 M2-M4 ----
 
 def test_failed_turns_are_counted_from_the_transcript(candidate, capsys):
-    t = transcript()
+    t = transcript((3, 3, 2))  # three passes, three timed-out turns: the counts below are for this fixture
     assert scored_of(t).failed == 3  # one timed-out turn per pass
     rig = Rig(transcripts=[t, t + [row("small", 1, 99, "", error="timed out")]])
     assert go(rig, ["--dry-run"]) == 0
@@ -662,10 +664,11 @@ def test_a_candidate_run_needs_a_matching_calibration(adapter, tmp_db, capsys, m
     assert rig.made == []
     assert "The gate calibration is for base model 000000000000, this run uses" in capsys.readouterr().out
 
-    write_calibration(gate.CALIBRATION_PATH, repeat=4)
+    write_calibration(gate.CALIBRATION_PATH, repeat=gate.REPEAT + 1)
     rig = Rig()
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--db", str(tmp_db)]) == 2
-    assert rig.made == [] and "is for repeat 4, this code has 3. Nothing changed." in capsys.readouterr().out
+    assert rig.made == [] and (f"is for repeat {gate.REPEAT + 1}, this code has {gate.REPEAT}. Nothing changed."
+                               in capsys.readouterr().out)
 
     write_calibration(gate.CALIBRATION_PATH)  # the base is hashed once, then the record is checked, then servers
     order, real_ident, real_problem = [], champion.file_identity, gate.calibration_problem
@@ -691,12 +694,12 @@ def test_an_unreadable_base_model_is_refused(adapter, tmp_db, capsys, tmp_path):
 
 
 def test_the_calibration_is_checked_at_the_run_s_own_repeat(adapter, tmp_db, capsys):
-    """M3: a --repeat 2 run under the default repeat-3 record is refused: it would decide on 2 passes under a 3-pass
+    """M3: a --repeat 2 run under the default-repeat record is refused: it would decide on 2 passes under a full-repeat
     calibration."""
     rig = Rig()
     assert go(rig, ["--lora", str(adapter), "--dry-run", "--repeat", "2", "--db", str(tmp_db)]) == 2
     assert rig.made == []
-    assert "The gate calibration is for repeat 3, this code has 2. Nothing changed." in capsys.readouterr().out
+    assert f"The gate calibration is for repeat {gate.REPEAT}, this code has 2. Nothing changed." in capsys.readouterr().out
 
 
 # ---- v0.10: --verdict-out (Colab's checked verdict), and the adapter's sha256 held across the run ----
@@ -730,7 +733,7 @@ def test_verdict_out_writes_a_checked_verdict_and_nothing_else(adapter, tmp_db, 
     assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
     for side in ("base", "candidate"):
         assert v["transcripts"][side] and all("pass" in r for r in v["transcripts"][side])
-    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": 3, "candidate": 3}
+    assert v["transcripts"]["base"] == transcript() and v["failed_turns"] == {"base": gate.REPEAT, "candidate": gate.REPEAT}
     assert v["decision"]["adopt"] is False and len(v["decision"]["weak"]) == 4
     assert v["timings"] == {"base_s": 60.0, "candidate_s": 90.0, "total_s": 151.5}  # from the fake clock
     assert nothing_written(adapter, tmp_db)
@@ -857,7 +860,7 @@ def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, c
         combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
                    ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run"),
                    ([mode, str(v), "--port", "8097"], "--port"),  # I1: the CPU check is fixed at 8091
-                   ([mode, str(v), "--repeat", "4"], "--repeat")]  # M6: a verdict's repeat is the verdict's own
+                   ([mode, str(v), "--repeat", str(gate.REPEAT + 1)], "--repeat")]  # M6: a verdict's repeat is the verdict's own
     for args, named in combos:
         rig = Rig()
         with pytest.raises(SystemExit) as e:

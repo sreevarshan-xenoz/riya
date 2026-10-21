@@ -11,11 +11,11 @@ from tests.gate_helpers import plan_transcript
 
 
 def make(**over) -> dict:
-    t = plan_transcript({"generic": [[1, 1, 1]], "unknown": [[1, 0, 1]]})
+    t = plan_transcript({"generic": [[1] * gate.REPEAT], "unknown": [[1, 0] + [1] * (gate.REPEAT - 2)]})
     kw = dict(mode="candidate", identity=gate.identity(),
               adapter={"name": "a.gguf", "size": 3, "sha256": "a" * 64},
               base_gguf={"name": "b.gguf", "size": 4, "sha256": "b" * 64}, llama_server="b1234", template_check="ok",
-              base_transcript=t, cand_transcript=t[:3],
+              base_transcript=t, cand_transcript=t,
               decision={"adopt": False, "weak": ({"key": "invented"},), "reasons": ["Δ ≈ 0 — ok"]},
               timings={"base_s": 1.0, "candidate_s": 2.0, "total_s": 3.5}, failed={"base": 0, "candidate": 1})
     return verdict.make_verdict(**(kw | over))
@@ -36,7 +36,7 @@ def test_checksum_round_trip(tmp_path):
     assert {k: v[k] for k in gate.IDENTITY_FIELDS} == ident
     assert (v["alpha"], v["B"], v["seed"]) == (gate.ALPHA, gate.B, gate.GATE_SEED)
     assert v["failed_turns"] == {"base": 0, "candidate": 1} and v["kind"] == verdict.KIND
-    assert set(v["transcripts"]) == {"base", "candidate"} and len(v["transcripts"]["candidate"]) == 3
+    assert set(v["transcripts"]) == {"base", "candidate"} and len(v["transcripts"]["candidate"]) == 2 * gate.REPEAT
     assert all("pass" in r for r in v["transcripts"]["base"])
     path = tmp_path / "out" / "verdict.json"  # the parent folder is made
     verdict.write_verdict(v, path)
@@ -98,7 +98,7 @@ MALFORMED = {
                                                          "adapter has no sha256"),
     "a base without a sha256, re-checksummed": (lambda v: signed(base_gguf={"name": "b"}), "base_gguf has no sha256"),
     "an edited reply": (_edited_reply, "checksum"),
-    "an edited field": (lambda v: json.dumps(v | {"repeat": 4}), "checksum"),
+    "an edited field": (lambda v: json.dumps(v | {"repeat": gate.REPEAT + 1}), "checksum"),
     "a checksum that isn't text": (lambda v: json.dumps(v | {"checksum": 7}), "checksum"),
     "not utf-8": (lambda v: None, "valid JSON"),
 }

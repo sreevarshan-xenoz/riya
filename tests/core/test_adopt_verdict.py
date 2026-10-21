@@ -29,7 +29,7 @@ def phrases() -> list[str]:
 
 
 def pair_transcripts() -> tuple[list[dict], list[dict]]:
-    base, cand = gate_helpers.adopt_pair()
+    base, cand = gate_helpers.adopt_pair(gate.REPEAT)
     return list(base.transcript), list(cand.transcript)
 
 
@@ -239,8 +239,9 @@ REFUSALS = {
     "base sha": (other_model, {}, "The base model isn't the one the verdict measured."),
     "probe_sha256": (lambda w: resave(w, probe_sha256="f" * 64), {}, "The verdict is for probe_sha256 ffffffffffff"),
     "gate_version": (lambda w: resave(w, gate_version="0.9.0"), {}, "The verdict is for gate_version 0.9.0, this "
-                                                                     "code has 0.10.0."),
-    "repeat": (lambda w: resave(w, repeat=4), {}, "The verdict is for repeat 4, this code has 3."),
+                                                                     f"code has {gate.GATE_VERSION}."),
+    "repeat": (lambda w: resave(w, repeat=gate.REPEAT + 1), {},
+               f"The verdict is for repeat {gate.REPEAT + 1}, this code has {gate.REPEAT}."),
     "prompt_fp": (lambda w: resave(w, prompt_fp="x" * 64), {}, "The verdict is for prompt_fp xxxxxxxxxxxx"),
     "scorer_sha256": (lambda w: resave(w, scorer_sha256="0" * 64), {}, "The verdict is for scorer_sha256 "
                                                                        "000000000000"),
@@ -277,6 +278,40 @@ def test_adopt_refusals_change_nothing_on_disk(world, tmp_path, capsys, case):
     assert brain.read_record(adopted) is not None and candidate.exists()
     assert brain.read_local_adapter(world["db"]) == str(adopted)
     assert cpu.running is None and cpu.events.count(("stop",)) == len(cpu.made)
+
+
+def with_passes(rows: list[dict], keep: int) -> list[dict]:
+    """The rows' passes 1..keep: fewer than REPEAT drops the last ones; more adds copies of the last pass."""
+    last = [r for r in rows if r["pass"] == gate.REPEAT]
+    out = [r for r in rows if r["pass"] <= keep]
+    for n in range(gate.REPEAT + 1, keep + 1):
+        out += [r | {"pass": n, "probe_id": gate.probe_key(r["probe_id"]) + f"#{n}"} for r in last]
+    return out
+
+
+@pytest.mark.parametrize("sides, held, said", [
+    (("base",), gate.REPEAT - 1, "base transcript has {held} passes"),
+    (("candidate",), gate.REPEAT - 1, "candidate transcript has {held} passes"),
+    (("base", "candidate"), gate.REPEAT - 1, "base transcript has {held} passes"),  # both short, so they still agree
+    (("base",), gate.REPEAT + 1, "base transcript has {held} passes"),
+    (("candidate",), gate.REPEAT + 1, "candidate transcript has {held} passes"),
+    (("base", "candidate"), gate.REPEAT + 1, "base transcript has {held} passes"),
+])
+@pytest.mark.parametrize("mode", ["--check-verdict", "--adopt-verdict"])
+def test_a_verdict_must_hold_exactly_its_repeat_in_passes(world, tmp_path, capsys, mode, sides, held, said):
+    """I3: a checksum-valid verdict labelled repeat R but holding another number of passes would be re-decided at that
+    other k under a calibration for R. Both modes refuse it, with nothing written and no server started."""
+    base_t, cand_t = world["transcripts"]
+    changed = {"base": with_passes(base_t, held) if "base" in sides else base_t,
+               "candidate": with_passes(cand_t, held) if "candidate" in sides else cand_t}
+    v = verdict_for(base_t, cand_t, world["candidate"], world["model"], transcripts=changed)
+    assert v["repeat"] == gate.REPEAT  # the label is right; the transcripts are not
+    save(v, world["verdict"])
+    before, cpu = tree(tmp_path), Cpu()
+    assert go(cpu, argv(world, mode)) == 2
+    out = capsys.readouterr().out
+    assert said.format(held=held) in out and f"not the {gate.REPEAT} it claims." in out and "Traceback" not in out
+    assert cpu.made == [] and tree(tmp_path) == before
 
 
 def test_a_verdict_whose_decision_disagrees_is_refused_both_ways(world, capsys):
