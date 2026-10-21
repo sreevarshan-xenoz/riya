@@ -497,9 +497,23 @@ class Memory:
     def _score(sim: float, age_s: float, quality: float) -> float:
         return 0.6 * sim + 0.25 * math.exp(-max(age_s, 0.0) / DAY / 30) + 0.15 * quality
 
+    def _fill(self, kept: list[Fact], candidates: list[Fact], rows: dict, room: int) -> list[Fact]:
+        """Up to room candidates, in order, skipping one on the key of a fact already chosen or a near-duplicate of
+        one (add_fact's dedup rule), so no slot goes to a second version of something already there."""
+        chosen, added = list(kept), []
+        for f in candidates:
+            if len(added) >= room:
+                break
+            v = _vec(rows[f.id]["embedding"])
+            if any((f.key is not None and c.key == f.key) or self._duplicate(v, f.text, rows[c.id]) for c in chosen):
+                continue
+            chosen.append(f)
+            added.append(f)
+        return added
+
     @_locked
     def retrieve(self, query: str, k_facts: int = 5, k_episodes: int = 2, k_threads: int = 2,
-                 personal: bool = True) -> Retrieved:
+                 personal: bool = False) -> Retrieved:
         """Facts and episodes that pass the hybrid gate, ranked; plus the latest episode, and the one before it while
         it's under a week old, so "what did we talk about last time?" has an answer. An about-me question gets the
         facts that pass the gate first, then is filled to 8 with her best facts by trust and recency. Due threads
@@ -507,15 +521,16 @@ class Memory:
 
         A personal request ("pick a snack for me, you know what i like") gets the eligible facts first, then up to
         PERSONAL_EXTRA more live facts whose cosine is at least the embedder's personal_sim, ranked by score, never
-        more than k_facts in all; `filled` names them. It ignores min_sim, and an embedder without personal_sim
-        (HashEmbedder) gets no fill. personal=False turns it off: the engine does that on the online route, so an
-        online-routed request ("plan my week for me" goes online on "plan") gets no fill, a known limit (v0.11
-        §4.7.9). Every other query retrieves exactly what it did before."""
+        more than k_facts in all; `filled` names them. A fill slot is never spent on a fact sharing a key with one
+        already chosen, or a near-duplicate of one (add_fact's rule). It ignores min_sim, and an embedder without
+        personal_sim (HashEmbedder) gets no fill. The fill is opt-in: only the engine's local reply passes
+        personal=True, so an online-routed request ("plan my week for me" goes online on "plan") gets no fill, a
+        known limit (v0.11 §4.7.9). Every other query, and every other caller, retrieves exactly what it did before."""
         vec, now, qtokens = self._embed(query), self.clock.now(), content_tokens(query)
         mine = about_me(query)
         floor = getattr(self.embedder, "personal_sim", None)
         fill = personal and not mine and floor is not None and personal_request(query)
-        facts, rest, extra, episodes = [], [], [], []
+        facts, rest, extra, episodes, rows = [], [], [], [], {}
         for r in self.db.execute(f"select {_FACT_COLS}, embedding from facts where status in {LIVE}"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["text"]):
@@ -524,6 +539,8 @@ class Memory:
                 rest.append((self._score(0.0, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
             elif fill and sim >= floor:
                 extra.append((self._score(sim, now - r["valid_from"], QUALITY[r["source"]]), _fact(r)))
+            if fill:
+                rows[r["id"]] = r  # the fill's duplicate check reads the vectors of what it may sit beside
         for r in self.db.execute(f"select {_EPISODE_COLS}, embedding from episodes"):
             sim = self._max_sim(vec, [r])
             if self.eligible(sim, qtokens, r["summary"]):
@@ -538,7 +555,7 @@ class Memory:
         chosen = sorted(unique[:MAX_EPISODES], key=lambda e: (e.ended_at, e.id), reverse=True)
         kept = [f for _, f in facts[:ABOUT_ME_FACTS if mine else k_facts]]
         extra.sort(key=lambda p: p[0], reverse=True)  # empty unless a personal request
-        added = [f for _, f in extra[:min(PERSONAL_EXTRA, k_facts - len(kept))]]
+        added = self._fill(kept, [f for _, f in extra], rows, max(0, min(PERSONAL_EXTRA, k_facts - len(kept))))
         return Retrieved(kept + added, chosen, self._relevant_threads(vec, qtokens, k_threads),
                          tuple(f.id for f in added))
 
