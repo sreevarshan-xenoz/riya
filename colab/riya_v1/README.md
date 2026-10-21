@@ -60,7 +60,11 @@ Then the training libraries (llama.cpp's LoRA converter needs `gguf`; nothing is
 
 ```python
 !pip install -q peft gguf sentencepiece huggingface_hub "transformers>=4.54"
+!pip uninstall -y torchao
 ```
+
+Colab ships `torchao`, and `peft` imports it and fails on its version. Nothing here uses it, so remove it (the uninstall
+is harmless when it is already gone).
 
 ## 3. Colab: run the teacher
 
@@ -120,25 +124,155 @@ About 2 epochs at lr 2e-4, fp16 on a T4. It prints `TRAIN_DONE` and writes `riya
 > be applied to. It may still work, but nothing guarantees it; **the champion gate is the only judge**, so don't adopt by
 > hand. To train on the right weights, set the repo yourself and rerun: `%env BASE_ID=huihui-ai/Huihui-LFM2.5-1.2B-Instruct-abliterated`.
 
-## 7. Local: hand the adapter to the gate
 
-Copy `riya_v1/riya-v1-lora.gguf` from `G:/My Drive/` into the models folder as the **candidate**, next to the served
-GGUF. Never copy it over `riya-v1-lora.gguf` there: that is the adopted adapter, and only the gate replaces it.
+
+## 7. Colab: the gate's verdict
+
+The gate runs on a Colab T4, not on your GPU: a fair run is 636 turns. Colab writes a checksummed **verdict** (both
+transcripts, the adapter's and the base's sha256, the timings) and adopts nothing. Section 9 re-decides the verdict on
+your laptop and adopts from it. A candidate run refuses, before any server starts, without a passing
+`evaluation/gate_calibration.json` taken by this exact code on this base model: if it says there is none or that it is
+stale, do section 8 first.
+
+**Ship the code.** The gate's identity includes a hash of the probes and the scorers, so Colab must run exactly the code
+you committed (not `jarvis/code`, which is the trainer's). Commit first, then, locally:
+
+```powershell
+git archive --format=zip -o scratch_runs/riya_code.zip HEAD
+```
+
+Upload `scratch_runs/riya_code.zip` as `/content/riya_code.zip` (Colab's Files panel), then unzip it fresh:
+
+```bash
+%%bash
+rm -rf /content/code && python -c "import zipfile; zipfile.ZipFile('/content/riya_code.zip').extractall('/content/code')"
+```
+
+The base GGUF is the one section 2 downloaded. Check the inputs. The base's sha256 must start `11731cb4` (it ends
+`530a`; it is byte-identical to the one she serves on your laptop):
+
+```bash
+%%bash
+ls -l /content/bin/llama-server
+sha256sum /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf
+mkdir -p /content/riya_v1 /content/drive/MyDrive/riya_v1/gate
+cp /content/drive/MyDrive/riya_v1/riya-v1-lora.gguf /content/riya_v1/riya-v1-candidate-lora.gguf
+```
+
+Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
+It takes about 20 minutes and prints the table and `Verdict written: ... (total N s)`:
+
+```bash
+%%bash
+cd /content/code && SHA8=$(sha256sum /content/riya_v1/riya-v1-candidate-lora.gguf | cut -c1-8) && \
+LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
+  --lora /content/riya_v1/riya-v1-candidate-lora.gguf --db /content/riya_v1/champ.db \
+  --url ws://127.0.0.1:9 --port 8097 --verdict-out /content/drive/MyDrive/riya_v1/verdict-$SHA8.json
+```
+
+The verdict lands in `G:/My Drive/riya_v1/verdict-<sha8>.json`. A different adapter file gets a different name.
+
+Colab has about 12.7 GB of RAM. llama-server's host-side prompt cache defaults to 8 GiB, which has OOM-killed it here
+before (`colab.gen_riya_v1` starts its own with `--cache-ram 0`). The gate's own launch doesn't pass `--cache-ram`, so
+the commands set the same thing through llama-server's environment variable `LLAMA_ARG_CACHE_RAM=0` (the server
+inherits the notebook's environment). The gate's server also keeps its default context of 16384 with a q8_0 KV cache
+and one slot, which is small next to the model. If a run dies with the server killed and no error, suspect the RAM:
+watch Colab's RAM meter during `bank-1` (section 8).
+
+## 8. Colab: calibrating the gate (after any probe, prompt, scorer, repeat or base-model change)
+
+The calibration measures the gate on Colab's own model, with nothing to adopt: three live base-vs-base runs (the bank).
+Each one scores the base against itself, so every "improvement" or veto the gate finds is a false decision. The
+criteria were fixed before any run (at most one of the three may be false; 200 simulated draws from the bank at a false
+rate of at most 6%; the planted regressions caught; each run inside 900 s). A failing calibration is reported, never
+tuned.
+
+**First, check that Colab runs your code.** Print the gate's identity on Colab and on the laptop and compare the four
+code fields (`gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`). If any differs, the zip is stale or its line
+endings changed: stop and ship the code again (section 7). A mismatch would only show after about 36 minutes of Colab.
+
+```bash
+%%bash
+cd /content/code && PYTHONPATH=/content/code python -c "from evaluation import gate; import json; print(json.dumps(gate.identity(), indent=1))"
+```
+
+```powershell
+.venv\Scripts\python -c "from evaluation import gate; import json; print(json.dumps(gate.identity(), indent=1))"
+```
+
+**Then the bank.** `bank-1` goes alone first, so you can read its total against the 900 s budget (and its RAM) before
+spending the other two:
+
+```bash
+%%bash
+cd /content/code && for n in 1; do LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+  python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
+  --db /content/riya_v1/champ.db --url ws://127.0.0.1:9 --port 8097 --base-vs-base \
+  --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
+```
+
+If `Verdict written: ... (total N s)` says more than 900 s, stop: the gate is too slow as built, and the other two runs
+aren't spent. Otherwise run the same command for the other two:
+
+```bash
+%%bash
+cd /content/code && for n in 2 3; do LLAMA_SERVER=/content/bin/llama-server PYTHONPATH=/content/code PYTHONIOENCODING=utf-8 LLAMA_ARG_CACHE_RAM=0 \
+  python -m evaluation.champion --model /content/models/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf \
+  --db /content/riya_v1/champ.db --url ws://127.0.0.1:9 --port 8097 --base-vs-base \
+  --verdict-out /content/drive/MyDrive/riya_v1/gate/bank-$n.json; done
+```
+
+`--base-vs-base` needs no calibration record (it is what makes one). Back on your PC, calibrate from the three files on
+the CPU (a few minutes, no model):
+
+```powershell
+New-Item -ItemType Directory -Force scratch_runs/riya_v1/gate/bank | Out-Null
+Copy-Item "G:/My Drive/riya_v1/gate/bank-*.json" scratch_runs/riya_v1/gate/bank/
+.venv\Scripts\python -m evaluation.gate_calibrate --bank scratch_runs/riya_v1/gate/bank
+```
+
+It prints each criterion and ends with `CALIBRATION: PASS` or `CALIBRATION: FAIL (reasons)`. Its seed and its 200 draws
+are pre-registered in the code; any other number never passes. It writes `evaluation/gate_calibration.json` either way,
+and the gate refuses a record that did not pass. On PASS, **commit that file** and ship the code again (section 7): the
+record is part of the code the gate checks. After a scorer-only change the same bank is re-scored on the CPU with this
+same command; a change to the probes, the prompt, the repeat count or the base model needs three new live runs.
+
+## 9. Local: adopt from the verdict
+
+Copy the adapter to the **candidate** path next to the served GGUF, and the verdict into the gate folder. Never copy the
+adapter over `riya-v1-lora.gguf` there: that is the adopted adapter, and only the gate replaces it.
 
 ```powershell
 Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "C:/Users/sreev/models/riya/riya-v1-candidate-lora.gguf"
-.venv\Scripts\python -m riya.train.fmt --check-template --server http://127.0.0.1:8090
-.venv\Scripts\python -m evaluation.champion
+New-Item -ItemType Directory -Force scratch_runs/riya_v1/gate | Out-Null
+Copy-Item "G:/My Drive/riya_v1/verdict-<sha8>.json" scratch_runs/riya_v1/gate/
 ```
 
-The template check (with Riya running) asks your own llama-server to render a test conversation and compares it with
-the template the trainer used. It must print **`TEMPLATE_OK`**; on `TEMPLATE_MISMATCH` your build renders her prompts
-differently, so don't run the gate. The gate repeats this check on its own server before it evaluates, and refuses on
-a mismatch.
+First read the verdict. This re-scores the transcripts here and decides again, prints the table, and writes nothing and
+starts nothing:
 
-The gate runs the persona eval three times for the base and for base + candidate on its own llama-server, then adopts
-the candidate only if it clearly wins and regresses nothing. On adopt it moves the candidate into place as
-`riya-v1-lora.gguf` in one step, writes its champion record and switches Riya to it. On reject it changes nothing: the
-adopted adapter (if any) and its record stay as they were. Riya's own server serves an adapter only while it has a
-matching champion record, so a file that skipped the gate is never served (Health says so). Close games and fullscreen
-windows first (it refuses below 2500 MB of free VRAM). Add `--dry-run` to see the decision without writing it.
+```powershell
+.venv\Scripts\python -m evaluation.champion --check-verdict scratch_runs/riya_v1/gate/verdict-<sha8>.json
+```
+
+It refuses a verdict from other code than yours (the same identity as section 8), without a passing calibration, for
+another adapter or base model than the files here (sha256), or one whose own decision disagrees with what your code
+decides. Then adopt, if the table says adopt:
+
+```powershell
+.venv\Scripts\python -m evaluation.champion --adopt-verdict scratch_runs/riya_v1/gate/verdict-<sha8>.json
+```
+
+The adopt first runs a check on the CPU only: **her own llama-server starts with `-ngl 0`** and an empty
+`CUDA_VISIBLE_DEVICES` (Colab's build isn't hers), renders her template, lists the adapter and makes one 4-token
+generation, and is always stopped. Nothing touches the GPU, and it refuses while a fullscreen window is up. Then it
+installs the candidate as `riya-v1-lora.gguf` in one atomic step, writes the champion record (`decided_on: "colab"`)
+and switches Riya to it. It prints how long it took (about 2 minutes at most). Riya's own server still serves an adapter
+only while it has a matching record.
+
+Then read a few of the candidate's replies in the verdict, for feel: the gate measures honesty and style, not whether
+she still sounds like Riya.
+
+The old gate on your own GPU (a plain `evaluation.champion` with no verdict flag) still works with the same rules, but
+it is not the path: it is 636 turns on your graphics card.
