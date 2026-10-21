@@ -853,7 +853,8 @@ def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, c
     combos = [(["--adopt-verdict", str(v), "--check-verdict", str(v)], "--check-verdict")]
     for mode in ("--adopt-verdict", "--check-verdict"):
         combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
-                   ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run")]
+                   ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run"),
+                   ([mode, str(v), "--port", "8097"], "--port")]  # I1: the CPU check is fixed at 8091
     for args, named in combos:
         rig = Rig()
         with pytest.raises(SystemExit) as e:
@@ -861,3 +862,27 @@ def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, c
         assert e.value.code == 2 and named in capsys.readouterr().err, args
         assert rig.made == [] and made_cpu == [] and not out.exists()
         assert nothing_written(adapter, tmp_db)
+
+
+def test_the_port_is_refused_before_gaming_as_in_v0_8(adapter, tmp_db, capsys):
+    """Both refusals hold at once: _check_ready names the busy port first (v0.8's order), and starts nothing."""
+    rig = Rig()
+    assert go(rig, ["--lora", str(adapter), "--db", str(tmp_db)], fullscreen=lambda: True,
+              port_busy=lambda port: True) == 2
+    out = capsys.readouterr().out
+    assert rig.made == [] and "port 8091" in out and "gaming" not in out
+
+
+def test_port_still_reaches_the_gate_s_server_in_a_run_mode(adapter, tmp_db, capsys, monkeypatch):
+    seen = []
+    rig = Rig()
+    monkeypatch.setattr(champion, "PORT", 8097)  # the Rig's fakes check the URL against champion.PORT
+    real = rig.make_server
+
+    def make_server(model, *, port, **kw):
+        seen.append(port)
+        return real(model, port=port, **kw)
+
+    rig.make_server = make_server
+    assert go(rig, ["--lora", str(adapter), "--dry-run", "--port", "8097", "--db", str(tmp_db)]) == 0
+    assert seen == [8097, 8097]
