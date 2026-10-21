@@ -507,6 +507,20 @@ def test_check_verdict_refuses_another_embedder_id(world, tmp_path, capsys, mode
     assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
 
 
+@pytest.mark.parametrize("mode", ["--check-verdict", "--adopt-verdict"])
+def test_a_verdict_from_other_retrieval_code_is_refused_by_name(world, tmp_path, capsys, mode):
+    """Fix round 1, M3: the verdict's own retrieval_sha256 is checked too, not only through scorer_sha256 (which holds
+    memory.py and embed.py today); here only that field differs, so only that check can refuse it."""
+    resave(world, retrieval_sha256="0" * 64)
+    before, cpu, never = tree(tmp_path), Cpu(), Never()
+    assert go(cpu, argv(world, mode), never=never) == 2
+    out = capsys.readouterr().out
+    assert (f"The verdict's runs used retrieval code 000000000000, this code has {gate.retrieval_sha256()[:12]}. "
+            "Nothing changed.") in out and "Traceback" not in out
+    assert tree(tmp_path) == before and cpu.made == [] and never.calls == []
+    assert brain.read_local_adapter(world["db"]) == str(world["adopted"])
+
+
 # ---- after the install: the installed bytes must be the measured ones ------------------------------------------------
 
 def test_a_rehash_mismatch_after_install_writes_no_record(world, capsys, monkeypatch):

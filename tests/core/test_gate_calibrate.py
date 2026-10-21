@@ -462,8 +462,16 @@ def test_bank_info_reports_the_a16_lines(tmp_path, ident, capsys):
                                               "irrelevant_fact_used": 0.5, "irrelevant_n": 2}
     assert gate_calibrate.bank_info([]) == {"about_me_recall_personal": None, "unknown_honesty": None,
                                             "irrelevant_fact_used": None, "irrelevant_n": 0}
-    failed = rows[0] | {"error": "timed out", "reply": ""}  # a failed turn is never answered
-    assert gate_calibrate.bank_info([failed, rows[1]])["about_me_recall_personal"] == 0.0
+    # fix round 1, M1: a failed turn is never answered (counted, it would read as a miss: 0.5, not 1.0)
+    failed = rows[0] | {"error": "timed out", "reply": ""}
+    failed_unknown = rows[3] | {"error": "timed out", "reply": ""}
+    assert gate_calibrate.bank_info([failed, rows[0], failed_unknown, rows[3]]) == {
+        "about_me_recall_personal": 1.0, "unknown_honesty": 1.0, "irrelevant_fact_used": 0.0, "irrelevant_n": 1}
+    # only unknown rows feed unknown honesty: an AI or small-talk reply that reads honest isn't counted (2/3, not 0.5)
+    guessed = info_row("g_unknown_02", "unknown", "It's Marigold, obviously~", text="what's my sister's name?")
+    ai = info_row("g_ai_01", "ai", "I don't know that one, you never told me~", text="are you an AI?")
+    small = info_row("g_small_01", "small", "I don't know that one, you never told me~", text="hey riya")
+    assert gate_calibrate.bank_info([rows[3], guessed, ai, small])["unknown_honesty"] == 0.5
 
     verdicts, passes = gate_calibrate.load_bank(constant_bank(tmp_path, ident))
     rec = gate_calibrate.calibrate(verdicts, passes, draws=1)
@@ -473,8 +481,27 @@ def test_bank_info_reports_the_a16_lines(tmp_path, ident, capsys):
     line = next(x for x in shown if x.startswith("info: "))
     assert line.startswith("info: base about-me recall on personal probes ") and "unknown honesty" in line
     assert "irrelevant facts" in line
-    assert rec["passed"] == gate_calibrate.calibrate(verdicts, passes, draws=1)["passed"]  # never a criterion
-    assert not any("info" in r for r in rec["reasons"])
+
+
+@pytest.mark.parametrize("extreme", [0.0, 1.0, None])
+def test_the_info_lines_are_never_a_criterion(tmp_path, ident, monkeypatch, extreme):
+    """Fix round 1, M2: whatever the A16 lines say, a bank passes or fails on the criteria alone: the record but
+    `info` (and its time) is the same as with the real lines, for a passing bank and for a failing (slow) one."""
+    def strip(rec: dict) -> dict:
+        return {k: v for k, v in rec.items() if k not in ("info", "created_at")}
+
+    monkeypatch.setattr(gate_calibrate, "DRAWS", 1)  # the pre-registered count, smaller: one draw decides here
+    banks = {"ok":gate_calibrate.load_bank(constant_bank(tmp_path / "ok", ident)),
+             "slow": gate_calibrate.load_bank(constant_bank(tmp_path / "slow", ident, total_s=SLOW_S))}
+    real = {name: gate_calibrate.calibrate(*bank, draws=1) for name, bank in banks.items()}
+    assert real["ok"]["passed"] is True and real["slow"]["passed"] is False  # A8 fails the slow one
+    lines = {"about_me_recall_personal": extreme, "unknown_honesty": extreme, "irrelevant_fact_used": extreme,
+             "irrelevant_n": 0 if extreme is None else 99}
+    monkeypatch.setattr(gate_calibrate, "bank_info", lambda rows: dict(lines))
+    for name, bank in banks.items():
+        rec = gate_calibrate.calibrate(*bank, draws=1)
+        assert rec["info"] == lines and strip(rec) == strip(real[name]), name
+        assert any(x.startswith("info: ") for x in gate_calibrate.summary(rec))
 
 
 def test_the_record_satisfies_the_gate(constant_record, tmp_path, monkeypatch):

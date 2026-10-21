@@ -344,6 +344,9 @@ def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision,
     if v["embedder_id"] != ours["embedder"]:  # the runs' own embedder, not just the pin the code held (§4.7.5)
         raise ChampionError(f"The verdict's runs used embedder {str(v['embedder_id'])[:12]}, this code pins "
                             f"{ours['embedder'][:12]}.")
+    if v["retrieval_sha256"] != (here := gate.retrieval_sha256()):  # defence in depth: scorer_sha256 covers it today
+        raise ChampionError(f"The verdict's runs used retrieval code {str(v['retrieval_sha256'])[:12]}, this code has "
+                            f"{here[:12]}.")
     if v["repeat"] != gate.REPEAT:
         raise ChampionError(f"The verdict is for repeat {str(v['repeat'])[:12]}, "
                             f"this code has {str(gate.REPEAT)[:12]}.")
