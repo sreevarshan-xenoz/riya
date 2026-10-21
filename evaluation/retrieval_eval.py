@@ -103,8 +103,13 @@ def _ask(memory: Memory, q: str) -> tuple:
     return on, [f.id for f in on.facts] == [f.id for f in off.facts]
 
 
-def _share(n: int, of: int) -> float:
-    return n / of if of else 1.0
+def _share(n: int, of: int) -> float | None:
+    """n / of, or None when of is 0: an empty denominator is "n/a", never a flattering 100%."""
+    return n / of if of else None
+
+
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:.0%}"
 
 
 def personal_report(data: dict, embedder, *, pooled: bool = False) -> dict:
@@ -141,7 +146,8 @@ def personal_report(data: dict, embedder, *, pooled: bool = False) -> dict:
     return {"requests": n, "fired": fired, "fire_rate": _share(fired, n), "negatives_fired": negatives_fired,
             "personal_recall": _share(hits, n), "misses": misses,
             "dragged_mean": round(sum(dragged) / n, 4) if n else 0.0, "dragged_max": max(dragged, default=0),
-            "max_facts": max_facts, "max_filled": max_filled, "nonpersonal_identical": _share(identical, plain)}
+            "max_facts": max_facts, "max_filled": max_filled, "nonpersonal_identical": _share(identical, plain),
+            "nonpersonal_n": plain}
 
 
 def bank_report(probes: dict, embedder) -> dict:
@@ -178,20 +184,20 @@ def bank_report(probes: dict, embedder) -> dict:
                 honesty[pid] = [f.text for f in on.facts]
     return {"fired": fired, "personal_hits": hits, "personal_total": len(PERSONAL_PROBES), "dragged_total": dragged,
             "honesty_facts": honesty, "max_facts": max_facts, "max_filled": max_filled,
-            "nonpersonal_identical": _share(identical, plain)}
+            "nonpersonal_identical": _share(identical, plain), "nonpersonal_n": plain}
 
 
 def format_personal(dev: dict, dev_pooled: dict, bank: dict | None) -> str:
     """One line per number. A bank of None prints the dev lines only."""
-    lines = [f"detector fired on {dev['fired']}/{dev['requests']} requests ({dev['fire_rate']:.0%}); "
+    lines = [f"detector fired on {dev['fired']}/{dev['requests']} requests ({_pct(dev['fire_rate'])}); "
              f"on negatives: {dev['negatives_fired'] or 'none'}"]
     for label, r in (("own memory", dev), ("pooled", dev_pooled)):
-        n = round(r["personal_recall"] * r["requests"])
-        lines += [f"personal recall ({label}) {n}/{r['requests']} ({r['personal_recall']:.0%}); "
+        n = round((r["personal_recall"] or 0) * r["requests"])
+        lines += [f"personal recall ({label}) {n}/{r['requests']} ({_pct(r['personal_recall'])}); "
                   f"misses: {', '.join(r['misses']) or 'none'}",
                   f"dragged ({label}) mean {r['dragged_mean']:.2f}, max {r['dragged_max']}",
                   f"bounds ({label}) max facts {r['max_facts']}, max filled {r['max_filled']}",
-                  f"non-personal identical ({label}) {r['nonpersonal_identical']:.0%}"]
+                  f"non-personal identical ({label}) {_pct(r['nonpersonal_identical'])} of {r['nonpersonal_n']}"]
     if bank is not None:
         fired = ", ".join(f"{kind} {ids}" for kind, ids in bank["fired"].items() if ids) or "no probe"
         missed = [p for p in PERSONAL_PROBES if p not in bank["personal_hits"]]
@@ -201,7 +207,7 @@ def format_personal(dev: dict, dev_pooled: dict, bank: dict | None) -> str:
                   f"bank honesty probes holding a fact: {bank['honesty_facts'] or 'none'}",
                   f"bank detector fired on: {fired}",
                   f"bank bounds max facts {bank['max_facts']}, max filled {bank['max_filled']}",
-                  f"bank non-personal identical {bank['nonpersonal_identical']:.0%}"]
+                  f"bank non-personal identical {_pct(bank['nonpersonal_identical'])} of {bank['nonpersonal_n']}"]
     return "\n".join(lines)
 
 
@@ -242,6 +248,8 @@ def main(argv: list[str] | None = None) -> dict | int:
         ap.error("--dev-only needs --personal")
     if args.embedder is None:
         args.embedder = "recorded" if args.personal else "hash"
+    if args.personal_sim is not None and (not args.personal or args.embedder == "hash"):
+        ap.error("--personal-sim needs --personal and an embedder with a personal floor (not hash)")
     if args.personal:
         return _personal_main(args)
     data = json.loads(Path(args.data).read_text(encoding="utf-8"))
