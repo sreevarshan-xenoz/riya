@@ -25,6 +25,18 @@ llama-server's version and the timings. It combines with --base-vs-base to gathe
 record needed). It refuses while a fullscreen window is up or with under 2500 MB of free VRAM, before any server
 starts and again before the candidate, and when the adapter file changed during the run (its size and mtime, or its
 sha256). Exit 0 on a decision, 2 when it refused or failed.
+
+The laptop's side of a Colab verdict, on the CPU only (no VRAM check, nothing on the GPU):
+  --check-verdict PATH  reads it: the checksum, a candidate verdict, this code's identity and a passing calibration
+                        for its repeat and base model; the adapter (--lora) and the base model (--model) are the files
+                        it measured (sha256); the transcripts re-scored and decided again here, which must agree with
+                        the verdict's own decision. Prints the table; writes nothing, starts nothing.
+  --adopt-verdict PATH  the same checks; the decision must be adopt. Then her own llama-server build serves the base
+                        and the candidate on the CPU (-ngl 0, an empty CUDA_VISIBLE_DEVICES, a small context): the
+                        template check, the adapter listed in /lora-adapters and one 4-token generation, always
+                        stopped. Then the atomic install, the installed file hashed again, the record (decided_on
+                        "colab", the verdict's checksum and the adapter's sha256) and the setting.
+The two exclude each other and --verdict-out, --base-vs-base and --dry-run.
 """
 import argparse
 import errno
@@ -36,14 +48,14 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
 from evaluation import gate, persona_eval
 from evaluation.gate import Decision, MetricCall, Scored, decide, format_decision, scored  # noqa: F401
 from evaluation.health_check import WS_URL
-from evaluation.verdict import file_identity, make_verdict, write_verdict
+from evaluation.verdict import VerdictError, file_identity, load_verdict, make_verdict, write_verdict
 from evaluation.verdict import sha256_file as _sha256  # the one streaming hash
 from riya import brain, server
 from riya.brain import same_path, served_adapters
@@ -58,6 +70,12 @@ REPEAT = gate.REPEAT
 PORT = 8091
 MIN_FREE_VRAM_MB = 2500
 CORE_TIMEOUT_S = 15.0  # how long the running core gets to confirm the setting
+# the CPU check of her own llama-server before a verdict is adopted: a small context, one 4-token generation
+CPU_PORT = PORT
+CPU_CTX = 2048
+CPU_THREADS = 4
+CPU_GEN = {"prompt": "Hi", "n_predict": 4, "temperature": 0}
+CPU_TIMEOUT_S = 60.0
 
 
 class ChampionError(RuntimeError):
@@ -161,14 +179,23 @@ def port_in_use(port: int) -> bool:
         return False
 
 
+def _check_free(port: int, port_busy) -> None:
+    if port_busy(port):
+        raise ChampionError(f"Something is already listening on port {port}: it is already in use (an orphaned "
+                            "llama-server? Riya's own?). The gate needs it free for its own server.")
+
+
+def _check_not_gaming(fullscreen) -> None:
+    if fullscreen():
+        raise ChampionError("Riya's champion gate doesn't run while you're gaming (a fullscreen window is up).")
+
+
 def _check_ready(fullscreen, free_vram, lora: str | None, port: int | None = None, port_busy=port_in_use) -> None:
     """The refusals: gaming, too little free VRAM, a missing adapter, a port something already listens on (its
     /health would be taken for the gate's own server). Raises ChampionError with the reason."""
-    if port is not None and port_busy(port):
-        raise ChampionError(f"Something is already listening on port {port}: it is already in use (an orphaned "
-                            "llama-server? Riya's own?). The gate needs it free for its own server.")
-    if fullscreen():
-        raise ChampionError("Riya's champion gate doesn't run while you're gaming (a fullscreen window is up).")
+    if port is not None:
+        _check_free(port, port_busy)
+    _check_not_gaming(fullscreen)
     try:
         mb = free_vram()
     except Exception:
@@ -227,9 +254,156 @@ def install(candidate: Path, adopted: Path) -> None:
         raise ChampionError(f"Couldn't install {candidate} as {adopted} ({e}).") from e
 
 
+# ---- the laptop's side of a Colab verdict (CPU only) -----------------------------------------------------------------
+
+def cpu_env(environ: Mapping[str, str] = os.environ) -> dict:
+    """This environment with no GPU visible: llama-server's CUDA build then can't put anything on it."""
+    return {**environ, "CUDA_VISIBLE_DEVICES": ""}
+
+
+def cpu_check(model: str, lora: str, *, make_server=RiyaServer, http_get, http_post, fullscreen,
+              port_busy) -> None:
+    """Her own llama-server build (Colab's isn't hers) on the CPU only: it renders her template, loads the adapter and
+    generates. ChampionError (or the server's RuntimeError) with the reason; the server is stopped whatever happens."""
+    _check_free(CPU_PORT, port_busy)
+    _check_not_gaming(fullscreen)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        srv = make_server(model, port=CPU_PORT, ctx=CPU_CTX, threads=CPU_THREADS, slot_dir=root, lora=lora,
+                          fallback_to_base=False, vetted_only=False, env=cpu_env())
+        try:
+            srv.start(gpu=False)
+            url = f"http://127.0.0.1:{CPU_PORT}"
+            check_template(url, http_post)
+            if not any(same_path(p, lora) for p in served_adapters(http_get, url)):
+                raise ChampionError(f"the adapter didn't load: {lora}")
+            try:
+                got = http_post(f"{url}/completion", CPU_GEN, CPU_TIMEOUT_S)
+            except (OSError, ValueError):  # a timeout, a dropped connection, a garbled answer
+                got = None
+            if not (isinstance(got, dict) and isinstance(got.get("content"), str)):
+                raise ChampionError("her llama-server didn't generate on the CPU")
+        finally:
+            srv.stop()
+
+
+def _said(adopt) -> str:
+    return "adopt" if adopt is True else "keep" if adopt is False else str(adopt)[:12]
+
+
+def verdict_steps(path: Path, *, model: str, lora: str) -> tuple[dict, Decision, Scored, Scored]:
+    """Steps 1-3 of using a verdict, each a ChampionError with the reason: 1. a sound candidate verdict from this code
+    (its identity) under a passing calibration for its repeat and base model; 2. the adapter and the base model here
+    are the files it measured (sha256); 3. its transcripts re-scored and decided here, agreeing with its own decision
+    in both directions (that field is never trusted on its own). Reads only."""
+    try:
+        v = load_verdict(Path(path))
+    except VerdictError as e:
+        raise ChampionError(str(e)) from None
+    if v["mode"] != "candidate":
+        raise ChampionError("That's a base-vs-base verdict: it can't adopt anything.")
+    ours = gate.identity(v["repeat"])
+    for field in gate.IDENTITY_FIELDS:
+        if v[field] != ours[field]:
+            raise ChampionError(f"The verdict is for {field} {str(v[field])[:12]}, "
+                                f"this code has {str(ours[field])[:12]}.")
+    if v["repeat"] != gate.REPEAT:
+        raise ChampionError(f"The verdict is for repeat {str(v['repeat'])[:12]}, "
+                            f"this code has {str(gate.REPEAT)[:12]}.")
+    if problem := gate.calibration_problem(v["repeat"], base_sha256=v["base_gguf"]["sha256"]):
+        raise ChampionError(problem)
+    for file, key, wrong in ((lora, "adapter", "This adapter isn't the one the verdict measured."),
+                             (model, "base_gguf", "The base model isn't the one the verdict measured.")):
+        try:
+            sha = file_identity(Path(file))["sha256"]
+        except OSError as e:
+            raise ChampionError(f"Couldn't read {file}: {e.strerror or e}.") from None
+        if sha != v[key]["sha256"]:
+            raise ChampionError(wrong)
+    phrases = persona_eval.style_phrases(persona_eval.load_probes())
+    try:
+        base = scored(v["transcripts"]["base"], phrases)
+        cand = scored(v["transcripts"]["candidate"], phrases)
+        d = decide(base, cand)
+    except gate.GateError as e:
+        raise ChampionError(str(e)) from None
+    except (KeyError, TypeError, ValueError, AttributeError) as e:  # rows without their fields: not a run's transcript
+        raise ChampionError(f"The verdict's transcripts can't be scored ({type(e).__name__}: {e}).") from None
+    stored = v["decision"].get("adopt") if isinstance(v["decision"], dict) else None
+    if stored is not d.adopt:
+        raise ChampionError(f"The verdict says {_said(stored)}, but this code decides {_said(d.adopt)}: not adopting "
+                            "on a disagreement.")
+    return v, d, base, cand
+
+
+def _unrecorded(adopted: Path, why) -> int:
+    print(f"The candidate is installed as {adopted}, but its champion record couldn't be written ({why}). Riya "
+          "serves the base model until the gate is run again on it (--lora set to that file).")
+    return 2
+
+
+def _record_and_switch(adopted: Path, record: dict, *, db: Path, ws_url: str, connect, took: str = "") -> int:
+    """After the install: the record for the installed file as it is now (its size and mtime), then the setting."""
+    try:
+        brain.write_record(adopted, record)
+    except OSError as e:  # installed but unrecorded: the wrapper serves only a recorded file, so she stays on base
+        return _unrecorded(adopted, e)
+    try:
+        where = set_local_adapter(str(adopted), db=db, ws_url=ws_url, connect=connect, timeout_s=CORE_TIMEOUT_S)
+    except Exception as e:  # the record is written; only the switch is missing (never a traceback here)
+        why = str(e) if isinstance(e, ChampionError) else f"Couldn't save the setting ({type(e).__name__}: {e})."
+        print(f"{why} The adopt record is written: \"Use Riya v1\" in Health switches her to it.")
+        return 2
+    print("Adopted: Riya v1 is her local brain now. (" + ("set in the running core" if where == "core"
+                                                         else "saved; it applies on Riya's next start") + took + ")")
+    return 0
+
+
+def _from_verdict(args, *, adopt: bool, fullscreen, make_cpu_server, http_get, http_post, connect, port_busy,
+                  clock: Callable[[], float]) -> int:
+    """--check-verdict (steps 1-3 and the table; writes nothing, starts nothing) and --adopt-verdict (then the CPU
+    check, the install, the installed file hashed again, the record and the setting). Nothing is written before the
+    install, and nothing here reads free VRAM or uses the GPU."""
+    t0 = clock()
+    lora = str(Path(args.lora).resolve())
+    adopted = brain.default_adapter()
+    try:
+        if adopt:  # the setting it would write must be one the core takes, before anything is written
+            try:
+                apply_patch(Settings(), {"local_adapter": str(adopted)})
+            except ValueError as e:
+                raise ChampionError(f"The adopted path can't be saved as local_adapter ({e}).") from None
+        v, d, base, cand = verdict_steps(Path(args.verdict), model=args.model, lora=lora)
+        print(format_decision(base, cand, d))
+        if not adopt:
+            print("Check only: nothing written.")
+            return 0
+        if not d.adopt:
+            raise ChampionError("The verdict's decision is to keep the base model.")
+        cpu_check(args.model, lora, make_server=make_cpu_server, http_get=http_get, http_post=http_post,
+                  fullscreen=fullscreen, port_busy=port_busy)
+        install(Path(lora), adopted)  # the adopted file is now the measured candidate, in one rename
+    except RuntimeError as e:  # ChampionError, or her server never came up: nothing was written
+        print(f"{e} Nothing changed.")
+        return 2
+    try:
+        same = file_identity(adopted)["sha256"] == v["adapter"]["sha256"]
+    except OSError as e:
+        return _unrecorded(adopted, f"couldn't hash it again: {e.strerror or e}")
+    if not same:  # a record certifies only the bytes the verdict measured
+        return _unrecorded(adopted, "the installed file isn't the one the verdict measured")
+    return _record_and_switch(adopted, {
+        "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "decided_on": "colab", "verdict_checksum": v["checksum"], "adapter_sha256": v["adapter"]["sha256"],
+        "gate_version": v["gate_version"], "probe_sha256": v["probe_sha256"], "repeat": v["repeat"],
+        "targets_base": d.targets_base, "targets_candidate": d.targets_candidate,
+        "weak": {c.key: c.status for c in d.weak}}, db=Path(args.db), ws_url=args.url, connect=connect,
+        took=f"; took {clock() - t0:.0f} s")
+
+
 def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make_server=RiyaServer,
          run=persona_eval.run, http_get=None, http_post=None, connect=None, port_busy=port_in_use,
-         version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic) -> int:
+         version: Callable[[], str] | None = None, clock: Callable[[], float] = time.monotonic,
+         make_cpu_server=RiyaServer) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m evaluation.champion", description=__doc__.splitlines()[0])
@@ -246,12 +420,29 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     ap.add_argument("--verdict-out", metavar="PATH", default=None,
                     help="write a checksummed verdict file (Colab's mode; implies --dry-run; combines with "
                          "--base-vs-base to gather the calibration bank)")
+    use = ap.add_mutually_exclusive_group()  # a verdict's two uses (C1): each excludes the run modes below too
+    use.add_argument("--check-verdict", metavar="PATH", default=None,
+                     help="re-decide a Colab verdict here and print it; writes nothing, starts nothing")
+    use.add_argument("--adopt-verdict", metavar="PATH", default=None,
+                     help="re-decide a Colab verdict, check her own llama-server on the CPU, then adopt")
     args = ap.parse_args(argv)
     fullscreen = fullscreen or make_idle_source().fullscreen
     free_vram = free_vram or free_vram_mb
     http_get = http_get or health.default_http_get
     if args.verdict_out is not None and not args.verdict_out.strip():
         ap.error("--verdict-out needs a path")  # an empty one must never turn into a live run that can adopt
+    for flag, path in (("--check-verdict", args.check_verdict), ("--adopt-verdict", args.adopt_verdict)):
+        if path is None:
+            continue
+        for other, on in (("--verdict-out", args.verdict_out is not None), ("--base-vs-base", args.base_vs_base),
+                          ("--dry-run", args.dry_run)):
+            if on:
+                ap.error(f"{flag} can't be combined with {other}")
+        args.verdict = path  # the calibration check is in verdict_steps: it needs the verdict's repeat and base
+        return _from_verdict(args, adopt=flag == "--adopt-verdict", fullscreen=fullscreen,
+                             make_cpu_server=make_cpu_server, http_get=http_get,
+                             http_post=http_post or _default_http_post, connect=connect, port_busy=port_busy,
+                             clock=clock)
     dry = args.dry_run or args.base_vs_base or args.verdict_out is not None
     args.lora = str(Path(args.lora).resolve())  # absolute from here on: the server, the snapshot and the install
     cand_lora = None if args.base_vs_base else args.lora  # a str: what the gate's server is given
@@ -323,26 +514,11 @@ def main(argv: list[str] | None = None, *, fullscreen=None, free_vram=None, make
     except RuntimeError as e:  # ChampionError, or a server that never came up: nothing was written
         print(f"{e} Nothing changed.")
         return 2
-    try:
-        brain.write_record(adopted, {
-            "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "targets_base": d.targets_base, "targets_candidate": d.targets_candidate, "repeat": repeat,
-            "weak": {c.key: c.status for c in d.weak}, "decided_on": "local", "gate_version": gate.GATE_VERSION,
-            "probe_sha256": gate.probe_sha256()})
-    except OSError as e:  # installed but unrecorded: the wrapper serves only a recorded file, so she stays on base
-        print(f"The candidate is installed as {adopted}, but its champion record couldn't be written ({e}). Riya "
-              "serves the base model until the gate is run again on it (--lora set to that file).")
-        return 2
-    try:
-        where = set_local_adapter(str(adopted), db=Path(args.db), ws_url=args.url, connect=connect,
-                                  timeout_s=CORE_TIMEOUT_S)
-    except Exception as e:  # the record is written; only the switch is missing (never a traceback here)
-        why = str(e) if isinstance(e, ChampionError) else f"Couldn't save the setting ({type(e).__name__}: {e})."
-        print(f"{why} The adopt record is written: \"Use Riya v1\" in Health switches her to it.")
-        return 2
-    print("Adopted: Riya v1 is her local brain now." + (" (set in the running core)" if where == "core"
-                                                       else " (saved; it applies on Riya's next start)"))
-    return 0
+    return _record_and_switch(adopted, {
+        "decision": "adopt", "decided_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "targets_base": d.targets_base, "targets_candidate": d.targets_candidate, "repeat": repeat,
+        "weak": {c.key: c.status for c in d.weak}, "decided_on": "local", "gate_version": gate.GATE_VERSION,
+        "probe_sha256": gate.probe_sha256()}, db=Path(args.db), ws_url=args.url, connect=connect)
 
 
 if __name__ == "__main__":

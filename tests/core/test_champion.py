@@ -831,3 +831,33 @@ def test_an_empty_verdict_out_is_a_usage_error_never_a_live_run(adapter, tmp_db,
         go(rig, ["--lora", str(adapter), "--verdict-out", empty, "--db", str(tmp_db)])
     assert e.value.code == 2 and "--verdict-out needs a path" in capsys.readouterr().err
     assert rig.made == [] and nothing_written(adapter, tmp_db)
+
+
+# ---- v0.10 C1: which mode flags combine ----
+
+def test_the_mode_flags_combine_as_designed(adapter, tmp_db, tmp_path, capsys, calibrated):
+    bank = tmp_path / "bank.json"
+    rig = Rig()
+    assert go(rig, ["--base-vs-base", "--verdict-out", str(bank), "--model", str(calibrated), "--db", str(tmp_db)],
+              version=lambda: "b1") == 0  # how the bank is gathered
+    assert bank.exists() and len(rig.made) == 2
+    capsys.readouterr()
+
+    v, out = tmp_path / "verdict.json", tmp_path / "out.json"
+    made_cpu = []
+
+    def make_cpu_server(*a, **kw):
+        made_cpu.append(a)
+        raise AssertionError("refused before anything starts")
+
+    combos = [(["--adopt-verdict", str(v), "--check-verdict", str(v)], "--check-verdict")]
+    for mode in ("--adopt-verdict", "--check-verdict"):
+        combos += [([mode, str(v), "--verdict-out", str(out)], "--verdict-out"),
+                   ([mode, str(v), "--base-vs-base"], "--base-vs-base"), ([mode, str(v), "--dry-run"], "--dry-run")]
+    for args, named in combos:
+        rig = Rig()
+        with pytest.raises(SystemExit) as e:
+            go(rig, args + ["--model", str(calibrated), "--db", str(tmp_db)], make_cpu_server=make_cpu_server)
+        assert e.value.code == 2 and named in capsys.readouterr().err, args
+        assert rig.made == [] and made_cpu == [] and not out.exists()
+        assert nothing_written(adapter, tmp_db)

@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from riya import brain
@@ -61,10 +61,11 @@ class RiyaServer:
     def __init__(self, model, port=8090, ctx=16384, threads=6, gpu_layers=99, slot_dir="riya_slots", extra=(), *,
                  lora: str | None = None, fallback_to_base: bool = True, vetted_only: bool = True,
                  popen=subprocess.Popen, healthy: Callable[[int], bool] | None = None,
-                 ready_timeout_s: float = 120.0):
+                 ready_timeout_s: float = 120.0, env: Mapping[str, str] | None = None):
         """vetted_only (the default, and the only mode Riya's own server runs in): an adapter is served only while it
         has a matching champion adopt record. The champion gate turns it off for its own server, which is how a
-        candidate gets measured at all."""
+        candidate gets measured at all. env: llama-server's environment (None: this process's own); the champion's
+        CPU check passes one with an empty CUDA_VISIBLE_DEVICES."""
         self.model, self.port, self.ctx, self.threads, self.gpu_layers = model, port, ctx, threads, gpu_layers
         self.slot_root, self.extra = os.path.abspath(slot_dir), list(extra)
         self.wanted = lora  # the raw value asked for
@@ -72,6 +73,7 @@ class RiyaServer:
         self.unvetted: str | None = None  # an adapter the last launch skipped: no matching champion adopt record
         self.fallback_to_base, self.vetted_only = fallback_to_base, vetted_only
         self.popen, self.ready_timeout_s = popen, ready_timeout_s
+        self.env = None if env is None else dict(env)
         self.healthy = healthy or self._health_ok
         self.proc, self.on_gpu, self.lock = None, True, threading.Lock()
         self._pinned: str | None = None  # the slot dir of the variant launched last
@@ -164,7 +166,7 @@ class RiyaServer:
     def _launch(self, gpu, base: bool = False):
         self._pin(base)
         os.makedirs(self._pinned, exist_ok=True)
-        self.proc = self.popen(self._cmd(gpu), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = self.popen(self._cmd(gpu), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self.env)
         self.on_gpu = gpu
         self._wait_ready()
         if self._serve:  # the file was replaced or removed while the server loaded it: it isn't the pinned variant
