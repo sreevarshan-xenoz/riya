@@ -98,7 +98,7 @@ MALFORMED = {
                                                          "adapter has no sha256"),
     "a base without a sha256, re-checksummed": (lambda v: signed(base_gguf={"name": "b"}), "base_gguf has no sha256"),
     "an edited reply": (_edited_reply, "checksum"),
-    "an edited field": (lambda v: json.dumps(v | {"repeat": 4}), "checksum"),
+    "an edited field": (lambda v: json.dumps(v | {"repeat": gate.REPEAT + 1}), "checksum"),
     "a checksum that isn't text": (lambda v: json.dumps(v | {"checksum": 7}), "checksum"),
     "not utf-8": (lambda v: None, "valid JSON"),
 }
