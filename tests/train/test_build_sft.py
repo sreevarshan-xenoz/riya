@@ -210,6 +210,8 @@ def test_prompt_fingerprint_is_stamped_and_follows_the_prompt(monkeypatch):
         (build_sft, "IDENTITY_SITUATION", build_sft.IDENTITY_SITUATION.replace("clearly", "plainly")),
         (build_sft, "persona_prompt", lambda kind: real_persona(kind) + " Hm."),
         (build_sft, "style_examples", lambda: real_examples() + " Hm."),
+        (prompt, "PERSONAL_SITUATION", prompt.PERSONAL_SITUATION.replace("know", "remember")),
+        (build_sft, "personal_situation", lambda: ""),  # v0.11: the canary carries the personal situation line
     ]
     for target, name, value in changes:
         monkeypatch.setattr(target, name, value)

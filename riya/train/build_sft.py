@@ -34,8 +34,8 @@ from riya.core.learn.feedback import detect_feedback
 from riya.core.memory import Fact, Memory, Retrieved, Thread
 from riya.core.persona import persona_prompt, style_examples
 from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_SITUATION, bid_situation,
-                              build_messages, greeting_situation, hands_situation, likes_block, remember_situation,
-                              report_line, report_situation, style_line)
+                              build_messages, greeting_situation, hands_situation, likes_block, personal_situation,
+                              remember_situation, report_line, report_situation, style_line)
 from riya.core.shaping import CAPS, emoji_limit, is_feelings_question, is_identity_question
 from riya.core.store import open_db
 from riya.train.fmt import request_hash, validate_request, write_jsonl
@@ -69,7 +69,7 @@ def prompt_fingerprint() -> str:
         remember_situation("The user said: their canary is called Pim"), greeting_situation(7200, 0.5, thread),
         bid_situation("worked 3.0 h straight", thread),
         report_situation([AgentEvent("finished", "agent-0", "tests-1", "all 4 tests passed")]),
-        hands_situation("work out 2 plus 2", ToolResult(True, "= 4 (2 plus 2)"))])
+        hands_situation("work out 2 plus 2", ToolResult(True, "= 4 (2 plus 2)")), personal_situation()])
     persona, examples = persona_prompt("local"), style_examples()
     calls = []
     for i, (turn, text) in enumerate(FP_TURNS):

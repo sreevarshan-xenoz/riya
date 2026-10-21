@@ -37,14 +37,15 @@ from riya.core.hands.records import HandsDB
 from riya.core.hands.reminders import delivery, gap_ok, reminder_line
 from riya.core.hands.tools import ONLINE_OFF, REGISTRY, TIERS, Call, ToolCtx, ToolResult, _q, validate_call
 from riya.core.initiative import Action, Initiative
-from riya.core.memory import Memory, about_me
+from riya.core.memory import Memory, about_me, personal_request
 from riya.core.models import LOCAL_TEMPERATURE, ChatModel
 from riya.core.persona import load_traits, persona_prompt, style_examples
 from riya.core.presence import Presence
 from riya.core.prompt import (FEEDBACK_SITUATION, FEELINGS_SITUATION, IDENTITY_SITUATION, SEEING_SITUATION,
                               agents_block, bid_situation, build_messages, cant_see_situation, eyes_block,
-                              greeting_reports, greeting_situation, hands_situation, likes_block, remember_situation,
-                              reminders_block, report_bubble, report_line, report_situation, style_line, tool_turn)
+                              greeting_reports, greeting_situation, hands_situation, likes_block, personal_situation,
+                              remember_situation, reminders_block, report_bubble, report_line, report_situation,
+                              style_line, tool_turn)
 from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, ActionsClear, ActionsMsg, AgentActivity,
                                 AgentInfo, AgentsMsg, AgentWindow, Confirm, ConfirmDone, ConfirmRequest, DialInfo,
                                 DontLook, EpisodeDelete, ErrorMsg, ExpressionMsg, EyesMsg, FocusAgent, GetMemories,
@@ -596,7 +597,10 @@ class RiyaCore:
         nothing, in place of MODEL_DOWN (a tool's ToolResult.text is the fallback for her line). short (the twin's
         short greeting) makes the cap 1. The core times her first sentence: closed within BARGE_S of it, or a typed
         turn arriving within BARGE_S of it (note_typed_turn), is a barge-in (_last_barged, before after runs), and a
-        plain reply feeds the verbosity drift."""
+        plain reply feeds the verbosity drift. A plain reply on the local route (no game, tool, small or seeing) asks
+        memory for the personal fill, and a personal request with a fact in the block adds personal_situation(); an
+        online-routed request ("plan my week for me" goes online on "plan") gets neither, a known limit (v0.11
+        §4.7.9)."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
         sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
         tool, first_at = shape == "tool", None
@@ -635,7 +639,12 @@ class RiyaCore:
             cap = 1 if short else cap
             # decided first, so the prompt carries the matching persona; a look at the screen is always online
             route = "online" if seeing else self.router.route(route_text)
-            retrieved, eyes, agents = self._retrieve(query, threads), self._eyes_context(), self._agents_context()
+            # a plain reply on the local route only: the fill's facts never go online (v0.11 §4.4, §4.7.8)
+            personal = kind == "reply" and not (game or tool or small or seeing) and route == "local"
+            retrieved = self._retrieve(query, threads, personal=personal)
+            eyes, agents = self._eyes_context(), self._agents_context()
+            if personal and retrieved.facts and personal_request(user_text or ""):
+                situation = " ".join(filter(None, [situation, personal_situation()]))
             reminders = self._reminders_context()
             likes = None if route == "online" else self._likes_context()  # the notes never go online
 
@@ -895,8 +904,10 @@ class RiyaCore:
             if hasattr(stream, "close"):
                 stream.close()
 
-    def _retrieve(self, query: str, threads: list | None):
-        r = self.memory.retrieve(query)
+    def _retrieve(self, query: str, threads: list | None, personal: bool = False):
+        """The memory for a prompt; threads, when given, replaces the follow-ups. personal (only _speak's plain local
+        reply) lets a personal request get the fill (Memory.retrieve)."""
+        r = self.memory.retrieve(query, personal=personal)
         return r if threads is None else replace(r, threads=threads)
 
     def _finish_turn(self, user_text: str | None, said: str | None, consolidate: bool = True,
