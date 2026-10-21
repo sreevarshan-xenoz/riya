@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 pydantic>=2
 httpx
-fastembed
+fastembed==0.9.0
 numpy
 sounddevice
 pocket-tts
