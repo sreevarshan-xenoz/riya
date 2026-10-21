@@ -164,6 +164,56 @@ def test_min_p_matches_a_brute_force_reference():
             assert abs(r.band - float(np.percentile([abs(a) for a, _ in pool], 99))) <= 1e-12
 
 
+def test_min_p_uses_the_solid_flips_not_s1_alone():
+    # x.q0 flips solidly to worse while the noisier probes drift up: S1 alone gives (p_better, p_worse) = (0.50, 0.90),
+    # and the solid flip pulls p_worse to 0.05 (review I1)
+    obs = (probe_rows("x", "x.q0", [1, 1, 1], [0, 0, 0]) + probe_rows("x", "x.q1", [0, 0, 1], [1, 1, 1])
+           + probe_rows("y", "y.q0", [0, 1, 0], [1, 1, 1]))
+    r = paired_test(obs, k=3, B=10_000, seed=0)
+    assert r.exact is True and r.delta > 0
+    assert r.p_worse == 0.05 and r.p_better == 0.51
+    assert r.flips_worse == ("x.q0",) and r.flips_better == ()
+    masks = [tuple(m) for m in split_masks(3)]
+    observed_split = masks.index(tuple([False] * 3 + [True] * 3))
+    pool = [ref_stats(obs, 3, False, ["x", "y"], a, masks) for a in itertools.product(range(len(masks)), repeat=2)]
+    observed = ref_stats(obs, 3, False, ["x", "y"], (observed_split,) * 2, masks)
+    assert ref_min_p(pool, observed) == (r.p_better, r.p_worse)
+    s1_only = ref_min_p([(a, a) for a, _ in pool], (observed[0], observed[0]))
+    assert s1_only == (0.5, 0.9)
+
+
+def test_the_tolerance_counts_float_ties_as_ties():
+    # pooled rates over different denominators reach equal values through different fractions, which differ in the
+    # last ulp; with TOL = 0 this table's p_better drops from 0.7075 to 0.6375 (review M1)
+    obs = random_table(np.random.default_rng(23), ["x", "y"], 3, probes_per=3, missing=0.35)
+    strata = shared_strata(obs)
+    assert strata == ["x", "y"]
+    r = paired_test(obs, k=3, B=400, seed=0)
+    assert r.exact is True
+    assert (r.p_better, r.p_worse) == (0.7075, 0.4525)
+    masks = [tuple(m) for m in split_masks(3)]
+    observed_split = masks.index(tuple([False] * 3 + [True] * 3))
+    pool = [ref_stats(obs, 3, False, strata, a, masks) for a in itertools.product(range(len(masks)), repeat=2)]
+    observed = ref_stats(obs, 3, False, strata, (observed_split,) * 2, masks)
+    p_better, p_worse = ref_min_p(pool, observed)
+    assert abs(r.p_better - p_better) <= 1e-12 and abs(r.p_worse - p_worse) <= 1e-12
+
+
+def test_an_emptied_side_counts_as_a_zero_rate():
+    # base [1, -, -] and candidate [1, 0, -]: the splits that put every answered row on one side give the empty side
+    # a 0 rate (review M2; a 0.5 fill gives 0.45 / 0.85)
+    obs = side("s", "s.q", False, [1, None, None]) + side("s", "s.q", True, [1, 0, None])
+    r = paired_test(obs, k=3, B=10_000, seed=0)
+    assert r.exact is True and r.delta == -50.0
+    assert r.p_worse == 0.5 and r.p_better == 0.8
+    assert (r.rows, r.probes) == (2, 1)
+    # the mirror pins an emptied base side the same way
+    obs = side("s", "s.q", False, [1, 0, None]) + side("s", "s.q", True, [1, None, None])
+    r = paired_test(obs, k=3, B=10_000, seed=0)
+    assert r.delta == 50.0 and r.p_better == 0.5 and r.p_worse == 0.8
+    assert (r.rows, r.probes) == (1, 1)
+
+
 # --- sampled cases --------------------------------------------------------------------------------------------------
 
 def test_sampled_p_follows_the_formula():
