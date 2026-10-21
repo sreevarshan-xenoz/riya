@@ -222,8 +222,11 @@ def has_disclaimer(reply: str) -> bool:
 # exempt: "here for / help (you) with / can be / be / and" + "whatever (else) you need|want". "Whatever.", "Fine,
 # whatever you want~", "do whatever you want, I'm not your maid" stay rude. Known gap: "...and whatever you want, I don't
 # care" reads as help, and no wording rule tells the two apart.
-HELPFUL_WHATEVER = re.compile(r"\b(?:help(?: you)? with|here for|can be|be|and) whatever (?:else )?(?:you|u) (?:need|want)\b"
-                              r"(?! to)")
+HELPFUL_WHATEVER = re.compile(r"\b(?:help(?: you)? with|here for|can be|be|and|watch|into|welcome to do) whatever (?:else )?(?:you|u) (?:need|want)\b"
+                              r"(?! to)"
+                              # gate 0.11.1, from the round-2 verdict's two flags: "I'll do whatever it takes to keep you
+                              # smiling" and "something simple and cheap... just whatever you can afford, dummy~"
+                              r"|\bwhatever it takes\b|\bwhatever (?:you|u) can (?:afford|manage)\b")
 
 
 def rude(reply: str) -> bool:

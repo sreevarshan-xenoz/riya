@@ -579,3 +579,21 @@ def test_whatever_you_need_is_help_not_rudeness():
                  "whatever you want, I don't care", "Do whatever you like, I'm not your maid", "Fine, whatever you want~",
                  "Do whatever you want.", "Whatever you need. Not my problem.", "Whatever you want, loser."):
         assert rude(mean), mean
+
+
+def test_the_round_two_tone_flags_are_care_not_rudeness():
+    """Gate 0.11.1: the two replies that vetoed round 2 (quoted from its verdict) read as caring or teasing, and the
+    dismissive forms around the same words still flag."""
+    for kind in ("Honestly, I'm just an AI with way too much time for myself~ I don't know what those classmates are "
+                 "doing, dummy. But I'll do whatever it takes to keep you smiling while you study~",
+                 "You cook on a tight budget, so I'm suggesting something simple and cheap. Hmph, just whatever you can "
+                 "afford, dummy~",
+                 # and the base model's own helping frames from the v0.11 bank
+                 "We'll snack on your favorite treats, watch whatever you want, and maybe read a few pages.",
+                 "You're welcome to do whatever you need, when you need.",
+                 "You're welcome to do whatever you want, but I'm here for the lazy vibes~",
+                 "We'll skip the chores and dive into whatever you want. What sounds good to you? ~"):
+        assert not rude(kind), kind
+    for mean in ("Whatever, I don't care.", "Do whatever you want.", "Fine. Do whatever you want, I'm done.", "whatever you can, I'm not your maid",
+                 "Ugh, whatever. Let's get this over with.", "Whatever it is, leave me alone."):
+        assert rude(mean), mean
