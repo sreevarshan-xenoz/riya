@@ -82,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=VECTORS)
     args = ap.parse_args(argv)
     n = build(args.cache, args.out)
-    print(f"{n} texts, embedder {np.load(args.out)['embedder_id']}")
+    with np.load(args.out) as z:  # closed at once: Windows can't rewrite a file numpy still holds
+        print(f"{n} texts, embedder {z['embedder_id']}")
     return 0
 
 
