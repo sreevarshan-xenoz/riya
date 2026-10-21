@@ -79,6 +79,9 @@ NOT_PERSONAL_RE = re.compile("|".join((
     # direct attribute questions
     rf"\b(?:what|who|when|where)(?:{_APOS}s| is| was) my\b", r"\bhow old (?:is|was|am)\b",
     r"\bwhat (?:did|do) i (?:name|call)\b",
+    # plural ones (final review I1): "who are my best friends", "what are my kids called", "where are my parents from"
+    rf"\bwho(?:{_APOS}re| are| were) my\b",
+    rf"\b(?:what|where)(?:{_APOS}re| are| were) my\b(?:\s+\S+){{0,4}}?\s+(?:called|named|names?|from)\b",
     # shared history and remember-that turns
     r"\bwhat did i (?:tell|say|mention)\b", r"\bdid i (?:ever )?(?:tell|say|mention)\b", r"\bremember (?:when|that)\b",
     r"\bkeep in mind\b", rf"\bdon{_APOS}t forget\b",
