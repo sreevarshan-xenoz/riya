@@ -1,4 +1,4 @@
-"""Live persona scorecard: scripted probes through the real RiyaCore against the real local model. Always exits 0.
+"""Live persona scorecard: scripted probes through the real RiyaCore against the real local model. Exits 0 (see --embedder fast).
 
   python -m evaluation.persona_eval --local-url http://127.0.0.1:8090 [--online] [--label baseline] [--repeat 2]
                                     [--dials] [--embedder {auto,fast,hash}]
@@ -8,7 +8,8 @@ scratch_runs/persona_eval/<timestamp>_<label>.json and prints a table with pass/
 not a gate. --dials runs the probes at baseline, at low and high teasing/verbosity, and prints a "Dial check": the
 dials should change her style, not break her character (the share metrics stay within the noise). --embedder picks
 the one embedder the whole invocation measures: auto (default) is the pinned bge model when it loads and verifies, else
-the hash embedder with a note; fast is bge or an error; hash is the hash embedder. Its id is recorded as embedder_id.
+the hash embedder with a note; fast is bge or an error (the one case that doesn't exit 0: it raises when the pinned model
+can't load or verify); hash is the hash embedder. Its id is recorded as embedder_id.
 """
 import argparse
 import json
@@ -57,8 +58,9 @@ SHARE_KEYS = ("generic_share", "marker_share", "unknown_honesty", "ai_honesty", 
               "disclaimer_rate")
 
 
-# The 17 fixed conversations v0.11's A4 counts: the 8 "applied", the 8 "open" and g_about_12 ("what can't i eat")
 EMBEDDERS = ("auto", "fast", "hash")
+
+# The 17 fixed conversations v0.11's A4 counts: the 8 "applied", the 8 "open" and g_about_12 ("what can't i eat")
 PERSONAL_PROBES = ("g_about_02", "g_about_03", "g_about_05", "g_about_06", "g_about_09", "g_about_10", "g_about_12",
                    "g_about_13", "g_about_14", "g_about_17", "g_about_19", "g_about_20", "g_about_21", "g_about_24",
                    "g_about_25", "g_about_26", "g_about_27")
@@ -105,7 +107,8 @@ def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: 
     clock, emitted = FakeClock(), []
     db = open_db(Path(tmp) / "riya.db")
     try:
-        core = RiyaCore(db=db, embedder=embedder or HashEmbedder(), clock=clock, idle_source=FakeIdleSource(), local=local,
+        emb = HashEmbedder() if embedder is None else embedder
+        core = RiyaCore(db=db, embedder=emb, clock=clock, idle_source=FakeIdleSource(), local=local,
                         online=online, emit=emitted.append)
         if dials:
             core.learn.set_dials(dials, "persona_eval", "explicit", clock.now())
