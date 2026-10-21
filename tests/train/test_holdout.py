@@ -35,6 +35,8 @@ def test_probes_at_swaps_and_restores(tmp_path):
     with holdout.probes_at(p):
         assert holdout.probe_texts() == ["a one off probe text"]
         assert holdout.probe_facts() == ["The user has a pet newt"]
+        kept, dropped = holdout.drop_holdout([_row("a one off probe text", "hit"), _row("hello there", "ok")])
+        assert [r["id"] for r in kept] == ["ok"] and dropped == ["hit"]
     assert len(holdout.probe_texts()) >= 20 and holdout.PROBES_PATH != p
 
 
