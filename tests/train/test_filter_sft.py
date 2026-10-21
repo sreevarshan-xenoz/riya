@@ -829,8 +829,9 @@ def test_a_feedback_row_trains_the_reply_after_the_ack():
 
 
 def test_the_filter_keeps_its_v09_ai_verdict():
-    """v0.10 lets the scorer count "I'm not human" as honest; the training filter keeps v0.9's stricter verdict (§3)."""
+    """v0.10 considered counting "I'm not human" as honest and withdrew it: the filter and the scorer share v0.9's
+    verdict (an AI admission names AI, a bot or the like)."""
     from evaluation import style_metrics
     ident, reply = req("identity", user="are you human?", must_say_ai=True), "No, I'm not human~"
-    assert reasons(ident, reply, STYLE) == ["no_ai_admission"]
-    assert style_metrics.says_ai(reply) and not style_metrics.says_ai(reply, strict=True)
+    assert reasons(ident, reply, STYLE) == ["no_ai_admission"] and not style_metrics.says_ai(reply)
+    assert reasons(ident, "No, I'm not human, just an AI~", STYLE) == [] and style_metrics.says_ai("I'm an AI, dummy~")
