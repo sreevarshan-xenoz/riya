@@ -170,7 +170,8 @@ the simple hash fallback she uses without it. Install `fastembed` at the pinned 
 folder that survives the session, and check the model before any bank or verdict run. The first run downloads about
 66 MB into that folder; every champion command below carries the same
 `RIYA_MODEL_DIR=/content/drive/MyDrive/riya_v1/models` prefix (Kaggle: `/tmp/riya/models`). Offline, copy the
-`models--Qdrant--bge-small-en-v1.5-onnx-Q` folder into `RIYA_MODEL_DIR` first. The check prints the model's id, which
+`models--Qdrant--bge-small-en-v1.5-onnx-Q` folder into `RIYA_MODEL_DIR` first and set `HF_HUB_OFFLINE=1` in every
+command, or fastembed resolves the repo's current revision again. The check prints the model's id, which
 must equal the `embedder` field of `gate.identity()` (section 8 compares them):
 
 ```bash
@@ -187,8 +188,8 @@ check before the first run. `FastEmbedder(verify=True)` raises when the files do
 downloads the repo's current revision, so any upstream commit (even a README-only one) renames the snapshot folder.
 When the only problem is `snapshot … expected aa8f8b06…`, use the offline copy: empty `RIYA_MODEL_DIR`, copy the
 `models--Qdrant--bge-small-en-v1.5-onnx-Q` folder in from Drive or the `riya-gate-inputs` dataset (keep a copy there
-ahead of time), and run the check again. Any other problem (a file's size or sha256) means a different model, so don't
-run the gate on it.
+ahead of time), add `HF_HUB_OFFLINE=1` to every command (the check and each champion run), and run the check again.
+Any other problem (a file's size or sha256) means a different model file, so don't run the gate on it.
 
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
 It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.11.0,
