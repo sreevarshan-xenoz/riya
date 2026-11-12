@@ -234,7 +234,6 @@ def test_the_one_real_smoke_run():
 
 
 def fake_dlls(monkeypatch, fail=None):
-    """ctypes.WinDLL replaced by fakes that log each call; `fail` names a function that returns 0. Returns (log, seen)."""
     import ctypes
     log, seen = [], {}
 
@@ -249,7 +248,7 @@ def fake_dlls(monkeypatch, fail=None):
 
     monkeypatch.setattr(ctypes, "memmove", lambda p, data, n: seen.update(data=bytes(data)))
     monkeypatch.setattr(fx.time, "sleep", lambda s: None)
-    monkeypatch.setattr(fx.ctypes, "WinDLL", lambda name, **kw: Dll())
+    monkeypatch.setattr(fx.ctypes, "WinDLL", lambda name, **kw: Dll(), raising=False)
     return log, seen
 
 

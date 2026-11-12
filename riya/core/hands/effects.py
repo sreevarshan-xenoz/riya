@@ -22,6 +22,7 @@ from .safe import format_number, valid_url
 
 __all__ = ["Effects", "WindowsEffects", "FakeEffects", "VOLUME_PRESSES", "TAIL_MAX", "key_inputs", "output_tail"]
 
+_REAL_POPEN = subprocess.Popen
 VOLUME_PRESSES = 5
 TAIL_MAX = 200
 _TAIL_SCAN = 200_000  # the most output chars looked at before the cut
@@ -35,20 +36,23 @@ KILL_WAIT_S = 5
 CLIPBOARD_TRIES = 5
 CF_UNICODETEXT, GMEM_MOVEABLE = 13, 0x0002
 ULONG_PTR = ctypes.c_size_t
+WORD = getattr(wintypes, "WORD", ctypes.c_uint16)
+DWORD = ctypes.c_uint32
+LONG = ctypes.c_int32
 
 
 class KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
-                ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+    _fields_ = [("wVk", WORD), ("wScan", WORD), ("dwFlags", DWORD),
+                ("time", DWORD), ("dwExtraInfo", ULONG_PTR)]
 
 
 class MOUSEINPUT(ctypes.Structure):  # unused, but it sets the union's size (INPUT is 40 bytes on 64-bit)
-    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
-                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+    _fields_ = [("dx", LONG), ("dy", LONG), ("mouseData", DWORD),
+                ("dwFlags", DWORD), ("time", DWORD), ("dwExtraInfo", ULONG_PTR)]
 
 
 class HARDWAREINPUT(ctypes.Structure):
-    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+    _fields_ = [("uMsg", DWORD), ("wParamL", WORD), ("wParamH", WORD)]
 
 
 class _InputUnion(ctypes.Union):
@@ -57,7 +61,7 @@ class _InputUnion(ctypes.Union):
 
 class INPUT(ctypes.Structure):
     _anonymous_ = ("u",)
-    _fields_ = [("type", wintypes.DWORD), ("u", _InputUnion)]
+    _fields_ = [("type", DWORD), ("u", _InputUnion)]
 
 
 def key_inputs(vk: int, presses: int = 1) -> list[INPUT]:
@@ -194,9 +198,12 @@ class WindowsEffects:
         timeout the child's whole tree is killed and the wait is bounded.
         """
         try:
+            extra = {}
+            if os.name == "nt" or subprocess.Popen is not _REAL_POPEN:
+                extra["creationflags"] = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
             with tempfile.TemporaryFile() as out:
                 p = subprocess.Popen(argv, shell=False, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out,
-                                     stderr=subprocess.STDOUT, creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+                                     stderr=subprocess.STDOUT, **extra)
                 try:
                     code = p.wait(timeout=timeout_s)
                 except subprocess.TimeoutExpired:
