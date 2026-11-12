@@ -22,7 +22,7 @@ from riya.agents import install_hooks
 from riya.core import models
 from riya.core.eyes.see import NOTE_MAX_TOKENS, vision_messages
 from riya.core.health import DETAIL_MAX, clip, clip_left
-from riya.core.models import ONLINE_BASE_URL, VISION_TIMEOUT_S, ChatModel, ModelUnavailable, complete, online_pair
+from riya.core.models import VISION_TIMEOUT_S, ChatModel, ModelUnavailable, complete, online_pair
 from riya.core.secrets import InvalidKey, KeyFileError, OnlineKey, mask, scrub
 from riya.core.settings import Settings
 from riya.core.store import KV
@@ -257,16 +257,17 @@ class Setup:
         if action not in ("online_test", "eyes_test"):
             raise SetupError("unknown setup action")
         key_mask = self.deps.key.info().mask
-        if not key_mask:
-            raise SetupError("No key to test.")
-        base = self.deps.environ.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL
+        if not models.online_available(self._env()):
+            raise SetupError("No online model to test.")
+        base = models.online_base(self._env())
         try:
             host = urlsplit(base).hostname or "the online service"
         except ValueError:
             host = "the online service"
+        with_key = f" with your key {key_mask}" if key_mask else ""
         if action == "online_test":
-            return f"Riya will send one tiny request to {host} with your key {key_mask} to check that it works."
-        return (f"Riya will send her built-in test picture (not your screen) to {host} with your key {key_mask} and "
+            return f"Riya will send one tiny request to {host}{with_key} to check that it works."
+        return (f"Riya will send her built-in test picture (not your screen) to {host}{with_key} and "
                 f"ask what number it shows.")
 
     def answer(self, nonce: str, yes: bool, to: object = None) -> bool:
@@ -411,7 +412,7 @@ class Setup:
     def _do_online_test(self, args) -> Outcome:
         model = self.deps.make_model(self._env(), "online-test", ONLINE_TEST_TIMEOUT_S)
         if model is None:
-            return Outcome("online_test", False, "No key to test.")
+            return Outcome("online_test", False, "No online model is set up.")
         try:
             complete(model, [{"role": "user", "content": ONLINE_TEST_PROMPT}], ONLINE_TEST_TOKENS)
         except ModelUnavailable as e:
@@ -422,7 +423,7 @@ class Setup:
         """The bundled picture, never the screen."""
         model = self.deps.make_model(self._env(), "eyes-test", VISION_TIMEOUT_S)
         if model is None:
-            return Outcome("eyes_test", False, "Her eyes need the online key.")
+            return Outcome("eyes_test", False, "Her eyes need an online model.")
         messages = vision_messages(Path(self.deps.eyes_image).read_bytes(), EYES_QUESTION, mime="image/png")
         try:
             text = complete(model, messages, NOTE_MAX_TOKENS)

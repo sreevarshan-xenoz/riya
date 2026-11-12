@@ -73,18 +73,20 @@ class Runner:
 
 
 class MakeModel:
-    """A recording make_model: None without a key (like the real one), else a FakeModel that remembers its env key."""
+    """A recording make_model that mirrors the real one: None only when no online model can be built, else a FakeModel
+    that remembers its env key (which may be absent on OpenCode's free tier)."""
 
     def __init__(self, replies=None, fail=None):
         self.replies, self.fail = replies or {}, fail
         self.made, self.models = [], []
 
     def __call__(self, env, name, timeout_s):
+        from riya.core import models
         self.made.append((name, timeout_s))
-        if not env.get(KEY_VAR):
+        if not models.online_available(env):
             return None
         m = FakeModel(name, self.replies.get(name, ("ok",)), fail=self.fail)
-        m.api_key = env[KEY_VAR]
+        m.api_key = (env.get(KEY_VAR) or "").strip() or None
         self.models.append(m)
         return m
 
@@ -257,19 +259,27 @@ def test_only_an_explicit_true_runs(tmp_path):
 
 def test_confirm_texts(tmp_path):
     s, host, deps, results = make_setup(tmp_path)
-    assert s.request("online_test", {}) is None and s.request("eyes_test", {}) is None
-    assert results == [Outcome("online_test", False, "No key to test."), Outcome("eyes_test", False, "No key to test.")]
-    assert s.nonces._pending == {} and host.rows == []
+    assert s.request("online_test", {}) is not None  # OpenCode's free brain needs no key, so there is one to test
+    assert s.confirm_text("online_test") == (
+        "Riya will send one tiny request to opencode.ai to check that it works.")
+    assert s.request("eyes_test", {}) is not None
+    assert s.confirm_text("eyes_test") == (
+        "Riya will send her built-in test picture (not your screen) to opencode.ai and ask what number it shows.")
+    assert results == [] and host.rows == []
 
     deps.key.set(CANARY)
     m = mask(CANARY)
     assert s.confirm_text("online_test") == (
-        f"Riya will send one tiny request to generativelanguage.googleapis.com with your key {m} to check that it works.")
+        f"Riya will send one tiny request to opencode.ai with your key {m} to check that it works.")
     assert s.confirm_text("eyes_test") == (
-        f"Riya will send her built-in test picture (not your screen) to generativelanguage.googleapis.com with your key "
+        f"Riya will send her built-in test picture (not your screen) to opencode.ai with your key "
         f"{m} and ask what number it shows.")
     deps.environ = {"RIYA_ONLINE_BASE_URL": "https://user:pw@llm.example.test:8443/v1"}
     assert "to llm.example.test with your key" in s.confirm_text("online_test")
+    deps.key.clear()
+    assert s.request("online_test", {}) is None
+    assert results == [Outcome("online_test", False, "No online model to test.")]
+    results.clear()
     assert s.confirm_text("hooks_disconnect") == ih.preview("remove", deps.claude_settings)
 
     deps.claude_settings.parent.mkdir(parents=True)
@@ -374,7 +384,7 @@ def test_key_set_and_clear(tmp_path):
     assert deps.key.path.read_text(encoding="utf-8") == f"{KEY_VAR}={CANARY}\n"
     assert len(host.swaps) == 1 and all(m.api_key == CANARY for m in host.swaps[0])
     assert [m.name for m in host.swaps[0]] == ["online", "vision"]
-    assert deps.make_model.made == [("online", 8.0), ("vision", 20.0)]
+    assert deps.make_model.made == [("online", 12.0), ("vision", 20.0)]
 
     bad = s.perform("online_key_set", {"key": CANARY + " x"})
     assert bad == Outcome("online_key_set", False, InvalidKey.BAD_CHARS) and len(host.swaps) == 1
@@ -390,7 +400,7 @@ def test_key_set_and_clear(tmp_path):
         "That key comes from the RIYA_ONLINE_API_KEY environment variable.")
     assert s.perform("online_key_clear", {}) == Outcome("online_key_clear", True, "Removed the saved key.")
     assert s.perform("online_key_clear", {}) == Outcome("online_key_clear", False, "There's no saved key.")
-    assert host.swaps[-1] == (None, None)
+    assert [m.api_key for m in host.swaps[-1]] == [None, None]  # back on the free, keyless brain
 
     # a saved key over a .env base: clearing falls back to the base
     over_env = make_deps(tmp_path / "o", key=OnlineKey(tmp_path / "o" / "secrets.env", BASE, ".env"))
@@ -481,9 +491,11 @@ def test_eyes_test_uses_the_bundled_picture(tmp_path):
     assert host.rows == [("setup", 2, "Ran the eye test", "ran"), ("setup", 2, "Ran the eye test", "failed")]
 
 
-def test_eyes_test_without_a_key(tmp_path):
-    s, _, _, _ = make_setup(tmp_path)
-    assert s.perform("eyes_test", {}) == Outcome("eyes_test", False, "Her eyes need the online key.")
+def test_eyes_test_needs_an_online_model(tmp_path):
+    deps = make_deps(tmp_path, environ={"RIYA_ONLINE_BASE_URL": "https://llm.example.test/v1"})  # no key, not keyless
+    s, _, _, _ = make_setup(tmp_path, deps=deps)
+    assert s.perform("eyes_test", {}) == Outcome("eyes_test", False, "Her eyes need an online model.")
+    assert s.perform("online_test", {}) == Outcome("online_test", False, "No online model is set up.")
 
 
 def test_two_results_at_once_both_land(tmp_path):

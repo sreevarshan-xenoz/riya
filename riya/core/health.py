@@ -148,6 +148,7 @@ class HealthCtx:
     startup_dir: Path
     session_start: float | None = None  # when this core started; None: no test counts as this session's
     adapter_path: Path | None = None  # her Riya v1 adapter file (it may not exist); None: no switch is offered
+    online_keyless: bool = False  # the endpoint serves free models without a key (OpenCode)
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
 
@@ -237,9 +238,10 @@ _SOURCES = {"app": " saved in Riya", ".env": " set via .env (edit that file to r
 def check_online(ctx: HealthCtx) -> HealthItem:
     if not ctx.settings.online_enabled:
         return HealthItem("online", "off", "Online brain is switched off in Settings.")
-    if not ctx.key.mask:
-        return HealthItem("online", "off", "No key yet: paste a free Gemini key below.")
-    text, status = f"Key {ctx.key.mask}{_SOURCES.get(ctx.key.source or '', '')}", "ok"
+    if not ctx.key.mask and not ctx.online_keyless:
+        return HealthItem("online", "off", "No key yet: paste a key below, or use the free OpenCode brain.")
+    text = f"Key {ctx.key.mask}{_SOURCES.get(ctx.key.source or '', '')}" if ctx.key.mask else "Free · no key needed"
+    status = "ok"
     t = _last_test(ctx, "online_test", for_key=True)
     if t is None:
         text += " · not tested yet"
@@ -294,7 +296,7 @@ def check_eyes(ctx: HealthCtx) -> HealthItem:
     if not s.eyes_enabled:
         return HealthItem("eyes", "off", "Eyes off.")
     if not ctx.vision_ready:
-        return HealthItem("eyes", "warn", "Her eyes need the online key.")
+        return HealthItem("eyes", "warn", "Her eyes need an online model.")
     if not s.online_enabled:
         return HealthItem("eyes", "warn", "Her eyes need the online brain switched on.")
     text, status = "On", "ok"

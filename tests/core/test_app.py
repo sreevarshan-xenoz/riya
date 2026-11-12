@@ -495,7 +495,7 @@ def test_build_core_reads_secrets_after_dotenv(tmp_path, monkeypatch):
     monkeypatch.delenv(KEY_VAR)
     core = runner.build_core(core_args(tmp_path, hash_embed=True, secrets=str(secrets)), lambda m: None)
     assert core.online.api_key == "APP-1234567890" and core.vision.api_key == "APP-1234567890"
-    assert core.online.first_token_timeout_s == 8 and core.vision.first_token_timeout_s == 20
+    assert core.online.first_token_timeout_s == 12 and core.vision.first_token_timeout_s == 20
     key = core.setup.deps.key
     assert key.info().source == "app" and (key.base, key.base_source) == ("DOTENV-1234567890", ".env")
     assert key.path == secrets and core.local_url == "http://127.0.0.1:1"

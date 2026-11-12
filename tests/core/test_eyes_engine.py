@@ -914,7 +914,7 @@ def test_build_core_sets_dpi_awareness_first_and_gives_eyes_their_own_model(tmp_
     core = runner.build_core(args, lambda m: None)
     assert calls[0] == "dpi" and "windows" in calls
     assert core.vision is not core.online and core.vision.first_token_timeout_s == 20
-    assert core.online.first_token_timeout_s == 8
+    assert core.online.first_token_timeout_s == 12
 
 
 # ---- no body, quitting ---------------------------------------------------------------------------------------------

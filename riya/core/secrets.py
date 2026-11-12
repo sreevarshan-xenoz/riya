@@ -56,8 +56,8 @@ def validate(raw: str) -> str:
     return key
 
 
-# The shapes body/src/welcome-logic.js looksLikeKey (and the body's fixture scan) refuse: a Gemini- or OpenAI-shaped
-# token, a word of 24+ letters and digits mixing both, or a word over 40 characters.
+# The shapes body/src/welcome-logic.js looksLikeKey (and the body's fixture scan) refuse: a Gemini-, OpenAI- or
+# OpenCode-shaped token, a word of 24+ letters and digits mixing both, or a word over 40 characters.
 _KEY_SHAPE = re.compile(r"AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}")
 _LONG_WORD = 40
 KEY_STANDIN = "[a key]"

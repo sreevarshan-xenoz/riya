@@ -136,9 +136,20 @@ def test_connection_refused_is_unavailable():
 
 
 def test_load_online_from_env():
-    assert load_online_from_env({}) is None
+    from riya.core import models
+    m = load_online_from_env({})  # OpenCode's free tier needs no key
+    assert m.base_url == models.ONLINE_BASE_URL and m.model == models.ONLINE_MODEL and m.api_key is None
+    assert load_online_from_env({"RIYA_ONLINE_API_KEY": ""}) is None  # an explicit blank turns it off
+    assert load_online_from_env({"RIYA_ONLINE_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai"}) is None
     m = load_online_from_env({"RIYA_ONLINE_API_KEY": "k"})
-    assert m.base_url == "https://generativelanguage.googleapis.com/v1beta/openai" and m.model == "gemini-flash-latest"
+    assert m.api_key == "k" and m.base_url == models.ONLINE_BASE_URL
+    m = load_online_from_env({"RIYA_ONLINE_API_KEY": "k", "RIYA_ONLINE_MODEL": "glm-5.3-flash-free",
+                              "RIYA_ONLINE_BASE_URL": "https://llm.example.test/v1"})
+    assert (m.base_url, m.model) == ("https://llm.example.test/v1", "glm-5.3-flash-free")
+    m = load_online_from_env({"RIYA_ONLINE_KEYLESS": "1", "RIYA_ONLINE_BASE_URL": "http://127.0.0.1:8090/v1"})
+    assert m.api_key is None
+    vision = models.online_pair({"RIYA_ONLINE_VISION_MODEL": "eyes-model"})[1]
+    assert vision.name == "vision" and vision.model == "eyes-model"
 
 
 def test_load_dotenv_parses_and_does_not_override(tmp_path, monkeypatch):

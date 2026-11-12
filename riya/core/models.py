@@ -8,11 +8,13 @@ import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Callable, Iterator, Protocol
+from urllib.parse import urlsplit
 
-ONLINE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-ONLINE_MODEL = "gemini-flash-latest"
+ONLINE_BASE_URL = "https://opencode.ai/inference/openai/v1"
+ONLINE_MODEL = "glm-5.3-flash-free"  # free on OpenCode (zero-retention) and multimodal: one model can be her eyes
+ONLINE_VISION_MODEL = ONLINE_MODEL
 READ_TIMEOUT_S = 120.0
-ONLINE_TIMEOUT_S = 8.0  # chat's first-token timeout
+ONLINE_TIMEOUT_S = 12.0  # chat's first-token timeout (a free gateway can be slower than a first-party API)
 VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 MAX_REPLY_BYTES = 1 << 20  # a tool-call answer is tiny; never read more than this
 LOCAL_STOP = ("\nUser:",)  # she must never write the user's next turn (the style examples' format)
@@ -188,17 +190,45 @@ def load_dotenv(path: str = ".env") -> dict[str, str]:
     return found
 
 
-def load_online_from_env(env=os.environ, name: str = "online", **kw) -> OpenAICompatModel | None:
-    """The online model from RIYA_ONLINE_*; kw (e.g. first_token_timeout_s) go to OpenAICompatModel."""
-    key = (env.get("RIYA_ONLINE_API_KEY") or "").strip()
-    if not key:
+def online_base(env: Mapping[str, str]) -> str:
+    """The online endpoint from RIYA_ONLINE_BASE_URL, else OpenCode's."""
+    return (env.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL).strip() or ONLINE_BASE_URL
+
+
+def keyless_base(base_url: str) -> bool:
+    """Whether the endpoint serves its free models without a key (any opencode.ai host)."""
+    try:
+        host = (urlsplit(base_url if "//" in base_url else "//" + base_url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "opencode.ai" or host.endswith(".opencode.ai")
+
+
+def online_available(env: Mapping[str, str]) -> bool:
+    """Whether an online model can be built: a key is set, the endpoint is keyless, or RIYA_ONLINE_KEYLESS=1. An
+    explicitly blank RIYA_ONLINE_API_KEY turns the online brain off (the check scripts use that to stay offline)."""
+    if env.get("RIYA_ONLINE_API_KEY") is not None and not env["RIYA_ONLINE_API_KEY"].strip():
+        return False
+    return (bool((env.get("RIYA_ONLINE_API_KEY") or "").strip()) or env.get("RIYA_ONLINE_KEYLESS") == "1"
+            or keyless_base(online_base(env)))
+
+
+def load_online_from_env(env=os.environ, name: str = "online", model: str | None = None,
+                         **kw) -> OpenAICompatModel | None:
+    """The online model from RIYA_ONLINE_*; kw (e.g. first_token_timeout_s) go to OpenAICompatModel. `model` overrides
+    RIYA_ONLINE_MODEL (her eyes have their own, RIYA_ONLINE_VISION_MODEL). No key is needed on a keyless endpoint."""
+    if not online_available(env):
         return None
-    return OpenAICompatModel(name, env.get("RIYA_ONLINE_BASE_URL") or ONLINE_BASE_URL, key,
-                             env.get("RIYA_ONLINE_MODEL") or ONLINE_MODEL, **kw)
+    key = (env.get("RIYA_ONLINE_API_KEY") or "").strip() or None
+    chosen = model or env.get("RIYA_ONLINE_MODEL") or ONLINE_MODEL
+    return OpenAICompatModel(name, online_base(env), key, chosen, **kw)
 
 
 def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> OpenAICompatModel | None:
-    return load_online_from_env(env, name=name, first_token_timeout_s=timeout_s)
+    model = None
+    if name == "vision":
+        model = (env.get("RIYA_ONLINE_VISION_MODEL") or "").strip() or ONLINE_VISION_MODEL
+    return load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
 
 
 def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, float], ChatModel | None] = online_model
@@ -206,3 +236,8 @@ def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, 
     """The online chat model and her eyes' own vision instance (a longer first-token timeout), the one place both are
     built, at start and when the key changes."""
     return make(env, "online", ONLINE_TIMEOUT_S), make(env, "vision", VISION_TIMEOUT_S)
+
+
+def vision_from_env(env=os.environ, timeout_s: float = VISION_TIMEOUT_S) -> OpenAICompatModel | None:
+    """The vision model alone (for the eye-check script), with RIYA_ONLINE_VISION_MODEL as its model."""
+    return online_model(env, "vision", timeout_s)
