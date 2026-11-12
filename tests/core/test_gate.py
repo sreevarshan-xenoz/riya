@@ -64,6 +64,10 @@ def test_identity_fields(monkeypatch):
     assert gate.probe_sha256() == hashlib.sha256(lf).hexdigest() == ident["probe_sha256"]
     from riya.train import build_sft
     assert gate.prompt_fp() == build_sft.prompt_fingerprint() == ident["prompt_fp"]
+    # v0.12 Task 1: the gate identity is pinned to the committed 0.11.1 calibration record (§4.12.2).
+    rec = json.loads(gate.CALIBRATION_PATH.read_text(encoding="utf-8"))
+    assert ident["prompt_fp"] == rec["prompt_fp"] == "1a865c6c75027fad8b9f0b1935eecd8bb2d347ad6e87600b9a597d07bf931d02"
+    assert gate.calibration_problem(base_sha256=rec["base_sha256"]) is None
     assert gate.SCORER_FILES[:3] == ("evaluation/style_metrics.py", "evaluation/gate_stats.py", "evaluation/gate.py")
     assert "riya/core/memory.py" in gate.SCORER_FILES and "riya/core/embed.py" in gate.SCORER_FILES
     assert all((gate.ROOT / f).is_file() for f in gate.SCORER_FILES)
