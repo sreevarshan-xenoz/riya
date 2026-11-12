@@ -1,5 +1,7 @@
 # Jarvis — prototype v0
 
+For the current Riya runtime review, test results, and prioritized next steps, see [Project status](docs/PROJECT_STATUS.md).
+
 A small, efficient research model in two parts, built to train on a **free Colab T4**:
 
 1. **Language backbone** (`jarvis/lm`): a 3:1 hybrid of **Gated DeltaNet** (linear-time recurrent memory with
