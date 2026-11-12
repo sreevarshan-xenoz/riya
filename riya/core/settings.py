@@ -1,6 +1,8 @@
 """User settings: typed defaults, validated patches, quiet hours and the Windows autostart shortcut."""
 import copy
+import ntpath
 import os
+import posixpath
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
@@ -143,7 +145,8 @@ def _check_commands(v) -> bool:
 
 
 def _check_adapter_path(v) -> bool:
-    return (isinstance(v, str) and bool(v.strip()) and len(v) <= MAX_ADAPTER_PATH and os.path.isabs(v)
+    return (isinstance(v, str) and bool(v.strip()) and len(v) <= MAX_ADAPTER_PATH
+            and (ntpath.isabs(v) or posixpath.isabs(v))
             and v.lower().endswith(".gguf") and not any(c in v for c in "\r\n\t\x00"))
 
 
