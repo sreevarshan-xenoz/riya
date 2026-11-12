@@ -72,7 +72,9 @@ def online_enabled(environ: Mapping[str, str]) -> bool:
 
 
 def _post(url: str, body: dict, headers: dict | None = None, timeout: float = 300) -> str:
-    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", **(headers or {})})
+    from riya.core.models import USER_AGENT  # opencode.ai rejects urllib's default User-Agent with 403
+    req = urllib.request.Request(url, json.dumps(body).encode(),
+                                 {"Content-Type": "application/json", "User-Agent": USER_AGENT, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())["choices"][0]["message"]["content"] or ""
 

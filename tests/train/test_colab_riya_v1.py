@@ -540,3 +540,28 @@ def test_the_run_writes_the_aborted_report_before_stopping():
     run = src.split("def _run(", 1)[1].split("\ndef ", 1)[0]
     assert "train_loop(" in run and "except NonFiniteLoss" in run and "aborted=NON_FINITE" in run
     assert run.index("except NonFiniteLoss") < run.index("save_pretrained")  # no adapter is exported after it
+
+
+def test_online_post_sends_a_client_user_agent(monkeypatch):
+    """opencode.ai's edge answers urllib's default UA with 403, so the teacher fallback must send ours."""
+    from riya.core.models import USER_AGENT
+
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+    def fake_urlopen(req, timeout=300):
+        seen["ua"] = req.get_header("User-agent")
+        return Resp()
+
+    monkeypatch.setattr(gen.urllib.request, "urlopen", fake_urlopen)
+    assert gen._post("https://opencode.ai/inference/openai/v1/chat/completions", {"messages": []}) == "ok"
+    assert seen["ua"] == USER_AGENT and not seen["ua"].startswith("Python-urllib")

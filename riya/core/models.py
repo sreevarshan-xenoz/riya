@@ -17,6 +17,8 @@ READ_TIMEOUT_S = 120.0
 ONLINE_TIMEOUT_S = 12.0  # chat's first-token timeout (a free gateway can be slower than a first-party API)
 VISION_TIMEOUT_S = 20.0  # an image request is slower to its first token than chat
 MAX_REPLY_BYTES = 1 << 20  # a tool-call answer is tiny; never read more than this
+# Cloudflare on opencode.ai answers urllib's default "Python-urllib/3.x" with 403; a normal client string is required.
+USER_AGENT = "Riya/0.5 (personal desktop companion)"
 LOCAL_STOP = ("\nUser:",)  # she must never write the user's next turn (the style examples' format)
 LOCAL_TEMPERATURE = 0.6  # her voice on the small local model (tuned live in v0.2); online keeps the 0.8 default
 log = logging.getLogger("riya.models")
@@ -59,7 +61,7 @@ class OpenAICompatModel:
             body["model"] = self.model
         if self.stop:
             body["stop"] = self.stop
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(f"{self.base_url}/chat/completions", json.dumps(body).encode(), headers)
@@ -90,7 +92,7 @@ class OpenAICompatModel:
         body = {"messages": messages, "tools": tools, "tool_choice": "auto", "max_tokens": max_tokens, "stream": False}
         if self.model is not None:
             body["model"] = self.model
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(f"{self.base_url}/chat/completions", json.dumps(body).encode(), headers)
