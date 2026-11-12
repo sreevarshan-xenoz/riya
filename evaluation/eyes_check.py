@@ -2,9 +2,10 @@
 
   python -m evaluation.eyes_check
 
-Needs RIYA_ONLINE_API_KEY (env or .env), otherwise it prints "skipped (no online key)". The screenshot stays in memory
-(nothing is written but the small .txt, which is deleted). PASS when the answer to "what does this say?" has 4721.
-Notepad is closed and the temp file deleted afterwards. Always exits 0; not part of pytest.
+Needs an online model: OpenCode's free one needs no key, while a custom RIYA_ONLINE_BASE_URL does. Without one it prints
+"skipped (no online key)". The screenshot stays in memory (nothing is written but the small .txt, which is deleted).
+PASS when the answer to "what does this say?" has 4721. Notepad is closed and the temp file deleted afterwards. Always
+exits 0; not part of pytest.
 """
 import argparse
 import os
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from riya.core.eyes.capture import WindowSource, grab_jpeg, make_window_source, set_dpi_awareness
 from riya.core.eyes.see import describe, vision_messages
-from riya.core.models import ChatModel, complete, load_dotenv, load_online_from_env
+from riya.core.models import ChatModel, complete, load_dotenv, vision_from_env
 
 TEXT = "Riya eyes check 4721"
 CODE = "4721"
@@ -187,7 +188,7 @@ def main(argv: list[str] | None = None, env=None) -> int:
         if env is None:
             load_dotenv()
             env = os.environ
-        model = load_online_from_env(env, name="vision", first_token_timeout_s=VISION_TIMEOUT_S)
+        model = vision_from_env(env, VISION_TIMEOUT_S)
         if model is None:
             print(SKIP)
         elif not WINDOWS:

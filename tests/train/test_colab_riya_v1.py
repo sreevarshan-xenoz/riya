@@ -212,8 +212,10 @@ def test_online_fallback_is_off_unless_asked_and_throttled(tmp_path):
 
 
 def test_online_env_gate():
+    assert gen.online_enabled({"TEACHER_ONLINE": "1"}) is True  # OpenCode's free tier needs no key
     assert gen.online_enabled({"TEACHER_ONLINE": "1", "RIYA_ONLINE_API_KEY": "k"}) is True
     assert gen.online_enabled({"TEACHER_ONLINE": "1", "RIYA_ONLINE_API_KEY": " "}) is False
+    assert gen.online_enabled({"TEACHER_ONLINE": "1", "RIYA_ONLINE_BASE_URL": "https://llm.example.test/v1"}) is False
     assert gen.online_enabled({"RIYA_ONLINE_API_KEY": "k"}) is False
     assert gen.online_enabled({"TEACHER_ONLINE": "0", "RIYA_ONLINE_API_KEY": "k"}) is False
 

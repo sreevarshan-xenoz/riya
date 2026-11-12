@@ -175,7 +175,7 @@ def run(local_url: str, online_wanted: bool = False, repeat: int = 1, dials: dic
         load_dotenv()
         online = load_online_from_env()
         if online is None:
-            print("Note: --online given but no RIYA_ONLINE_API_KEY is set; running local only.")
+            print("Note: --online given but no online model is available; running local only.")
     emb, embedder_id = embedder if embedder is not None else make_embedder("auto")
     transcript = run_probes(probes, local, online, repeat, dials, emb)
     answered = [r for r in transcript if not r["error"]]

@@ -9,8 +9,9 @@ filter (riya.train.filter_sft) runs afterwards, locally, and pairs answers on id
     python -m colab.gen_riya_v1                       # starts the teacher itself
     python -m colab.gen_riya_v1 --url http://127.0.0.1:8090 --limit 24   # an already-running server, a few rows
 
-The online model is a fallback for a request the teacher failed on. It is off unless TEACHER_ONLINE=1 and
-RIYA_ONLINE_API_KEY is set, and then it is limited to ONLINE_RPM requests a minute.
+The online model is a fallback for a request the teacher failed on. It is off unless TEACHER_ONLINE=1 and an online
+model is available (OpenCode's free tier needs no key; RIYA_ONLINE_API_KEY lifts its limits), and then it is limited
+to ONLINE_RPM requests a minute.
 See docs/superpowers/specs/2026-10-19-riya-v0.8-riya-v1-design.md §2.2."""
 import argparse
 import json
@@ -34,8 +35,8 @@ TEMPERATURE = 0.8
 ONLINE_RPM = 10  # the free tier
 SERVER = os.environ.get("LLAMA_SERVER", "/content/bin/llama-server")
 SLOT_CTX = 4096  # per slot: her system prompt, examples and memory block, plus the answer
-ONLINE_BASE_URL = os.environ.get("RIYA_ONLINE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
-ONLINE_MODEL = os.environ.get("RIYA_ONLINE_MODEL", "gemini-flash-latest")
+ONLINE_BASE_URL = os.environ.get("RIYA_ONLINE_BASE_URL", "https://opencode.ai/inference/openai/v1")
+ONLINE_MODEL = os.environ.get("RIYA_ONLINE_MODEL", "glm-5.3-flash-free")
 
 
 def teacher_body(messages: list[dict]) -> dict:
@@ -65,8 +66,9 @@ def online_gap_s(rpm: int = ONLINE_RPM) -> float:
 
 
 def online_enabled(environ: Mapping[str, str]) -> bool:
-    """The online fallback needs both TEACHER_ONLINE=1 and a non-blank RIYA_ONLINE_API_KEY."""
-    return environ.get("TEACHER_ONLINE") == "1" and bool((environ.get("RIYA_ONLINE_API_KEY") or "").strip())
+    """The online fallback needs TEACHER_ONLINE=1 and an online model: OpenCode's free tier needs no key."""
+    from riya.core.models import online_available
+    return environ.get("TEACHER_ONLINE") == "1" and online_available(environ)
 
 
 def _post(url: str, body: dict, headers: dict | None = None, timeout: float = 300) -> str:
@@ -81,13 +83,14 @@ def _post_chat(url: str, body: dict, timeout: float = 300) -> str:
 
 
 def _online_chat(environ: Mapping[str, str]) -> Callable[[dict], str]:
-    key = environ["RIYA_ONLINE_API_KEY"].strip()
+    key = (environ.get("RIYA_ONLINE_API_KEY") or "").strip()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
 
     def chat(body: dict) -> str:
-        # Gemini's thinking tokens count against max_tokens, so leave room or the reply comes back empty or clipped
+        # a reasoning model's thinking tokens count against max_tokens, so leave room or the reply comes back empty
         sent = {"model": ONLINE_MODEL, "messages": body["messages"], "max_tokens": body["max_tokens"] * 4,
                 "temperature": body["temperature"]}  # no chat_template_kwargs: that is llama-server's
-        return _post(f"{ONLINE_BASE_URL.rstrip('/')}/chat/completions", sent, {"Authorization": f"Bearer {key}"}, 120)
+        return _post(f"{ONLINE_BASE_URL.rstrip('/')}/chat/completions", sent, headers, 120)
     return chat
 
 
