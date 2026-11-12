@@ -2294,6 +2294,7 @@ class RiyaCore:
         return health.HealthCtx(
             now=now, settings=read("settings", lambda: self.settings),
             local_url=self.local_url, key=read("key", lambda: self.setup.deps.key.info()),
+            online_keyless=self.online is not None and not self.setup.deps.key.info().mask,
             last_tests=read("tests", tests),
             voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
             receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,

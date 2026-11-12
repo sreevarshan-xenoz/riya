@@ -104,7 +104,9 @@ def test_online_states(tmp_path):
     assert mask.startswith("••••") and mask.endswith(CANARY[-4:])
     app = KeyInfo(mask, "app")
     item = check_online(ctx(tmp_path))
-    assert (item.status, item.fix) == ("off", None) and "free Gemini key" in item.detail
+    assert (item.status, item.fix) == ("off", None) and "paste a key below" in item.detail
+    item = check_online(ctx(tmp_path, online_keyless=True))
+    assert (item.status, item.fix, item.detail) == ("ok", "online_test", "Free · no key needed · not tested yet")
     item = check_online(ctx(tmp_path, key=app))
     assert (item.status, item.fix) == ("ok", "online_test")
     assert item.detail == f"Key {mask} saved in Riya · not tested yet"
@@ -155,7 +157,7 @@ def test_voice_mic_eyes_autostart_colab_memory_states(tmp_path):
     item = check_eyes(ctx(tmp_path, settings=settings(eyes_enabled=False)))
     assert (item.status, item.detail) == ("off", "Eyes off.")
     item = check_eyes(ctx(tmp_path, vision_ready=False))
-    assert (item.status, item.detail) == ("warn", "Her eyes need the online key.")
+    assert (item.status, item.detail) == ("warn", "Her eyes need an online model.")
     item = check_eyes(ctx(tmp_path, settings=settings(online_enabled=False)))
     assert (item.status, item.detail) == ("warn", "Her eyes need the online brain switched on.")
     item = check_eyes(ctx(tmp_path, key=key))

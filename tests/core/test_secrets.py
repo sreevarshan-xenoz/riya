@@ -179,12 +179,13 @@ def test_redact_filter_always_passes_and_scrubs_exc_info():
 
 
 def test_online_pair(monkeypatch):
-    assert online_pair({}) == (None, None)
+    free, free_vision = online_pair({})  # OpenCode's free tier: no key needed
+    assert free is not None and free_vision is not None and free.api_key is None and free_vision.api_key is None
     online, vision = online_pair({KEY_VAR: "ENVKEY-11111111"})
     assert online is not None and vision is not None and online is not vision
-    assert online.first_token_timeout_s == 8 and vision.first_token_timeout_s == 20
+    assert online.first_token_timeout_s == 12 and vision.first_token_timeout_s == 20
     assert online.name == "online" and vision.name == "vision"
-    assert ONLINE_TIMEOUT_S == 8.0 and VISION_TIMEOUT_S == 20.0
+    assert ONLINE_TIMEOUT_S == 12.0 and VISION_TIMEOUT_S == 20.0
     calls = []
 
     def make(env, name, timeout_s):
@@ -192,7 +193,7 @@ def test_online_pair(monkeypatch):
         return None
     env = {KEY_VAR: "ENVKEY-11111111"}
     assert online_pair(env, make) == (None, None)
-    assert calls == [(env, "online", 8.0), (env, "vision", 20.0)]
+    assert calls == [(env, "online", 12.0), (env, "vision", 20.0)]
 
 
 def test_the_runner_still_exports_the_vision_timeout():
