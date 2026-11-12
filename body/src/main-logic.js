@@ -116,8 +116,8 @@ function forgetOnDisconnect(cache) {
   for (const type of FORGET_ON_DISCONNECT) cache.delete(type);
 }
 
-/** The one page "Get a free key" opens, from the main process. The renderer asks by channel only, never with a URL. */
-const KEY_URL = "https://aistudio.google.com/apikey";
+/** The one page "Get a key" opens, from the main process. The renderer asks by channel only, never with a URL. */
+const KEY_URL = "https://opencode.ai/console";
 
 /** Open the welcome once per session, and only for a core that says the user is not onboarded (an older core without
  *  the field never opens it). */

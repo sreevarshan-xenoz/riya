@@ -109,8 +109,8 @@ test("keySourceText says where the key comes from", () => {
   assert.equal(H.keySourceText("app"), "Saved in Riya");
   assert.equal(H.keySourceText(".env"), "Set via .env (edit that file to remove it)");
   assert.equal(H.keySourceText("env"), "Set via the RIYA_ONLINE_API_KEY environment variable");
-  assert.equal(H.keySourceText(null), "No key yet");
-  assert.equal(H.keySourceText("<b>"), "No key yet");
+  assert.equal(H.keySourceText(null), "No key needed");
+  assert.equal(H.keySourceText("<b>"), "No key needed");
 });
 
 test("voiceItems takes the string voices of a voices message", () => {

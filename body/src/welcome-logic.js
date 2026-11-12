@@ -16,7 +16,7 @@ const FALLBACK_HOTKEY = "the don't-look hotkey";
 const LINES = {
   intro: "Hi! I'm Riya~ I live on your desktop, I chat, I keep you company, and I keep an eye on your agents. Let's set me up. It takes a minute, and you can skip anything.",
   name: "What should I call you?",
-  key: "I can think harder with an online brain. Paste a free Gemini key if you'd like, or skip and I'll stay fully local.",
+  key: "I can think harder with an online brain. It's free (OpenCode) and needs no key; a key is optional, or skip and I'll stay fully local.",
   voice: "Pick the voice you like best~ Press Play to hear me.",
   mode: "How should I show up? A little buddy on your desktop, a side panel, or a normal window.",
   eyes: "Can I peek at your screen now and then? I never look at private things, and {hotkey} makes me look away any time.",
@@ -42,8 +42,8 @@ const KEY_IN_NAME = "That looks like a key, not a name~ Paste it on the next ste
 const KEY_SHAPE = /AIza[\w-]{8,}|sk-[A-Za-z0-9_-]{8,}/;
 const JOINERS = /[\u200C\u200D]/g; // ZWNJ and ZWJ: part of many Malayalam, Hindi and Persian spellings
 
-/** A pasted API key: a Gemini- or OpenAI-shaped token, a word of 24+ letters and digits mixing both, or one over 40
- *  characters. */
+/** A pasted API key: a Gemini-, OpenAI- or OpenCode-shaped token, a word of 24+ letters and digits mixing both, or one
+ *  over 40 characters. */
 function looksLikeKey(text) {
   if (typeof text !== "string") return false;
   return KEY_SHAPE.test(text) || text.split(/\s+/).some((word) => word.length > MAX_NAME
