@@ -92,7 +92,8 @@ Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
   only removes the pasted one. The key is only ever shown masked (`••••1a2b`).
 - **The online brain is free by default.** It runs on OpenCode's free models and needs no key; a key is optional and
   only lifts the free limits. `RIYA_ONLINE_BASE_URL` and `RIYA_ONLINE_MODEL` (plus `RIYA_ONLINE_VISION_MODEL` for her
-  eyes) point her at another OpenAI-compatible provider.
+  eyes) point her at another OpenAI-compatible provider. Set an empty `RIYA_ONLINE_API_KEY=` in `.env` or the
+  environment to keep her fully local.
 - **Her memory model downloads once.** The first start waits while Riya fetches her memory model (bge-small, about
   66 MB) into `%LOCALAPPDATA%\Riya\models`. If it can't download (offline), she runs that whole session on a simpler
   memory and tries again on the next start. With it, a personal request ("pick a snack for me, you know what I like")
