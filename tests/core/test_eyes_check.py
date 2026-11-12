@@ -21,8 +21,8 @@ def test_passed_needs_the_code():
     assert not ec.passed("It says Riya eyes check 4712.") and not ec.passed("")
 
 
-def test_main_skips_without_a_key(capsys):
-    assert ec.main([], env={}) == 0
+def test_main_skips_when_online_is_off(capsys):
+    assert ec.main([], env={"RIYA_ONLINE_API_KEY": ""}) == 0
     assert capsys.readouterr().out.strip() == "skipped (no online key)"
     assert ec.main([], env={"RIYA_ONLINE_API_KEY": "  "}) == 0
     assert "skipped (no online key)" in capsys.readouterr().out
@@ -31,7 +31,7 @@ def test_main_skips_without_a_key(capsys):
 def test_main_skip_does_not_touch_windows_or_notepad(monkeypatch):
     monkeypatch.setattr(ec, "live", lambda model: pytest.fail("must not run live"))
     monkeypatch.setattr(ec.subprocess, "Popen", lambda *a, **k: pytest.fail("must not open Notepad"))
-    assert ec.main([], env={}) == 0
+    assert ec.main([], env={"RIYA_ONLINE_API_KEY": ""}) == 0
 
 
 def test_main_with_a_key_runs_live_with_the_vision_model(monkeypatch):
@@ -40,6 +40,14 @@ def test_main_with_a_key_runs_live_with_the_vision_model(monkeypatch):
     monkeypatch.setattr(ec, "WINDOWS", True)
     assert ec.main([], env={"RIYA_ONLINE_API_KEY": "k"}) == 0
     assert seen[0].name == "vision" and seen[0].first_token_timeout_s == 20.0
+
+
+def test_main_uses_the_free_online_model_without_a_key(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ec, "live", lambda model: seen.append(model) or True)
+    monkeypatch.setattr(ec, "WINDOWS", True)
+    assert ec.main([], env={}) == 0
+    assert seen[0].api_key is None
 
 
 def test_help_works(capsys):
@@ -217,7 +225,7 @@ def test_main_returns_0_when_live_raises(monkeypatch, capsys):
 
 
 def test_main_returns_0_when_setup_raises(monkeypatch, capsys):
-    monkeypatch.setattr(ec, "load_online_from_env", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad env")))
+    monkeypatch.setattr(ec, "vision_from_env", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad env")))
     assert ec.main([], env={}) == 0
     assert "FAIL: ValueError: bad env" in capsys.readouterr().out
 
