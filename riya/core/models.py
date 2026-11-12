@@ -208,7 +208,10 @@ def keyless_base(base_url: str) -> bool:
 
 def online_available(env: Mapping[str, str]) -> bool:
     """Whether an online model can be built: a key is set, the endpoint is keyless, or RIYA_ONLINE_KEYLESS=1. An
-    explicitly blank RIYA_ONLINE_API_KEY turns the online brain off (the check scripts use that to stay offline)."""
+    explicitly blank RIYA_ONLINE_API_KEY or RIYA_ONLINE_OFFLINE=1 turns the online brain off (the check scripts use
+    that to stay offline, even when a saved key exists)."""
+    if env.get("RIYA_ONLINE_OFFLINE") == "1":
+        return False
     if env.get("RIYA_ONLINE_API_KEY") is not None and not env["RIYA_ONLINE_API_KEY"].strip():
         return False
     return (bool((env.get("RIYA_ONLINE_API_KEY") or "").strip()) or env.get("RIYA_ONLINE_KEYLESS") == "1"

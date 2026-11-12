@@ -145,9 +145,9 @@ def wait_for_token(deadline_s: float) -> str | None:
 
 
 def spawn_core(tmp: Path):
-    """The child core on a temp db: silent, hash embedder, and no online key (an empty variable is never overridden by
-    .env), so it makes no network calls and never glances at the screen. Its output goes to a log file in tmp."""
-    env = dict(os.environ, RIYA_ONLINE_API_KEY="", PYTHONIOENCODING="utf-8")
+    """The child core on a temp db: silent, hash embedder, and online off (the offline flag also beats a saved key), so
+    it makes no network calls and never glances at the screen. Its output goes to a log file in tmp."""
+    env = dict(os.environ, RIYA_ONLINE_API_KEY="", RIYA_ONLINE_OFFLINE="1", PYTHONIOENCODING="utf-8")
     log = open(tmp / "core.log", "w", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, "-m", "riya.core", "--db", str(tmp / "riya.db"), "--no-voice",
                              "--hash-embed"], cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)

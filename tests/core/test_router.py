@@ -142,6 +142,8 @@ def test_load_online_from_env():
     m = load_online_from_env({})  # OpenCode's free tier needs no key
     assert m.base_url == models.ONLINE_BASE_URL and m.model == models.ONLINE_MODEL and m.api_key is None
     assert load_online_from_env({"RIYA_ONLINE_API_KEY": ""}) is None  # an explicit blank turns it off
+    assert load_online_from_env({"RIYA_ONLINE_OFFLINE": "1"}) is None
+    assert load_online_from_env({"RIYA_ONLINE_OFFLINE": "1", "RIYA_ONLINE_API_KEY": "k"}) is None  # beats a saved key
     assert load_online_from_env({"RIYA_ONLINE_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai"}) is None
     m = load_online_from_env({"RIYA_ONLINE_API_KEY": "k"})
     assert m.api_key == "k" and m.base_url == models.ONLINE_BASE_URL
