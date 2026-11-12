@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from riya.core.models import ModelUnavailable, OpenAICompatModel, load_online_from_env
+from riya.core.models import USER_AGENT, ModelUnavailable, OpenAICompatModel, load_online_from_env
 from riya.core.router import Router, needs_thinking
 from tests.fakes import FakeModel
 
@@ -116,6 +116,7 @@ def test_openai_compat_sends_body_and_auth_and_times_out_before_first_token():
     class H(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             seen["auth"], seen["path"] = self.headers.get("Authorization"), self.path
+            seen["ua"] = self.headers.get("User-Agent")
             seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
             threading.Event().wait(1.0)
 
@@ -127,6 +128,7 @@ def test_openai_compat_sends_body_and_auth_and_times_out_before_first_token():
         list(OpenAICompatModel("t", url, api_key="k", model="m", first_token_timeout_s=0.3).stream(MSGS))
     srv.shutdown()
     assert seen["auth"] == "Bearer k" and seen["path"] == "/chat/completions"
+    assert seen["ua"] == USER_AGENT and not seen["ua"].startswith("Python-urllib")
     assert b'"model": "m"' in seen["body"] and b'"stream": true' in seen["body"]
 
 
