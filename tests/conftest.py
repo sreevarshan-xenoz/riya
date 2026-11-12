@@ -42,6 +42,7 @@ def no_real_user_files(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))  # code that reads these directly (not through
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # the patched defaults) can't reach the real folders
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     from riya.core import embed
 
     monkeypatch.setattr(embed, "_load_text_embedding", real_paths.no_fastembed)  # a test may swap it; undone after
