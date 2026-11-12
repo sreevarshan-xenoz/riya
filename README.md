@@ -81,14 +81,18 @@ python -m jarvis.voice.synth_prompts --n 20000  # teacher requests -> data/voice
 
 Riya (`riya/` core, `body/` Electron) sets herself up from inside the app:
 
-- **Welcome.** On a new install she opens a short welcome in her own voice: your name, an optional Gemini key, her
-  voice, how she shows up, her eyes, and your agents. Every step is skippable, and Settings opens it again any time.
+- **Welcome.** On a new install she opens a short welcome in her own voice: your name, an optional OpenCode key (her
+  free online brain needs none), her voice, how she shows up, her eyes, and your agents. Every step is skippable, and
+  Settings opens it again any time.
 - **Settings → Health.** One row per thing (local and online brain, voice, mic, look, eyes, Claude Code, Colab logs,
   memory, start with Windows), each with at most one fix button. Anything that reaches outside Riya (a key test, the
   eye test, Connect or Disconnect Claude Code) first shows exactly what it will do and runs only on your Yes.
 - **Where the key lives.** A key pasted in the welcome or in Health is saved to `%LOCALAPPDATA%\Riya\secrets.env`,
   never in the repo. A key in the repo `.env` still works, but the pasted key wins; "Remove saved key" in Health
   only removes the pasted one. The key is only ever shown masked (`••••1a2b`).
+- **The online brain is free by default.** It runs on OpenCode's free models and needs no key; a key is optional and
+  only lifts the free limits. `RIYA_ONLINE_BASE_URL` and `RIYA_ONLINE_MODEL` (plus `RIYA_ONLINE_VISION_MODEL` for her
+  eyes) point her at another OpenAI-compatible provider.
 - **Her memory model downloads once.** The first start waits while Riya fetches her memory model (bge-small, about
   66 MB) into `%LOCALAPPDATA%\Riya\models`. If it can't download (offline), she runs that whole session on a simpler
   memory and tries again on the next start. With it, a personal request ("pick a snack for me, you know what I like")
