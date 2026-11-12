@@ -156,6 +156,7 @@ test("StatusLine.clearsAt is when the error line disappears", () => {
 });
 
 test("isSettingsError spots errors that name a settings key", () => {
+  assert.equal(isSettingsError("invalid set_settings"), true);
   assert.equal(isSettingsError("invalid value for setting 'voice': ''"), true);
   assert.equal(isSettingsError("unknown setting 'colour'"), true);
   assert.equal(isSettingsError("couldn't change autostart: access denied"), true);

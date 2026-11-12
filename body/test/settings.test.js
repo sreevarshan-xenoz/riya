@@ -66,6 +66,13 @@ test("ErrorRouter sends an error to the setting it names, else to the latest pen
   assert.equal(r.route("anything"), "global");
 });
 
+test("ErrorRouter sends an input-free settings error to the pending control", () => {
+  const r = new L.ErrorRouter();
+  r.sent("setting:eyes_deny_titles");
+  assert.equal(r.route("invalid set_settings"), "setting:eyes_deny_titles");
+  assert.equal(r.route("invalid set_settings"), "global");
+});
+
 test("ErrorRouter forgets pending actions once the core answers", () => {
   const r = new L.ErrorRouter();
   r.sent("fact:3");

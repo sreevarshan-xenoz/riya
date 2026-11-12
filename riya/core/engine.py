@@ -2115,10 +2115,10 @@ class RiyaCore:
                 self._reset_learning()
                 return
             elif isinstance(msg, SetSettings):
-                self._set_settings(msg.patch)
+                self._set_settings(msg.patch, reply=send)
                 return
             elif isinstance(msg, DontLook):
-                self._set_settings({"dont_look": msg.on})
+                self._set_settings({"dont_look": msg.on}, reply=send)
                 return
             elif isinstance(msg, TalkHotkey):
                 self.talk_requested = True
@@ -2156,13 +2156,15 @@ class RiyaCore:
                            glances=[GlanceInfo(**asdict(g)) for g in mem.list_glances()],
                            notes=[NoteInfo(id=n.id, at=n.at, text=n.text) for n in self.hands.notes()])
 
-    def _set_settings(self, patch: dict) -> None:
+    def _set_settings(self, patch: dict, reply: Callable[[BaseModel], None] | None = None) -> None:
+        send = reply or self.emit
         try:
             self.patch_settings(patch)
-        except ValueError as e:
-            self.emit(ErrorMsg(message=str(e)))
-        except OSError as e:
-            self.emit(ErrorMsg(message=f"couldn't change autostart: {e}"))
+        except ValueError:
+            # Validator errors may contain pasted secrets (unknown keys or denylist patterns).
+            send(ErrorMsg(message="invalid set_settings"))
+        except OSError:
+            send(ErrorMsg(message="couldn't change autostart: check Settings → Health"))
 
     # ---- SetupHost: what the Health page's actions may touch ---------------------------------------------------------
     def patch_settings(self, patch: dict) -> Settings:
