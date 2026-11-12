@@ -36,8 +36,9 @@ def parse_ps_json(text: str) -> list[dict]:
 
 
 def _under(path: str, root: Path) -> bool:
-    base = os.path.normcase(os.path.normpath(str(root)))
-    return os.path.normcase(os.path.normpath(path)).startswith(base + os.sep)
+    base = os.path.normpath(str(root)).casefold()
+    target = os.path.normpath(path).casefold()
+    return target.startswith(base + os.sep) or target.replace("\\", "/").startswith(base.replace("\\", "/") + "/")
 
 
 def body_cpu_seconds(run=subprocess.run) -> dict[int, float]:
