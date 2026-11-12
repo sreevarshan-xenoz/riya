@@ -299,7 +299,7 @@ test("shouldOpenWelcome only for onboarded false, once", () => {
 });
 
 test("KEY_URL is the one fixed page the main process opens", () => {
-  assert.equal(M.KEY_URL, "https://aistudio.google.com/apikey");
+  assert.equal(M.KEY_URL, "https://opencode.ai/console");
 });
 
 test("welcomeClosedMessage: closing counts as skipping, quitting sends nothing, onboarded sends nothing", () => {

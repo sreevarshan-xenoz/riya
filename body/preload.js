@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld("riya", {
   getPack: () => ipcRenderer.invoke("pack:get"),
   /** Settings only: open the first-run welcome again. Takes no argument. */
   openWelcome: () => ipcRenderer.send("welcome:open"),
-  /** Welcome and Settings: the main process opens its one fixed "get a free key" page. Takes no argument, never a URL. */
+  /** Welcome and Settings: the main process opens its one fixed "get a key" page. Takes no argument, never a URL. */
   openKeyPage: () => ipcRenderer.send("welcome:key-page"),
   /** Buddy: cb(view) for every pet view main sends on "pet:view" (the neutral OFF_VIEW when the pet is off). */
   onPetView: (cb) => ipcRenderer.on("pet:view", (_event, view) => cb(view)),

@@ -45,7 +45,7 @@ const KEY_SOURCES = {
   ".env": "Set via .env (edit that file to remove it)",
   env: "Set via the RIYA_ONLINE_API_KEY environment variable",
 };
-const NO_KEY = "No key yet";
+const NO_KEY = "No key needed";
 
 const has = (obj, key) => typeof key === "string" && Object.prototype.hasOwnProperty.call(obj, key);
 const isObject = (x) => x !== null && typeof x === "object";
