@@ -5,7 +5,7 @@ the agent_activity and presence messages come back over the WebSocket, as her bu
 
 By default it talks to a core that is already running (ws://127.0.0.1:8765/ws with no Origin header, hooks on
 127.0.0.1:8766, the token read from the default path). With --spawn it starts its own core for the run (temp --db,
---no-voice, --hash-embed, no online key, so no network and no screen glances), asks it to quit over the socket and waits
+--no-voice, --hash-embed, online off, so no network and no screen glances), asks it to quit over the socket and waits
 up to 10 s; only that one child is ever terminated. It POSTs straight to the receiver: it never goes through real Claude
 Code hooks and never touches Claude Code's settings.
 
