@@ -29,13 +29,14 @@ from riya.core.protocol import Mouth
 from riya.core.secrets import KEY_VAR, OnlineKey
 from riya.core.setup import SetupDeps
 from riya.core.store import open_db
+from riya.paths import data_dir
 from riya.voice_candidates import FEMININE, voice_choices
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 LOGWATCH_EVERY_S = 60.0
 ACTIVITY_EVERY_S = 0.25  # the riya-activity thread (agent_activity flows while the tick thread speaks)
-DEFAULT_DB = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "riya.db"
+DEFAULT_DB = data_dir() / "riya.db"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("riya")
 

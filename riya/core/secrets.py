@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import sys
 import threading
 import unicodedata
 from collections.abc import Mapping
@@ -17,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from riya.agents.install_hooks import write_atomic
+from riya.paths import data_dir
 
 KEY_VAR = "RIYA_ONLINE_API_KEY"
 MAX_KEY_LEN = 200
@@ -40,7 +39,7 @@ class InvalidKey(ValueError):
 
 
 def default_path() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "secrets.env"
+    return data_dir() / "secrets.env"
 
 
 def validate(raw: str) -> str:

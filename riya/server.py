@@ -15,7 +15,9 @@ caches are kept per variant, so a conversation slot saved by one variant is neve
 import argparse
 import json
 import os
+import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -25,7 +27,18 @@ from pathlib import Path
 from riya import brain
 from riya.brain import slot_key, usable_adapter, vetted_adapter
 
-LLAMA_SERVER = os.environ.get("LLAMA_SERVER", str(Path.home() / "llama.cpp" / "llama-server.exe"))
+
+def default_llama_server(home: Path | None = None, which: Callable[[str], str | None] = shutil.which) -> str:
+    """Windows: ~/llama.cpp/llama-server.exe. Elsewhere: the newest build unpacked under ~/llama.cpp (a release
+    tarball unpacks to llama-bNNNN/), else llama-server on PATH, else the bare name."""
+    root = (home or Path.home()) / "llama.cpp"
+    if sys.platform == "win32":
+        return str(root / "llama-server.exe")
+    builds = sorted(root.glob("*/llama-server"), key=lambda p: int("0" + "".join(filter(str.isdigit, p.parent.name))))
+    return str(builds[-1]) if builds else which("llama-server") or "llama-server"
+
+
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER") or default_llama_server()
 
 
 def free_vram_mb():
@@ -61,13 +74,15 @@ class RiyaServer:
     def __init__(self, model, port=8090, ctx=16384, threads=6, gpu_layers=99, slot_dir="riya_slots", extra=(), *,
                  lora: str | None = None, fallback_to_base: bool = True, vetted_only: bool = True,
                  popen=subprocess.Popen, healthy: Callable[[int], bool] | None = None,
-                 ready_timeout_s: float = 120.0, env: Mapping[str, str] | None = None):
+                 ready_timeout_s: float = 120.0, env: Mapping[str, str] | None = None, device: str | None = None):
         """vetted_only (the default, and the only mode Riya's own server runs in): an adapter is served only while it
         has a matching champion adopt record. The champion gate turns it off for its own server, which is how a
         candidate gets measured at all. env: llama-server's environment (None: this process's own); the champion's
-        CPU check passes one with an empty CUDA_VISIBLE_DEVICES."""
+        CPU check passes one with an empty CUDA_VISIBLE_DEVICES. device: the one GPU to use (llama-server's -dev, e.g.
+        Vulkan1 for a laptop's discrete card, so a slow integrated GPU never takes a share); CPU mode then uses none,
+        leaving the GPU's memory to whatever pushed her off it."""
         self.model, self.port, self.ctx, self.threads, self.gpu_layers = model, port, ctx, threads, gpu_layers
-        self.slot_root, self.extra = os.path.abspath(slot_dir), list(extra)
+        self.slot_root, self.extra, self.device = os.path.abspath(slot_dir), list(extra), device
         self.wanted = lora  # the raw value asked for
         self.lora, self.lora_failed = usable_adapter(lora), None  # lora_failed: an adapter that didn't load
         self.unvetted: str | None = None  # an adapter the last launch skipped: no matching champion adopt record
@@ -136,6 +151,7 @@ class RiyaServer:
         return [LLAMA_SERVER, "-m", self.model, "--port", str(self.port), "-c", str(self.ctx), "-np", "1",
                 "-ngl", str(self.gpu_layers if gpu else 0), "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
                 "-t", str(self.threads), "--slot-save-path", slot_dir, "--no-webui",
+                *(["-dev", self.device if gpu else "none"] if self.device else []),
                 *(["--lora", self._serve] if self._serve else []), *self.extra]
 
     def _post(self, path, body):
@@ -285,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--threads", type=int, default=6)
     p.add_argument("--low_mb", type=int, default=800, help="go to CPU when free VRAM drops below this")
     p.add_argument("--high_mb", type=int, default=2500, help="return to GPU when free VRAM stays above this")
+    p.add_argument("--device", help="the one GPU llama-server may use (e.g. Vulkan1); CPU mode then uses none")
     p.add_argument("--lora", help="her fine-tuned adapter (a .gguf LoRA file)")
     p.add_argument("--follow-settings", action="store_true",
                    help="every 3 s read the local_adapter setting (read-only) and switch to it (an unset setting "
@@ -315,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
             wanted = setting()
         except Exception:
             wanted = None
-    srv = RiyaServer(a.model, a.port, a.ctx, a.threads, lora=wanted)
+    srv = RiyaServer(a.model, a.port, a.ctx, a.threads, lora=wanted, device=a.device)
     if wanted and not srv.lora:
         print(f"[riya] the adapter {wanted} was not found; serving the base model", flush=True)
     try:

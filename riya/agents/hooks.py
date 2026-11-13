@@ -3,7 +3,6 @@ bounds and enqueues; the core drains the queue into the AgentHub on its own thre
 import hmac
 import json
 import logging
-import os
 import re
 import secrets
 import threading
@@ -15,6 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 
 from riya.agents.peer import PeerMap
+from riya.paths import data_dir
 
 HOOK_HOST = "127.0.0.1"
 HOOK_PORT = 8766
@@ -27,7 +27,7 @@ log = logging.getLogger("riya.hooks")
 
 
 def default_token_path() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Riya" / "hook_token"
+    return data_dir() / "hook_token"
 
 
 def load_or_create_token(path: Path | str) -> str:
