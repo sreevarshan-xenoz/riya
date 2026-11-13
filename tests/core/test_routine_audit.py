@@ -261,3 +261,17 @@ def test_odd_values_never_stop_the_audit():
     fine = _say(db, "S5", {}, T0)
     assert au.audit(db, T0 + 1, frozen=False, glances=_no_glances) == 3
     assert {db.statement(r.id).verdict for r in (huge, text, fine)} == {"unverifiable"}
+
+
+def test_an_s7_bid_hunch_counts_a_game_that_began_before_the_band():
+    db = _db()
+    row = _say(db, "S7", {"predictor": "P4", "bucket": "weekday/evening", "band_start": T0 + H,
+                          "band_end": T0 + 5 * H}, T0, claim=False, where="bid")
+    db.log_presence(T0 + 45 * 60, "gaming")  # started 15 minutes before the band, still on at its start
+    assert _verdict(db, row, T0 + 5 * H) == "true"
+    db2 = _db()
+    row = _say(db2, "S7", {"predictor": "P4", "bucket": "weekday/evening", "band_start": T0 + H,
+                           "band_end": T0 + 5 * H}, T0, claim=False, where="bid")
+    db2.log_presence(T0 + 30 * 60, "gaming")
+    db2.log_presence(T0 + 50 * 60, "gaming_end")  # over before the band
+    assert _verdict(db2, row, T0 + 5 * H) == "false"

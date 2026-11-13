@@ -410,3 +410,12 @@ def test_a_twin_reset_clears_p2_unsure_and_odd_inputs_never_raise():
     assert r.observe_return(3 * H, nan) is None and r.observe_run(_done(), "claude:riya", nan) is None
     assert r.observe_presence(nan, "focused", None) == [] and r.observe_presence(clock.now(), "focused", None) == []
     assert r.scrub(["oops", {"role": "assistant"}]) == ["oops", {"role": "assistant"}]
+
+
+def test_a_run_end_without_a_time_clears_the_last_run():
+    r, clock, _ = make()
+    a = r.observe_run(_done(run_s=600), "claude:riya", clock.now())
+    assert "a1" in r._runs
+    assert r.observe_run(_done(run_s=None), "claude:riya", clock.now()) is None
+    assert "a1" not in r._runs
+    assert r.report(_done(run_s=None), a, sensed(now=clock.now())) is None  # the old run's time is never told

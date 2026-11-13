@@ -4,6 +4,7 @@ statements about the user's routine that are engine-made claims or hunches, logg
 The Routine facade is what the engine calls. With the switch off every method is a no-op (None or []), so she is
 exactly v0.11. Learning off freezes it: nothing is observed and every claim falls back to its hunch.
 """
+import functools
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -50,6 +51,16 @@ class Sensed:
     short_greeting: bool = False
     news: bool = False
     runs: tuple = ()  # RunInfo
+
+
+def _locked(fn):
+    """Runs the method under the routine's lock (the memory's RLock): a forget or reset from the socket thread never
+    lands halfway through an observation on the tick thread."""
+    @functools.wraps(fn)
+    def run(self, *a, **kw):
+        with self.db.lock:
+            return fn(self, *a, **kw)
+    return run
 
 
 def _finite(v) -> bool:
@@ -185,6 +196,7 @@ class Routine:
                 chosen = (Appraisal(**{**a.__dict__, "change": entered}), obs_id, bucket, pred, step.n_eff_before)
         return chosen
 
+    @_locked
     def observe_return(self, away_s: float, now: float) -> Appraisal | None:
         if not self._learning() or not _finite(away_s) or not _finite(now):
             return None
@@ -198,7 +210,10 @@ class Routine:
         self._return = {"a": a, "obs_id": obs_id, "bucket": bucket, "pred": pred, "at": now, "away_s": away_s}
         return a
 
+    @_locked
     def observe_run(self, ev, bucket: str | None, now: float) -> Appraisal | None:
+        if getattr(ev, "kind", None) in ("finished", "failed", "lost"):
+            self._runs.pop(getattr(ev, "agent_id", ""), None)  # a new end replaces the last run, timed or not
         if (not self._learning() or bucket is None or not _finite(now)
                 or getattr(ev, "kind", None) not in ("finished", "failed")):
             return None
@@ -210,6 +225,7 @@ class Routine:
         self._runs[getattr(ev, "agent_id", "")] = {"a": a, "obs_id": obs_id, "bucket": use, "run_s": run_s}
         return a
 
+    @_locked
     def observe_engagement(self, kind: str, bucket: str, engaged: bool) -> Appraisal | None:
         """P2: call before the twin records, so p_engage is what she expected."""
         if not self._learning() or kind not in P2_KINDS:
@@ -230,6 +246,7 @@ class Routine:
     def expected_ignore(self, kind: str, bucket: str) -> bool:
         return self.twin.p_engage(kind, bucket) < 0.5
 
+    @_locked
     def observe_presence(self, now: float, state: str, events: list) -> list[Appraisal]:
         if not self._learning() or not _finite(now):
             return []
@@ -532,6 +549,7 @@ class Routine:
                           {"n_eff": c.n}, "goodbye", now, due_at=back_at)
 
     # ---- speaking ----------------------------------------------------------------------------------------------------
+    @_locked
     def said(self, s: Statement, now: float) -> int | None:
         """Logs a statement she just said (none for "unknown"), feeds the tally and remembers it for the scrub."""
         if not self.enabled():
@@ -592,11 +610,13 @@ class Routine:
     def purge(self, now: float) -> None:
         self.db.purge(now)
 
+    @_locked
     def forget(self) -> None:
         self.db.forget()
         self._return, self._runs, self._s8, self._band, self._dispute = None, {}, None, None, None
         self._answered_at, self._prev_state, self._last_presence = None, None, None
 
+    @_locked
     def reset_p2(self, kind: str | None = None) -> None:
         self.db.reset_p2(kind)
         state = self.db.kv_get(UNSURE_KEY, {})

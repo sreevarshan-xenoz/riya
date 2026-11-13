@@ -155,7 +155,11 @@ def _s7(row: StatementRow, db: RoutineDB, now: float) -> str | None:
         start, end = nums
         if now < end:
             return None
-        return "true" if any(ev == "gaming" for _, ev in db.presence_between(start, end)) else "false"
+        log = db.presence_between(start - DAY_S, end)
+        before = [ev for at, ev in log if at <= start and ev in ("gaming", "gaming_end", "away")]
+        already = bool(before) and before[-1] == "gaming"  # a game that began before the band and ran into it
+        gamed = already or any(ev == "gaming" and start <= at <= end for at, ev in log)
+        return "true" if gamed else "false"
     bands = [v for _, at, v in db.obs(*cell, row.at, row.at + S7_WINDOW_S) if at > row.at][:S7_BANDS]
     if len(bands) < S7_BANDS and now < row.at + S7_WINDOW_S:
         return None

@@ -1577,6 +1577,7 @@ class RiyaCore:
         """P3 at a finished or failed event; the appraisal is kept for that event's report."""
         if not self._routine_on():
             return
+        self._run_appraisals.pop(ev.agent_id, None)  # a new end replaces the last run's appraisal
         try:
             a = self.routine.observe_run(ev, self.agents.run_bucket(ev.agent_id), now)
         except Exception:
@@ -2012,10 +2013,11 @@ class RiyaCore:
 
     def _report_statement(self, events: list[AgentEvent]) -> Statement | None:
         """S4 as a report's tail: a single finished or failed event whose run she appraised."""
+        found = {ev.agent_id: self._run_appraisals.pop(ev.agent_id, None) for ev in events}  # never left stale
         if len(events) != 1 or events[0].kind not in ("finished", "failed") or not self._routine_on():
             return None
         ev = events[0]
-        a = self._run_appraisals.pop(ev.agent_id, None)
+        a = found[ev.agent_id]
         try:
             return self.routine.report(ev, a, self._sensed(self.clock.now()))
         except Exception:
@@ -2406,11 +2408,11 @@ class RiyaCore:
                 return
             elif isinstance(msg, TwinReset):
                 self.learn.reset_twin(msg.kind)
-                self.routine.reset_p2(msg.kind)
+                self.routine.reset_p2(msg.kind)  # under the routine's own lock
                 self._emit_learning()
                 return
             elif isinstance(msg, RoutineForget):
-                self.routine.forget()
+                self.routine.forget()  # under the routine's own lock, never halfway through an observation
                 self._return_appraisal, self._run_appraisals = None, {}
                 self._emit_routine()
                 return
