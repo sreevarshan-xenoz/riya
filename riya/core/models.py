@@ -25,7 +25,31 @@ log = logging.getLogger("riya.models")
 
 
 class ModelUnavailable(Exception):
-    """The model can't answer right now (network, rate limit, server error, or no first token in time)."""
+    """The model can't answer right now (network, rate limit, server error, or no first token in time). status: the
+    HTTP status when there was one; retry_after_s: the server's Retry-After; detail: the start of its error body
+    (what tells a quota from other refusals). None of these ever holds the key."""
+
+    def __init__(self, message: str, status: int | None = None, retry_after_s: float | None = None,
+                 detail: str | None = None):
+        super().__init__(message)
+        self.status, self.retry_after_s, self.detail = status, retry_after_s, detail
+
+
+def _http_unavailable(name: str, e: urllib.error.HTTPError) -> ModelUnavailable:
+    """A ModelUnavailable from an HTTP error: its status, Retry-After (seconds) and the start of its body."""
+    retry = None
+    try:
+        raw = (e.headers or {}).get("Retry-After")
+        retry = float(raw) if raw is not None and float(raw) >= 0 else None
+    except (TypeError, ValueError):
+        retry = None
+    try:
+        detail = e.read(500).decode("utf-8", "ignore")
+    except Exception:
+        detail = None
+    finally:
+        e.close()
+    return ModelUnavailable(f"{name}: HTTP {e.code}", status=e.code, retry_after_s=retry, detail=detail)
 
 
 @dataclass
@@ -80,7 +104,7 @@ class OpenAICompatModel:
                             _set_read_timeout(r, READ_TIMEOUT_S)
                         yield piece
         except urllib.error.HTTPError as e:
-            raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
+            raise _http_unavailable(self.name, e) from e
         except (urllib.error.URLError, OSError) as e:  # URLError, socket timeout, connection reset
             raise ModelUnavailable(f"{self.name}: {e}") from e
         except ValueError as e:  # a malformed event
@@ -100,8 +124,7 @@ class OpenAICompatModel:
             with urllib.request.urlopen(req, timeout=timeout_s) as r:
                 return _tool_reply(json.loads(r.read(MAX_REPLY_BYTES)))
         except urllib.error.HTTPError as e:
-            e.close()
-            raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
+            raise _http_unavailable(self.name, e) from e
         except ModelUnavailable:
             raise
         except Exception as e:  # URLError, timeouts, IncompleteRead, bad JSON or shape, RecursionError: never leaks
@@ -229,11 +252,22 @@ def load_online_from_env(env=os.environ, name: str = "online", model: str | None
     return OpenAICompatModel(name, online_base(env), key, chosen, **kw)
 
 
-def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> OpenAICompatModel | None:
+def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> ChatModel | None:
+    """The configured online model. On opencode's free endpoint without a key it leads a pool of the other free
+    models (riya.core.pool), each with its own limit, so one running out hands over to the next; her eyes' pool
+    keeps only the models that take images. A model behind the user's own key stays a single model."""
     model = None
     if name == "vision":
         model = (env.get("RIYA_ONLINE_VISION_MODEL") or "").strip() or ONLINE_VISION_MODEL
-    return load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
+    one = load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
+    if one is None or one.api_key or not keyless_base(one.base_url):
+        return one
+    from riya.core import pool
+
+    def make(model_id: str) -> OpenAICompatModel:
+        return OpenAICompatModel(name, one.base_url, None, model_id, first_token_timeout_s=timeout_s)
+    return pool.free_pool(name, make, one.model, vision_only=name == "vision",
+                          list_ids=lambda: pool.opencode_free_ids(one.base_url))
 
 
 def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, float], ChatModel | None] = online_model
