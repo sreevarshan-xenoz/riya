@@ -61,6 +61,7 @@ class Settings:
     weather_place: str | None = None
     hands_online: bool = True
     learning_enabled: bool = True  # off freezes what she learned: no detection, notes, twin records, events or drift
+    routine_enabled: bool = True  # "She notices your routines": off is exactly v0.11
     onboarded: bool = False  # the welcome was finished or skipped (true for users from before v0.7)
     local_adapter: str | None = None  # her fine-tuned LoRA (.gguf) for the local model; None serves the base model
     pet_enabled: bool = True  # Little Riya in buddy mode; off is exactly the v0.8 buddy

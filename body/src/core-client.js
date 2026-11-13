@@ -6,12 +6,13 @@ const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 10000];
 /** Every core -> body message type (docs/protocol.schema.json core_to_body; a test keeps them equal). */
 const CORE_TYPES = ["hello", "settings", "state", "expression", "say", "say_end", "mouth", "memories", "error", "look",
   "eyes", "agents", "confirm_request", "confirm_done", "reminders", "actions", "learning", "health", "setup_result",
-  "setup_confirm", "voices", "agent_activity", "presence", "agent_window"];
+  "setup_confirm", "voices", "agent_activity", "presence", "agent_window", "routine"];
 /** Body -> core types that only mean something now (main-logic.js NOW_ONLY; a test keeps them equal): never queued while
  *  the socket isn't open, and dropped from the queue when it closes, so a stale setup_request or setup_action can't
  *  reach the next connection. */
 const NOW_ONLY = ["talk_hotkey", "dont_look", "quit_core", "confirm", "actions_clear", "reminder_cancel", "note_delete",
-  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done", "focus_agent"];
+  "note_delete_style", "twin_reset", "learning_reset", "setup_request", "setup_action", "onboarding_done", "focus_agent",
+  "routine_forget"];
 const nowOnly = (data) => {
   try {
     const msg = JSON.parse(data);

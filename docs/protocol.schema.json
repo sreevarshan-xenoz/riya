@@ -286,6 +286,19 @@
         "title": "ReminderCancel",
         "type": "object"
       },
+      "RoutineForget": {
+        "description": "Forget every routine she has learned (the body confirms first). Her lifetime honesty tally is kept.",
+        "properties": {
+          "type": {
+            "const": "routine_forget",
+            "default": "routine_forget",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "RoutineForget",
+        "type": "object"
+      },
       "SetSettings": {
         "properties": {
           "patch": {
@@ -518,6 +531,7 @@
         "onboarding_done": "#/$defs/OnboardingDone",
         "quit_core": "#/$defs/QuitCore",
         "reminder_cancel": "#/$defs/ReminderCancel",
+        "routine_forget": "#/$defs/RoutineForget",
         "set_settings": "#/$defs/SetSettings",
         "setup_action": "#/$defs/SetupAction",
         "setup_request": "#/$defs/SetupRequest",
@@ -604,6 +618,9 @@
       },
       {
         "$ref": "#/$defs/FocusAgent"
+      },
+      {
+        "$ref": "#/$defs/RoutineForget"
       }
     ]
   },
@@ -1483,6 +1500,106 @@
         "title": "RemindersMsg",
         "type": "object"
       },
+      "RoutineCellInfo": {
+        "description": "One routine she has learned, in her own words (never anything the user typed): the line, her confidence and\nthe decayed evidence behind it.",
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "line": {
+            "title": "Line",
+            "type": "string"
+          },
+          "n": {
+            "title": "N",
+            "type": "number"
+          }
+        },
+        "required": [
+          "line",
+          "confidence",
+          "n"
+        ],
+        "title": "RoutineCellInfo",
+        "type": "object"
+      },
+      "RoutineHonestyInfo": {
+        "description": "Her honesty numbers over the last 30 days: claims in the user reading (a disputed claim counts false).",
+        "properties": {
+          "claims_enabled": {
+            "title": "Claims Enabled",
+            "type": "boolean"
+          },
+          "claims_scored": {
+            "title": "Claims Scored",
+            "type": "integer"
+          },
+          "claims_true": {
+            "title": "Claims True",
+            "type": "integer"
+          },
+          "expired": {
+            "title": "Expired",
+            "type": "integer"
+          },
+          "hunches_right": {
+            "title": "Hunches Right",
+            "type": "integer"
+          },
+          "hunches_scored": {
+            "title": "Hunches Scored",
+            "type": "integer"
+          },
+          "unverifiable": {
+            "title": "Unverifiable",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "claims_true",
+          "claims_scored",
+          "hunches_right",
+          "hunches_scored",
+          "unverifiable",
+          "expired",
+          "claims_enabled"
+        ],
+        "title": "RoutineHonestyInfo",
+        "type": "object"
+      },
+      "RoutineMsg": {
+        "description": "What she has noticed about the user's routines, for the settings page (on hello, on change and on\nget_memories).",
+        "properties": {
+          "cells": {
+            "items": {
+              "$ref": "#/$defs/RoutineCellInfo"
+            },
+            "title": "Cells",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "honesty": {
+            "$ref": "#/$defs/RoutineHonestyInfo"
+          },
+          "type": {
+            "const": "routine",
+            "default": "routine",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "cells",
+          "honesty"
+        ],
+        "title": "RoutineMsg",
+        "type": "object"
+      },
       "Say": {
         "properties": {
           "kind": {
@@ -1852,6 +1969,7 @@
         "mouth": "#/$defs/Mouth",
         "presence": "#/$defs/PresenceMsg",
         "reminders": "#/$defs/RemindersMsg",
+        "routine": "#/$defs/RoutineMsg",
         "say": "#/$defs/Say",
         "say_end": "#/$defs/SayEnd",
         "settings": "#/$defs/SettingsMsg",
@@ -1934,6 +2052,9 @@
       },
       {
         "$ref": "#/$defs/AgentWindow"
+      },
+      {
+        "$ref": "#/$defs/RoutineMsg"
       }
     ]
   },
