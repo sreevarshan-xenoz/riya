@@ -1,6 +1,7 @@
 """Presence on Linux: idle, lock and fullscreen from fake probes (never the real /dev/input, D-Bus or compositor)."""
 import json
 import os
+import struct
 
 import pytest
 
@@ -44,7 +45,10 @@ def test_the_input_watcher_keeps_only_the_time_of_the_last_event():
     watcher.fds = [r]
     clock.t += 30
     assert watcher.idle_seconds() == 30
-    os.write(w, b"\0" * li._EVENT_SIZE)
+    os.write(w, b"\0" * li._EVENT_SIZE)  # an EV_SYN report alone is not input
+    watcher.drain(r)
+    assert watcher.idle_seconds() == 30
+    os.write(w, struct.pack("llHHi", 0, 0, 1, 30, 1))  # EV_KEY
     watcher.drain(r)
     assert watcher.idle_seconds() == 0
     clock.t += 5
@@ -52,6 +56,17 @@ def test_the_input_watcher_keeps_only_the_time_of_the_last_event():
     assert not hasattr(watcher, "events")  # nothing of the event is kept
     watcher.close()
     os.close(w)
+
+
+def test_only_keyboards_mice_and_touchpads_are_watched(tmp_path):
+    devices = tmp_path / "devices"
+    devices.write_text(
+        'I: Bus=0011\nN: Name="AT Translated Set 2 keyboard"\nH: Handlers=sysrq kbd leds event3\n\n'
+        'I: Bus=0018\nN: Name="Touchpad"\nH: Handlers=event9 mouse1\n\n'
+        'I: Bus=0019\nN: Name="Accelerometer"\nH: Handlers=event7 js0\n\n'
+        'I: Bus=0019\nN: Name="Lid Switch"\nH: Handlers=event0\n', encoding="utf-8")
+    assert li.input_paths(str(devices)) == ["/dev/input/event3", "/dev/input/event9"]
+    assert li.input_paths(str(tmp_path / "missing")) == []
 
 
 def test_unreadable_devices_mean_no_watcher(tmp_path):

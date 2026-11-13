@@ -1,7 +1,7 @@
 """Presence on Linux: idle time, the session lock and a fullscreen window, from what the desktop already exposes.
 
-- Idle: the time since the last keyboard, mouse or touch event, read from /dev/input (the user must be in the `input`
-  group); only the time of an event is kept, never what it was. Without input access it asks the session's idle
+- Idle: the time since the last keyboard, mouse or touchpad event, read from those devices in /dev/input (the user must
+  be in the `input` group); only the time of an event is kept, never what it was. Without input access it asks the session's idle
   monitor over D-Bus (GNOME's Mutter IdleMonitor, then org.freedesktop.ScreenSaver), then logind's IdleSinceHint.
 - Locked: logind's LockedHint, a running screen locker (hyprlock, swaylock, i3lock...), or the ScreenSaver's GetActive.
 - Fullscreen: the focused window on Hyprland (hyprctl), sway (swaymsg) or X11 (xprop).
@@ -11,7 +11,6 @@ fullscreen" (the safe default: she never thinks they left when she can't tell). 
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import re
@@ -27,6 +26,24 @@ PROBE_TIMEOUT_S = 1.0
 CACHE_S = 2.0  # lock and fullscreen probes are re-run at most this often
 LOCKERS = ("hyprlock", "swaylock", "i3lock", "waylock", "gtklock", "xsecurelock", "slock", "xscreensaver-auth")
 _EVENT_SIZE = struct.calcsize("llHHi")  # struct input_event on 64-bit Linux: timeval, type, code, value
+_USER_EVENTS = (1, 2, 3)  # EV_KEY, EV_REL, EV_ABS (not EV_SYN or EV_MSC reports)
+DEVICES = "/proc/bus/input/devices"
+
+
+def input_paths(devices: str = DEVICES) -> list[str]:
+    """The event devices of keyboards, mice and touchpads (a kbd or mouse handler). Sensors that stream on their own,
+    such as an accelerometer (often a js handler) or a lid switch, are left out: they'd never let her see idle."""
+    try:
+        text = open(devices, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    out = []
+    for block in text.split("\n\n"):
+        m = re.search(r"^H: Handlers=(.*)$", block, re.MULTILINE)
+        handlers = m.group(1).split() if m else []
+        if any(h == "kbd" or h.startswith("mouse") for h in handlers):
+            out += [f"/dev/input/{h}" for h in handlers if re.fullmatch(r"event\d+", h)]
+    return sorted(out)
 
 
 def _run(argv: list[str], timeout: float = PROBE_TIMEOUT_S) -> str | None:
@@ -48,7 +65,7 @@ class InputWatcher:
         self.clock = clock
         self.last = clock()
         self.fds: list[int] = []
-        for path in paths if paths is not None else sorted(glob.glob("/dev/input/event*")):
+        for path in paths if paths is not None else input_paths():
             try:
                 self.fds.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
             except OSError:
@@ -83,8 +100,10 @@ class InputWatcher:
         except OSError:  # unplugged
             self.fds = [f for f in self.fds if f != fd]
             return
-        if data:
-            self.last = self.clock()
+        for i in range(0, len(data) - _EVENT_SIZE + 1, _EVENT_SIZE):
+            if struct.unpack_from("llHHi", data, i)[2] in _USER_EVENTS:
+                self.last = self.clock()
+                return
 
     def idle_seconds(self) -> float:
         return max(0.0, self.clock() - self.last)
