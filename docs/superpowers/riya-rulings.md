@@ -452,3 +452,6 @@ Every decision taken on the user's behalf while executing the three plans. Each 
 - **C9, Task 10:** hello carries `RoutineMsg` only while routine is on (the settings already carry the switch), so the existing hello-order pins stay unedited.
 - **Known limit (2026-11-13):** Presence has a real sensor only on Windows (`WindowsIdleSource`). On Linux the fake source never sees an absence, lock or fullscreen game, so routine learning there needs a Linux idle source (a follow-up, outside v0.12).
 - **C10, Task 12:** `body/test/health-logic.test.js` also pins the Health row list; it gains `"honesty"` with the planned `ROW_LABELS` change (a pin the plan missed).
+- **K-dev (2026-11-13):** the dev run (seeds 0-19, after the A5 counting fix `7958095`) fails A3 (P1's 80% interval covers 0.92-0.97, too wide) and A7 (the evidence-off plant scores 95% true). A4, A5, A6 (97.6% / 97.0%) and A9 pass.
+  - The grid was not run. None of its four constants moves either failure. A3's interval width comes from the Normal-Gamma prior (σ₀ = 1.2) against very regular personas. A7's plant only promotes hunches, which already need `HUNCH_N` evidence. So no admissible point can pass, and by Resolution 10 the defaults stand.
+  - Both failures depend on the simulator's personas, which the builder invented. The user decides on the held-out result at the PR.
