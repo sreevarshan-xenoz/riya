@@ -55,7 +55,11 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, Actio
                                 SayEnd, SetSettings, SettingsMsg, SetupAction, SetupConfirm, SetupRequest, SetupResult,
                                 StateMsg, StyleNoteDelete, StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo,
                                 TranscriptDelete, TwinInfo, TwinReset, VoicesMsg)
+from riya.core.protocol import RoutineForget, RoutineHonestyInfo, RoutineMsg
 from riya.core.router import Router, needs_thinking
+from riya.core.routine import P2_KINDS as ROUTINE_P2_KINDS
+from riya.core.routine import Routine, Sensed
+from riya.core.routine.appraisal import Appraisal
 from riya.core.secrets import KeyInfo
 from riya.core.settings import (Settings, apply_patch, default_startup_dir, in_quiet_hours, load_settings,
                                 save_settings, set_autostart)
@@ -275,6 +279,13 @@ class RiyaCore:
         self._greet_open: tuple[str, float] | None = None
         self._greet_bucket: str | None = None  # the came-back bucket and greeting style, for speak_first
         self._greet_short = False
+        # v0.12: her routine (off is exactly v0.11). The last came-back appraisal (for the greeting), each agent's last
+        # run appraisal (for its report), and what she expected of the bid out now (for the pout)
+        self.routine = Routine(db, self.memory.lock, self.kv, clock, tz, self.twin, lambda: self.settings,
+                               started_at=clock.now(), glances=self.memory.glances_between)
+        self._return_appraisal: Appraisal | None = None
+        self._run_appraisals: dict[str, Appraisal] = {}
+        self._bid_p: float | None = None
         self._barges: deque[bool] = deque(maxlen=DRIFT_WINDOW)  # her last replies: barged in on or not
         self._last_barged = False  # the last utterance was barged in on (read by a report's after)
         # the utterance streaming now (uid, its first sentence's time) and the one a typed turn barged in on; the
@@ -815,6 +826,7 @@ class RiyaCore:
             self.learn.reset_dials(now)
             self.learn.clear_notes()
             self.learn.reset_twin(None)
+            self.routine.reset_p2(None)
             self.learn.clear_drift_at()
             self._barges.clear()
             self._twin_open = self._greet_open = None
@@ -950,7 +962,7 @@ class RiyaCore:
         """A silent bid. While an agent is busy (and no game is on) it offers a random game, named by the engine if
         the model's line doesn't; a yes within BID_IGNORED_S starts it. bucket (the twin's, from _maybe_bid): once
         the line went out it waits in _twin_open for its engagement; a direct call records nothing."""
-        offer = None
+        offer, self._bid_p = None, None
         try:
             if self._may_offer():
                 offer = self.game_rng.choice(games.GAMES)
@@ -985,6 +997,11 @@ class RiyaCore:
         if bucket is not None:  # never opened while learning is off
             open_ = ("game_offer" if offer else "bid", bucket, self.pending_bid_at)
             self._twin_open = open_ if self.settings.learning_enabled else None
+            if self._routine_on():
+                try:
+                    self._bid_p = self.twin.p_engage(open_[0], bucket)
+                except Exception:
+                    log.exception("couldn't read what she expected of the bid")
         if self.presence.state == "gaming":  # only the hotkey opens the mic during a game
             return
         try:
@@ -1256,6 +1273,7 @@ class RiyaCore:
         now = self.clock.now()
         events = self._step("presence", self.presence.update) or []
         self._step("presence msg", self._emit_presence)
+        self._step("routine", lambda: self._routine_step(now, events))
         self._step("agents", lambda: self._agents_step(now))
         self._step("confirm", self._confirm_step)
         action = self._step("greeting", lambda: self._greeting(events, now))
@@ -1298,6 +1316,7 @@ class RiyaCore:
         for ev in events:
             if ev.kind == "came_back":
                 self.feelings.tick(present=False)  # catch up on the absence first, so it can't fade her missing them
+                self._routine_return(ev.away_s, now)  # observed here, deferred or not; before on_return's face
                 if self.presence.state == "gaming":  # never greet into a game: wait until it ends
                     self._deferred_greeting = (ev.away_s, now)
                 else:
@@ -1326,9 +1345,12 @@ class RiyaCore:
                 self._bid(bid, bucket=b)
 
     def _check_bid_ignored(self, now: float) -> None:
+        """The pout. With routine on it's grounded: an ignore she expected (p_engage < 0.5) leaves her be."""
         if self.pending_bid_at is not None and now - self.pending_bid_at >= BID_IGNORED_S:
-            self.feelings.on_event("bid_ignored")
-            self.pending_bid_at = self._bid_thread = None
+            expected = self._bid_p is not None and self._bid_p < 0.5 and self._routine_on()
+            if not expected:
+                self.feelings.on_event("bid_ignored")
+            self.pending_bid_at = self._bid_thread = self._bid_p = None
 
     def _twin_step(self, now: float) -> None:
         """An open bid or offer with no answer for BID_IGNORED_S, or a greeting with no turn for GREET_ENGAGED_S:
@@ -1343,6 +1365,104 @@ class RiyaCore:
             (b, _), self._greet_open = self._greet_open, None
             self._engage("greeting", b, False)
 
+    # ---- v0.12: her routine -------------------------------------------------------------------------------------
+    def _routine_on(self) -> bool:
+        try:
+            return self.settings.routine_enabled
+        except Exception:
+            return False
+
+    def _sensed(self, now: float, *, short: bool = False, news: bool = False) -> Sensed:
+        start = self.presence.stretch_start()
+        return Sensed(now=now, presence=self.presence.state, stretch_start=start,
+                      stretch_censored=self.presence.censored,
+                      glances=tuple(self.memory.glances_between(start, now)),
+                      clinginess=self.learn.dials()["clinginess"], quiet=self._quiet(now), short_greeting=short,
+                      news=news, runs=tuple(self.agents.running()))
+
+    def _routine_feel(self, a: Appraisal | None) -> None:
+        """An appraisal moves her feelings (and her face). Never raises."""
+        if a is None:
+            return
+        try:
+            self.feelings.on_appraisal(a, self.learn.dials()["clinginess"])
+            self._sync_expression()
+        except Exception:
+            log.exception("couldn't feel a routine appraisal")
+
+    def _routine_step(self, now: float, events: list) -> None:
+        """Presence into the log and P4's band tracker, then the hourly audit; the cells and honesty go out on a
+        change. Off: nothing at all."""
+        if not self._routine_on():
+            return
+        changed = False
+        try:
+            for a in self.routine.observe_presence(now, self.presence.state, events):
+                self._routine_feel(a)
+                changed = True
+        except Exception:
+            log.exception("couldn't observe presence for her routine")
+        try:
+            changed = self.routine.step(now) or changed
+        except Exception:
+            log.exception("the routine audit failed")
+        if changed:
+            self._emit_routine()
+
+    def _routine_return(self, away_s: float, now: float) -> None:
+        """P1 at a came_back event: the appraisal moves her before on_return picks its face, and is kept for the
+        greeting."""
+        self._return_appraisal = None
+        if not self._routine_on():
+            return
+        try:
+            self._return_appraisal = a = self.routine.observe_return(away_s, now)
+        except Exception:
+            log.exception("couldn't observe the return")
+            return
+        if a is not None:
+            self._routine_feel(a)
+            self._emit_routine()
+
+    def _routine_run(self, ev: AgentEvent, now: float) -> None:
+        """P3 at a finished or failed event; the appraisal is kept for that event's report."""
+        if not self._routine_on():
+            return
+        try:
+            a = self.routine.observe_run(ev, self.agents.run_bucket(ev.agent_id), now)
+        except Exception:
+            log.exception("couldn't observe the run")
+            return
+        if a is not None:
+            self._run_appraisals[ev.agent_id] = a
+            self._routine_feel(a)
+            self._emit_routine()
+
+    def _routine_msg(self) -> RoutineMsg:
+        return self.routine.msg(self.clock.now())
+
+    def _hello_routine(self) -> RoutineMsg:
+        """The routine message for hello, which must never fail: on any error, the switch and nothing else."""
+        try:
+            return self._routine_msg()
+        except Exception:
+            log.exception("couldn't build her routine for hello")
+        try:
+            enabled = self.settings.routine_enabled
+        except Exception:
+            enabled = False
+        return RoutineMsg(enabled=enabled, cells=[],
+                          honesty=RoutineHonestyInfo(claims_true=0, claims_scored=0, hunches_right=0,
+                                                     hunches_scored=0, unverifiable=0, expired=0,
+                                                     claims_enabled=False))
+
+    def _emit_routine(self) -> None:
+        """routine, for the settings page; never raises."""
+        try:
+            self.emit(self._routine_msg())
+        except Exception:
+            log.exception("couldn't send her routine")
+
     # ---- learning: the twin, the events and the drift -------------------------------------------------------------
     def _bucket(self) -> str:
         """The twin's context right now: hour band (in the core's tz), presence, short or long work stretch."""
@@ -1353,6 +1473,11 @@ class RiyaCore:
         try:
             if not self.settings.learning_enabled:
                 return
+            if kind in ROUTINE_P2_KINDS and self._routine_on():  # read before the twin records
+                try:
+                    self._routine_feel(self.routine.observe_engagement(kind, b, engaged))
+                except Exception:
+                    log.exception("couldn't appraise the %s outcome", kind)
             self.twin.record(kind, b, engaged)
             self.learn.log_event(self.clock.now(), kind, "engaged" if engaged else "ignored", {"bucket": b})
         except Exception:
@@ -1424,6 +1549,10 @@ class RiyaCore:
             self.memory.resolve_stale_threads()
             self.hands.purge(now)
             self.learn.purge(now)
+            try:
+                self.routine.purge(now)
+            except Exception:
+                log.exception("couldn't purge the routine tables")
 
     def _maybe_save(self, now: float) -> None:
         if now - self._last_save >= SAVE_EVERY_S:
@@ -1623,6 +1752,7 @@ class RiyaCore:
         for ev in events:
             self._reports.pop(ev.agent_id, None)
             self._reports[ev.agent_id] = (ev, now)
+            self._routine_run(ev, now)
         self._reports = {k: v for k, v in self._reports.items() if now - v[1] < REPORT_MAX_AGE_S}
         self._emit_agents()
 
@@ -2063,7 +2193,8 @@ class RiyaCore:
         pending = p is not None and self.clock.now() < p.expires_at
         return [Hello(version=PROTOCOL_VERSION, expressions=list(EXPRESSIONS)),
                 SettingsMsg(settings=asdict(self.settings)), self._state_msg(), self._agents_sent, self._eyes_msg(),
-                *([self._look] if self._look else []), self._hello_learning(), self._reminders_msg(),
+                *([self._look] if self._look else []), self._hello_learning(),
+                *([self._hello_routine()] if self._routine_on() else []), self._reminders_msg(),
                 self._actions_msg(),
                 *([ConfirmRequest(id=p.id, summary=p.summary, expires_at=p.expires_at)] if pending else [])]
 
@@ -2075,6 +2206,7 @@ class RiyaCore:
         try:
             if isinstance(msg, GetMemories):  # the settings page opened: what she learned, then the memories
                 self._emit_learning()
+                self._emit_routine()
             elif isinstance(msg, MemoryDelete):
                 self.memory.delete_fact(msg.id, delete_episodes=msg.delete_episodes)
             elif isinstance(msg, MemoryCorrect):
@@ -2109,7 +2241,13 @@ class RiyaCore:
                 return
             elif isinstance(msg, TwinReset):
                 self.learn.reset_twin(msg.kind)
+                self.routine.reset_p2(msg.kind)
                 self._emit_learning()
+                return
+            elif isinstance(msg, RoutineForget):
+                self.routine.forget()
+                self._return_appraisal, self._run_appraisals = None, {}
+                self._emit_routine()
                 return
             elif isinstance(msg, LearningReset):
                 self._reset_learning()
@@ -2196,6 +2334,8 @@ class RiyaCore:
             self.emit(SettingsMsg(settings=asdict(new)))
             if new.learning_enabled != old.learning_enabled:
                 self._emit_learning()
+            if new.learning_enabled != old.learning_enabled or new.routine_enabled != old.routine_enabled:
+                self._emit_routine()
             self._emit_eyes(new)
             self._sync_expression()
         if failed is not None:

@@ -445,3 +445,9 @@ Every decision taken on the user's behalf while executing the three plans. Each 
 - **C2, branch:** Task 1 was committed on local `main`, which is unpushed. Work continues on `feat/riya-v0.12` from that commit.
 - **C3, environment:** the laptop now runs Linux. Commands use `.venv/bin/python` from the repo root in place of `.venv\Scripts\python` from `E:\riya`.
 - **C4, commit trailer:** GC10's trailer lines are dropped. The user's global rules forbid co-author or AI-attribution lines, and those rules win.
+- **C5, Task 4:** the claim guard reads clauses separately: a suggestion clause ("you should take a break") exempts only itself. "thank you", "see you" and idioms ("wait a minute", "after 3 tries", "one day") are not claims. A review found the fixture-only version dropping innocent lines; each fix carries its own fixture case (58 keep / 50 drop).
+- **C6, Task 6:** the audit's per-kind `value` keys are fixed in `audit.py`'s docstring, and the facade (Task 9) writes them. A hand-edited row that fails to score is unverifiable, and never stops the audit.
+- **C7, Task 7:** a stale ("unknown") Claude turn and a new prompt after an unanswered permission get no run time and a clean start, respectively.
+- **C8, Task 9:** the P4 "50% interval" for S8 is the usual outcome (1 or 0). The settings-page lines show the observed median (exp of the mean log), not the predictive, which the prior pulls.
+- **C9, Task 10:** hello carries `RoutineMsg` only while routine is on (the settings already carry the switch), so the existing hello-order pins stay unedited.
+- **Known limit (2026-11-13):** Presence has a real sensor only on Windows (`WindowsIdleSource`). On Linux the fake source never sees an absence, lock or fullscreen game, so routine learning there needs a Linux idle source (a follow-up, outside v0.12).
