@@ -11,6 +11,7 @@ BREAK_TAIL_S = 60
 TALKING_WINDOW_S = 180
 _RESUME_IDLE_S = 5
 KV_EVERY_S = 30  # last_active_at is rewritten only once it moved this far
+STRETCH_GAP_S = 300  # an update gap longer than this means she can't vouch for the stretch
 
 
 class Clock(Protocol):
@@ -127,6 +128,7 @@ class Presence:
         self._last_update = self._work_start = now
         self._last_turn: float | None = None
         self._tail_start: float | None = None
+        self.censored = True  # the first stretch began at start-up, not at a return she saw
         last_active = kv.get("presence.last_active_at")
         self._saved_active, self._saved_left = last_active, kv.get("presence.left_at")
         if last_active is not None and now - last_active >= AWAY_IDLE_S:
@@ -135,6 +137,10 @@ class Presence:
     def note_turn(self) -> None:
         self._last_turn = self.clock.now()
 
+    def stretch_start(self) -> float:
+        """When the current work stretch began."""
+        return self._work_start
+
     def work_stretch_s(self) -> float:
         return max(0.0, self.clock.now() - self._work_start)
 
@@ -142,6 +148,8 @@ class Presence:
         now, idle, locked = self.clock.now(), self.source.idle_seconds(), self.source.locked()
         events: list[PresenceEvent] = []
         was = self.state
+        if now < self._last_update or (was != "away" and now - self._last_update > STRETCH_GAP_S):
+            self.censored = True  # a clock jump back, or a gap she didn't see: the stretch can't be vouched for
         if now < self._last_update:  # clock jumped back: keep timed states progressing from the new now
             self._tail_start = None if self._tail_start is None else min(self._tail_start, now)
             self._last_turn = None if self._last_turn is None else min(self._last_turn, now)
@@ -182,6 +190,7 @@ class Presence:
 
     def _resume(self, now: float) -> None:
         self.left_at, self._tail_start, self._work_start = None, None, now
+        self.censored = False  # a return she saw
         self.state = self._base_state(now)
 
     def _base_state(self, now: float) -> State:
@@ -202,6 +211,7 @@ class Presence:
         if was == "break":
             if self._tail_start is None:  # input resumed: the work stretch restarts here (brief's test resumes and waits 61 s in one update)
                 self._tail_start = self._work_start = now
+                self.censored = False  # the stretch restarts at a break's end she saw
             if now - self._tail_start < BREAK_TAIL_S:
                 return []
             self._tail_start = None

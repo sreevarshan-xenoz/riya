@@ -16,6 +16,7 @@ ATTENTION = {"waiting", "failed", "lost", "stalled"}
 CLAUDE_EVENTS = {"UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure", "PostToolUse",
                  "PostToolUseFailure", "SubagentStop", "SessionStart", "SessionEnd", "PreToolUse"}
 _COLAB = {"running": "running", "done": "finished", "fail": "failed", "lost": "lost", "stalled": "stalled"}
+_UNSAFE = re.compile(r"[^A-Za-z0-9 ._:/-]")  # the same rule as prompt._safe (prompt imports this module)
 
 
 _VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"'&;,]+)"""
@@ -264,6 +265,9 @@ class AgentState:
     detail: str = ""
     needs_attention: bool = False
     tool_errors: int = 0
+    turn_started_at: float | None = None  # when the running turn (or Colab run) began, if she saw it begin
+    waiting_s: float = 0.0  # time this turn spent waiting on the user
+    folder: str = ""
 
 
 @dataclass
@@ -273,6 +277,16 @@ class AgentEvent:
     name: str
     text: str
     error: str | None = None  # a StopFailure's error type ("rate_limit"); None for every other event
+    run_s: float | None = None  # a finished or failed run's own time (waiting excluded), when its start was seen
+
+
+@dataclass(frozen=True)
+class RunInfo:
+    agent_id: str
+    name: str
+    bucket: str
+    started_at: float
+    waiting_s: float
 
 
 class AgentHub:
@@ -298,6 +312,8 @@ class AgentHub:
             a.detail = detail
         if a.status == status:
             return False
+        if a.status == "waiting":
+            a.waiting_s += max(0.0, now - a.since)
         a.status, a.since = status, now
         a.needs_attention = status in ATTENTION
         return True
@@ -322,6 +338,8 @@ class AgentHub:
             a = self._get(sid, "claude", name, "busy" if ev in ("SubagentStop", "PostToolUse", "PreToolUse") else "idle")
         elif folder:
             a.name = name
+        if folder:
+            a.folder = folder
         if a.status == "ended" and ev not in ("UserPromptSubmit", "SessionStart"):
             return []
         a.last_event_at = self.clock.now()
@@ -330,6 +348,7 @@ class AgentHub:
     def _ev_UserPromptSubmit(self, a, p):
         a.tool_errors = 0
         self._set(a, "busy", summarize(p.get("prompt", "")))
+        a.turn_started_at, a.waiting_s = self.clock.now(), 0.0  # after _set: a stale wait isn't this turn's
 
     def _ev_SessionStart(self, a, p):
         if a.status not in ("busy", "waiting", "failed"):  # a mid-turn compact must not look idle
@@ -367,15 +386,31 @@ class AgentHub:
             self._set(a, "waiting", summarize(f"{tool}: {summary}" if summary else tool or p.get("message", "")))
             return [self._event(a)]
 
+    def _run_s(self, a: AgentState) -> float | None:
+        """The turn's run time without its waiting, then the start is cleared; None when the start wasn't seen or the
+        clock went back."""
+        start, a.turn_started_at = a.turn_started_at, None
+        if start is None:
+            return None
+        run = self.clock.now() - start - a.waiting_s
+        return run if run >= 0 else None
+
     def _ev_Stop(self, a, p):
-        if self._set(a, "finished", summarize(p.get("last_assistant_message", ""))):
-            return [self._event(a)]
+        moved = self._set(a, "finished", summarize(p.get("last_assistant_message", "")))
+        run_s = self._run_s(a)
+        if moved:
+            ev = self._event(a)
+            ev.run_s = run_s
+            return [ev]
 
     def _ev_StopFailure(self, a, p):
         err = p.get("error", p.get("error_details", ""))
-        if self._set(a, "failed", summarize(err if isinstance(err, str) else _tool_summary(err))):
+        moved = self._set(a, "failed", summarize(err if isinstance(err, str) else _tool_summary(err)))
+        run_s = self._run_s(a)
+        if moved:
             ev = self._event(a)
             ev.error = summarize(err, 40) if isinstance(err, str) and err.strip() else None
+            ev.run_s = run_s
             return [ev]
 
     def _ev_PostToolUse(self, a, p):
@@ -399,8 +434,14 @@ class AgentHub:
         if status is None or not isinstance(name, str) or not name:
             return []
         a = self._get("colab:" + name[:128], "colab", summarize(name, 40) or "colab", "")
-        if self._set(a, status, summarize(line)) and status != "running":
-            return [self._event(a)]
+        if status == "running" and a.turn_started_at is None and a.status not in ("running", "stalled"):
+            a.turn_started_at, a.waiting_s = self.clock.now(), 0.0  # timed from the first running; a stall doesn't restart it
+        moved = self._set(a, status, summarize(line))
+        run_s = self._run_s(a) if status in ("finished", "failed", "lost") else None
+        if moved and status != "running":
+            ev = self._event(a)
+            ev.run_s = run_s if status != "lost" else None
+            return [ev]
         return []
 
     # -- time ----------------------------------------------------------------------------------
@@ -413,7 +454,29 @@ class AgentHub:
                 del self._agents[a.id]
             elif a.kind == "claude" and a.status in ("busy", "waiting") and now - a.last_event_at >= STALE_S:
                 a.status, a.since, a.needs_attention = "unknown", now, False
+                a.turn_started_at = None  # half an hour unheard: this turn can't be timed
         return []
+
+    def run_bucket(self, agent_id: str) -> str | None:
+        """The run-time bucket: "claude:<folder>" ("claude:*" with no folder) or "colab:<name>"; None when unknown."""
+        a = self._agents.get(agent_id)
+        if a is None:
+            return None
+        if a.kind == "colab":
+            return "colab:" + _UNSAFE.sub("_", a.name)
+        folder = _UNSAFE.sub("_", a.folder)
+        return "claude:" + (folder if folder.strip() else "*")
+
+    def running(self) -> list[RunInfo]:
+        """Busy or waiting Claude turns and running Colab runs whose start she saw."""
+        now, out = self.clock.now(), []
+        for a in self._agents.values():
+            live = a.status in ("busy", "waiting") if a.kind == "claude" else a.status in ("running", "stalled")
+            if not live or a.turn_started_at is None:
+                continue
+            waiting = a.waiting_s + (max(0.0, now - a.since) if a.status == "waiting" else 0.0)
+            out.append(RunInfo(a.id, a.name, self.run_bucket(a.id) or "", a.turn_started_at, waiting))
+        return out
 
     def snapshot(self) -> list[dict]:
         """At most 20 items, attention first, then the latest status change first (never the latest event: the
