@@ -218,14 +218,16 @@ def test_the_free_endpoint_and_a_key_both_lead_a_pool():
     assert isinstance(online, ModelPool) and isinstance(vision, ModelPool)
     assert online.members[0].name == models.ONLINE_MODEL and online.api_key is None
     assert online.first_token_timeout_s == models.ONLINE_TIMEOUT_S and vision.first_token_timeout_s == 20
-    assert len(online.members) == len(pool.OPENCODE_FREE)
+    assert len([m for m in online.members if m.provider == "opencode"]) == len(pool.OPENCODE_FREE)
     assert all(m.vision for m in vision.members) and len(vision.members) < len(online.members)
     assert {m.model.name for m in online.members} == {"online"} and {m.model.name for m in vision.members} == {"vision"}
-    keyed, _ = models.online_pair({"RIYA_ONLINE_API_KEY": "ENVKEY-11111111"})  # the user's own key: it alone leads
+    keyed, _ = models.online_pair({"RIYA_ONLINE_API_KEY": "ENVKEY-11111111", "RIYA_NO_AGENTS": "1"})  # the user's own key: it alone leads
     assert [m.provider for m in keyed.members] == ["online"] and keyed.api_key == "ENVKEY-11111111"
-    other, _ = models.online_pair({"RIYA_ONLINE_BASE_URL": "https://example.com/v1", "RIYA_ONLINE_KEYLESS": "1"})
+    other, _ = models.online_pair({"RIYA_ONLINE_BASE_URL": "https://example.com/v1", "RIYA_ONLINE_KEYLESS": "1",
+                                 "RIYA_NO_AGENTS": "1"})
     assert [m.provider for m in other.members] == ["online"]
-    assert models.online_pair({"RIYA_ONLINE_OFFLINE": "1"}) == (None, None)  # nothing online, no keys
+    assert models.online_pair({"RIYA_ONLINE_OFFLINE": "1"}) == (None, None)  # off means off, agents too
+    assert models.online_pair({"RIYA_ONLINE_API_KEY": " "}) == (None, None)  # nothing online, no keys
     chosen, _ = models.online_pair({"RIYA_ONLINE_MODEL": "beam-free"})
     assert chosen.members[0].name == "beam-free"
 

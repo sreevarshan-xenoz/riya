@@ -258,6 +258,9 @@ def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> ChatMod
     (riya.core.providers), re-read live, so a key added later joins without a restart. Her eyes' pool keeps only the
     models that take images. None when nothing online is available."""
     from riya.core import pool, providers
+    from riya.core.secrets import KEY_VAR
+    if env.get("RIYA_ONLINE_OFFLINE") == "1" or (env.get(KEY_VAR) is not None and not env[KEY_VAR].strip()):
+        return None  # online turned off: no pool, no providers, no agents
     model = None
     if name == "vision":
         model = (env.get("RIYA_ONLINE_VISION_MODEL") or "").strip() or ONLINE_VISION_MODEL
@@ -265,7 +268,11 @@ def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> ChatMod
     vision_only = name == "vision"
 
     def extra() -> list:
-        return providers.members(providers.all_keys(env), name, timeout_s, vision_only=vision_only)
+        keyed = providers.members(providers.all_keys(env), name, timeout_s, vision_only=vision_only)
+        if vision_only or env.get("RIYA_NO_AGENTS") == "1":
+            return keyed
+        from riya.core import agent_server
+        return keyed + agent_server.kilo_members(name)  # no key needed; slower, so after every fast member
     if one is not None and not one.api_key and keyless_base(one.base_url):
         def make(model_id: str) -> OpenAICompatModel:
             return OpenAICompatModel(name, one.base_url, None, model_id, first_token_timeout_s=timeout_s)
