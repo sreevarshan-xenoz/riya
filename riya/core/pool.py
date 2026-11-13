@@ -20,6 +20,8 @@ from riya.core.models import ChatModel, ModelUnavailable, ToolReply
 LIMIT_BENCH_S = 600.0  # a limit without Retry-After: 10 minutes, doubling on each repeat
 LIMIT_BENCH_MAX_S = 6 * 3600.0
 ERROR_BENCH_S = 60.0  # a server error, a timeout, a dropped connection
+GONE_BENCH_S = 6 * 3600.0  # a rejected key (the whole provider) or a model the provider doesn't have
+RELOAD_EVERY_S = 5.0  # how often the pool looks for changed keys
 _SHARED_LIMIT = re.compile(r"FreeUsageLimit|free usage limit", re.I)  # the whole tier, not one model
 _LIMIT_WORDS = re.compile(r"rate.?limit|quota|too many requests|limit (exceeded|reached)|usage limit|insufficient",
                           re.I)
@@ -33,6 +35,8 @@ class Member:
     tools: bool = True
     slow: bool = False
     group: str | None = None  # members sharing one allowance (opencode's free tier is one limit for all its models)
+    shared: bool = False  # any limit is the whole group's (an account-wide allowance)
+    provider: str | None = None  # a rejected key benches every member of the same provider
     benched_until: float = 0.0
     limits: int = 0  # consecutive limits (each doubles the next bench)
     last_error: str | None = None
@@ -41,10 +45,15 @@ class Member:
     def name(self) -> str:
         return getattr(self.model, "model", None) or self.model.name
 
+    @property
+    def key(self) -> tuple[str | None, str]:
+        return self.provider, self.name
+
 
 @dataclass
 class MemberState:
     """What Health shows for one member."""
+    provider: str | None
     name: str
     live: bool
     benched_for_s: float
@@ -53,27 +62,41 @@ class MemberState:
 
 
 def kind_of(e: ModelUnavailable) -> str:
-    """'limit', 'bad_request' or 'error' from a ModelUnavailable's status and message."""
+    """'limit', 'auth' (the key was rejected), 'missing' (no such model), 'bad_request' or 'error' from a
+    ModelUnavailable's status and message."""
     status = getattr(e, "status", None)
     text = f"{e} {getattr(e, 'detail', '') or ''}"
     if status == 429 or (status in (402, 403) and _LIMIT_WORDS.search(text)) or (status is None and
                                                                                   _LIMIT_WORDS.search(text)):
         return "limit"
-    if status in (400, 404, 405, 413, 422):
+    if status == 401:
+        return "auth"
+    if status == 404:
+        return "missing"
+    if status in (400, 405, 413, 422):
         return "bad_request"
     return "error"
 
 
 class ModelPool:
     def __init__(self, name: str, members: list[Member], clock: Callable[[], float] = time.monotonic,
-                 refresh: Callable[[], list[Member]] | None = None):
-        if not members:
-            raise ValueError("a pool needs at least one member")
-        self.name, self.members, self.clock = name, list(members), clock
+                 refresh: Callable[[], list[Member]] | None = None,
+                 extra: Callable[[], list[Member]] | None = None, token: Callable[[], object] | None = None):
+        """refresh: the live member list, read once on first use. extra: members that come and go with the keys
+        (providers.env), rebuilt whenever token() changes (checked at most every RELOAD_EVERY_S); a member that
+        stays keeps its bench."""
+        self.name, self.clock = name, clock
         self.finish_reason: str | None = None
         self.last: Member | None = None  # the member that answered last
         self._refresh, self._refreshed = refresh, refresh is None
+        self._extra, self._token = extra, token
+        self._seen_token, self._checked_at = object(), float("-inf")
         self._lock = threading.Lock()
+        self._base = list(members)
+        self.members = list(members)
+        self._maybe_reload()
+        if not self.members:
+            raise ValueError("a pool needs at least one member")
 
     def __getattr__(self, attr):
         """api_key, base_url, model, first_token_timeout_s...: the first member's (what the configured model was)."""
@@ -81,7 +104,34 @@ class ModelPool:
             raise AttributeError(attr)
         return getattr(self.members[0].model, attr)
 
+    def _maybe_reload(self) -> None:
+        if self._extra is None:
+            return
+        now = self.clock()
+        if now - self._checked_at < RELOAD_EVERY_S:
+            return
+        self._checked_at = now
+        token = self._token() if self._token else None
+        if token == self._seen_token:
+            return
+        self._seen_token = token
+        try:
+            fresh = self._extra()
+        except Exception as e:  # a broken keys file never stops a reply
+            log.warning("the provider keys couldn't be read (%s)", type(e).__name__)
+            return
+        with self._lock:
+            old = {m.key: m for m in self.members}
+            extra = [old.get(m.key, m) for m in fresh]
+            extra_keys = {m.key for m in extra}
+            self.members = [m for m in self._base if m.key not in extra_keys] + extra
+            if self.last not in self.members:
+                self.last = None
+        log.info("%s: %d models from %d providers", self.name, len(self.members),
+                 len({m.provider for m in self.members}))
+
     def _maybe_refresh(self) -> None:
+        self._maybe_reload()
         if self._refreshed:
             return
         self._refreshed = True
@@ -92,8 +142,11 @@ class ModelPool:
                      len(self.members))
             return
         with self._lock:
-            known = {m.name for m in self.members}
-            self.members += [m for m in fresh if m.name not in known]
+            known = {m.key for m in self.members}
+            new = [m for m in fresh if m.key not in known]
+            self._base += new
+            first_extra = next((i for i, m in enumerate(self.members) if m not in self._base), len(self.members))
+            self.members[first_extra:first_extra] = new  # the refreshed base stays ahead of the keyed providers
 
     def _order(self, need_tools: bool = False) -> list[Member]:
         with self._lock:
@@ -111,7 +164,7 @@ class ModelPool:
                 retry = getattr(e, "retry_after_s", None)
                 wait = retry if retry else min(LIMIT_BENCH_S * 2 ** m.limits, LIMIT_BENCH_MAX_S)
                 m.limits += 1
-                if m.group and _SHARED_LIMIT.search(f"{e} {getattr(e, 'detail', '') or ''}"):
+                if m.group and (m.shared or _SHARED_LIMIT.search(f"{e} {getattr(e, 'detail', '') or ''}")):
                     until = self.clock() + wait  # one allowance for the group: bench them all at once
                     for other in self.members:
                         if other.group == m.group:
@@ -119,6 +172,15 @@ class ModelPool:
                     log.info("%s's shared limit is used up; its %s members are benched for %.0f s", m.group,
                              sum(o.group == m.group for o in self.members), wait)
                     return
+            elif kind == "auth" and m.provider:
+                until = self.clock() + GONE_BENCH_S  # the key is the provider's: none of its models will answer
+                for other in self.members:
+                    if other.provider == m.provider:
+                        other.benched_until, other.last_error = until, m.last_error
+                log.warning("%s rejected its key; its models are benched for %.0f s", m.provider, GONE_BENCH_S)
+                return
+            elif kind in ("missing", "auth"):
+                wait = GONE_BENCH_S
             elif kind == "error":
                 wait = ERROR_BENCH_S
             else:
@@ -180,7 +242,7 @@ class ModelPool:
     def states(self) -> list[MemberState]:
         now = self.clock()
         with self._lock:
-            return [MemberState(m.name, m.benched_until <= now, max(0.0, m.benched_until - now), m.slow, m.last_error)
+            return [MemberState(m.provider, m.name, m.benched_until <= now, max(0.0, m.benched_until - now), m.slow, m.last_error)
                     for m in self.members]
 
 
@@ -215,13 +277,14 @@ def opencode_free_ids(base_url: str, timeout_s: float = MODELS_TIMEOUT_S) -> dic
 
 
 def free_pool(name: str, make: Callable[[str], ChatModel], first: str, vision_only: bool = False,
-              list_ids: Callable[[], dict[str, bool]] | None = None, clock: Callable[[], float] = time.monotonic
+              list_ids: Callable[[], dict[str, bool]] | None = None, clock: Callable[[], float] = time.monotonic,
+              extra: Callable[[], list[Member]] | None = None, token: Callable[[], object] | None = None
               ) -> ModelPool:
     """A pool over opencode's free models, `first` (the configured one) leading. make(model_id) builds a member's
     client; list_ids reads the live list on first use (the built-in OPENCODE_FREE until then)."""
     def members(ids: dict[str, bool]) -> list[Member]:
         chosen = [first] + [i for i in ids if i != first]
-        return [Member(make(i), vision=ids.get(i, True), group="opencode") for i in chosen
+        return [Member(make(i), vision=ids.get(i, True), group="opencode", provider="opencode") for i in chosen
                 if ids.get(i, True) or not vision_only]
     refresh = (lambda: members(list_ids())) if list_ids else None
-    return ModelPool(name, members(OPENCODE_FREE), clock=clock, refresh=refresh)
+    return ModelPool(name, members(OPENCODE_FREE), clock=clock, refresh=refresh, extra=extra, token=token)

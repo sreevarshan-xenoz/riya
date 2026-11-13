@@ -253,21 +253,30 @@ def load_online_from_env(env=os.environ, name: str = "online", model: str | None
 
 
 def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> ChatModel | None:
-    """The configured online model. On opencode's free endpoint without a key it leads a pool of the other free
-    models (riya.core.pool), each with its own limit, so one running out hands over to the next; her eyes' pool
-    keeps only the models that take images. A model behind the user's own key stays a single model."""
+    """Her online brain: a pool (riya.core.pool) led by the configured model. On opencode's free endpoint the other
+    free models follow it (one shared daily allowance); then every provider with a key in providers.env
+    (riya.core.providers), re-read live, so a key added later joins without a restart. Her eyes' pool keeps only the
+    models that take images. None when nothing online is available."""
+    from riya.core import pool, providers
     model = None
     if name == "vision":
         model = (env.get("RIYA_ONLINE_VISION_MODEL") or "").strip() or ONLINE_VISION_MODEL
     one = load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
-    if one is None or one.api_key or not keyless_base(one.base_url):
-        return one
-    from riya.core import pool
+    vision_only = name == "vision"
 
-    def make(model_id: str) -> OpenAICompatModel:
-        return OpenAICompatModel(name, one.base_url, None, model_id, first_token_timeout_s=timeout_s)
-    return pool.free_pool(name, make, one.model, vision_only=name == "vision",
-                          list_ids=lambda: pool.opencode_free_ids(one.base_url))
+    def extra() -> list:
+        return providers.members(providers.all_keys(env), name, timeout_s, vision_only=vision_only)
+    if one is not None and not one.api_key and keyless_base(one.base_url):
+        def make(model_id: str) -> OpenAICompatModel:
+            return OpenAICompatModel(name, one.base_url, None, model_id, first_token_timeout_s=timeout_s)
+        return pool.free_pool(name, make, one.model, vision_only=vision_only,
+                              list_ids=lambda: pool.opencode_free_ids(one.base_url), extra=extra,
+                              token=providers.keys_token)
+    base = [pool.Member(one, vision=True, provider="online")] if one is not None else []
+    try:
+        return pool.ModelPool(name, base, extra=extra, token=providers.keys_token)
+    except ValueError:  # no configured model and no provider keys
+        return None
 
 
 def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, float], ChatModel | None] = online_model

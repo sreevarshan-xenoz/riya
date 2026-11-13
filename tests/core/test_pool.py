@@ -213,7 +213,7 @@ def test_unavailable_still_takes_just_a_message():
     assert (e.status, e.retry_after_s, e.detail, str(e)) == (None, None, None, "plain")
 
 
-def test_the_free_endpoint_gets_a_pool_and_a_key_a_single_model():
+def test_the_free_endpoint_and_a_key_both_lead_a_pool():
     online, vision = models.online_pair({})
     assert isinstance(online, ModelPool) and isinstance(vision, ModelPool)
     assert online.members[0].name == models.ONLINE_MODEL and online.api_key is None
@@ -221,10 +221,11 @@ def test_the_free_endpoint_gets_a_pool_and_a_key_a_single_model():
     assert len(online.members) == len(pool.OPENCODE_FREE)
     assert all(m.vision for m in vision.members) and len(vision.members) < len(online.members)
     assert {m.model.name for m in online.members} == {"online"} and {m.model.name for m in vision.members} == {"vision"}
-    keyed, _ = models.online_pair({"RIYA_ONLINE_API_KEY": "ENVKEY-11111111"})
-    assert isinstance(keyed, OpenAICompatModel)
+    keyed, _ = models.online_pair({"RIYA_ONLINE_API_KEY": "ENVKEY-11111111"})  # the user's own key: it alone leads
+    assert [m.provider for m in keyed.members] == ["online"] and keyed.api_key == "ENVKEY-11111111"
     other, _ = models.online_pair({"RIYA_ONLINE_BASE_URL": "https://example.com/v1", "RIYA_ONLINE_KEYLESS": "1"})
-    assert isinstance(other, OpenAICompatModel)
+    assert [m.provider for m in other.members] == ["online"]
+    assert models.online_pair({"RIYA_ONLINE_OFFLINE": "1"}) == (None, None)  # nothing online, no keys
     chosen, _ = models.online_pair({"RIYA_ONLINE_MODEL": "beam-free"})
     assert chosen.members[0].name == "beam-free"
 
