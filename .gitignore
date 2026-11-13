@@ -27,6 +27,9 @@ riya images/
 .env
 # the online key lives in %LOCALAPPDATA%\Riya, never the repo; this keeps a stray copy out of git
 secrets.env
+# the provider keys (riya/core/providers.py) live in the same folder; same rule, anywhere in the tree
+providers.env
+*.env
 scratch_runs/voice_candidates/
 # the benchmark datasets live in tests/data; the blanket data/ rule above would hide them
 !tests/data/
