@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _V1 = """
 create table facts(id integer primary key, text text not null, key text, source text not null
@@ -56,7 +56,29 @@ create index events_at on events(at);
 # v0.7: no new tables; the step marks an existing user as onboarded (see _ONBOARDED)
 _V5 = ""
 
-_MIGRATIONS = [_V1, _V2, _V3, _V4, _V5]
+# v0.12: her routine (predictor statistics, P2's appraisal state, observations, her own statements, presence
+# transitions); nothing the user typed, no screen text and no window titles
+_V6 = """
+create table routine_cells(predictor text not null, bucket text not null, n real, s1 real, s2 real, alpha real,
+  beta real, scale real not null, cusum real not null, startled_json text not null, updated_at real not null,
+  primary key(predictor, bucket));
+create table routine_p2(kind text not null, bucket text not null, scale real not null, cusum real not null,
+  startled_json text not null, updated_at real not null, primary key(kind, bucket));
+create table routine_obs(id integer primary key, at real not null, predictor text not null, bucket text not null,
+  value real not null);
+create index routine_obs_at on routine_obs(at);
+create table statements(id integer primary key, at real not null, kind text not null, claim integer not null,
+  text text not null, value_json text not null, evidence_json text not null, where_ text not null, due_at real,
+  verdict text not null default 'pending'
+    check(verdict in ('pending','true','false','unverifiable','expired')),
+  disputed integer not null default 0, scored_at real);
+create index statements_at on statements(at);
+create table presence_log(id integer primary key, at real not null, event text not null
+  check(event in ('away','back','break','break_end','gaming','gaming_end')));
+create index presence_log_at on presence_log(at);
+"""
+
+_MIGRATIONS = [_V1, _V2, _V3, _V4, _V5, _V6]
 
 # Appended to the v5 step only for a database that existed before this open (user_version >= 1 before migrating), so
 # returning users skip the welcome. It runs once, in the migration: a new user who quits mid-welcome still gets it
