@@ -741,3 +741,40 @@ def test_env_reaches_popen(tmp_path):
     plain, popen = make(tmp_path)
     plain.start()
     assert popen.kws[0]["env"] is None  # the default: llama-server inherits this process's environment
+
+
+def test_a_device_pins_the_gpu_and_cpu_mode_uses_none(tmp_path):
+    srv, _ = make(tmp_path, device="Vulkan1")
+    gpu, cpu = srv._cmd(True), srv._cmd(False)
+    assert gpu[gpu.index("-dev") + 1] == "Vulkan1" and gpu[gpu.index("-ngl") + 1] == "99"
+    assert cpu[cpu.index("-dev") + 1] == "none" and cpu[cpu.index("-ngl") + 1] == "0"
+    plain, _ = make(tmp_path)
+    assert "-dev" not in plain._cmd(True) and "-dev" not in plain._cmd(False)  # no device: as before
+
+
+def test_the_default_llama_server_per_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    assert server.default_llama_server(home=tmp_path).endswith("llama-server.exe")
+    monkeypatch.setattr(server.sys, "platform", "linux")
+    assert server.default_llama_server(home=tmp_path, which=lambda name: None) == "llama-server"
+    assert server.default_llama_server(home=tmp_path, which=lambda name: "/usr/bin/llama-server") == \
+        "/usr/bin/llama-server"
+    for build in ("llama-b100", "llama-b12347"):
+        exe = tmp_path / "llama.cpp" / build / "llama-server"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+    assert server.default_llama_server(home=tmp_path, which=lambda name: None) == \
+        str(tmp_path / "llama.cpp" / "llama-b12347" / "llama-server")  # the newest unpacked build
+
+
+def test_the_cli_passes_the_device(monkeypatch, tmp_path):
+    made = {}
+
+    class Srv:
+        def __init__(self, *a, **kw):
+            made.update(kw)
+            raise SystemExit
+    monkeypatch.setattr(server, "RiyaServer", Srv)
+    with pytest.raises(SystemExit):
+        server.main(["--model", "m.gguf", "--device", "Vulkan1"])
+    assert made["device"] == "Vulkan1"
