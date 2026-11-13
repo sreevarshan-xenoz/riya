@@ -403,7 +403,7 @@ def _simulate(p: Persona, seed: int, weeks: int, evidence: bool, clinginess: flo
 
     injected: set[float] = set()
     shift_t = SIM_START + SHIFT_DAY * DAY
-    obs_after_shift = {"n": 0}
+    obs_after_shift: dict[str, int] = {}  # per affected cell: its observations since the shift
 
     # instruments: what the predictors saw, and the cells that entered unsure
     real_observe = pr.observe_lognormal
@@ -424,10 +424,10 @@ def _simulate(p: Persona, seed: int, weeks: int, evidence: bool, clinginess: flo
     def unsure(cell, step, now):
         entered = real_unsure(cell, step, now)
         res.changes.append({"cell": cell, "at": now, "change": bool(step.change), "entered": entered})
-        if p.regime == "shift" and now >= shift_t and cell in SHIFT_CELLS and res.shift_obs_to_change is None:
-            obs_after_shift["n"] += 1
-            if step.change:
-                res.shift_obs_to_change = obs_after_shift["n"]
+        if p.regime == "shift" and now >= shift_t and cell in SHIFT_CELLS:
+            n = obs_after_shift[cell] = obs_after_shift.get(cell, 0) + 1
+            if step.change and (res.shift_obs_to_change is None or n < res.shift_obs_to_change):
+                res.shift_obs_to_change = n  # the fewest observations any affected cell needed
         return entered
     core.routine._unsure = unsure
     real_feel = core.feelings.on_appraisal
