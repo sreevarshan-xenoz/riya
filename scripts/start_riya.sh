@@ -59,7 +59,9 @@ if ! healthy; then
     lora="$("$PYTHON" -m riya.server --print-lora 2>/dev/null || true)"
     [[ -n "$lora" ]] && args+=(--lora "$lora")
     if command -v systemd-run >/dev/null && systemctl --user is-system-running >/dev/null 2>&1; then
-        systemd-run --user --scope --quiet --collect --unit="$SCOPE" \
+        # PartOf: when this runs as riya.service, stopping the service stops the model server too (a trap can't be
+        # relied on while systemd is already tearing the service down).
+        systemd-run --user --scope --quiet --collect --unit="$SCOPE" -p PartOf=riya.service \
             -p CPUQuota="$CPU_QUOTA" -p MemoryHigh=1536M -p MemoryMax="$MEM_MAX" -p CPUWeight=20 -p IOWeight=20 \
             nice -n 10 "$PYTHON" "${args[@]}" &
     else
