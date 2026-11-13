@@ -436,3 +436,12 @@ Every decision taken on the user's behalf while executing the three plans. Each 
   - **M5 is accepted:** a pin hash at startup costs about 0.1 s.
   - Cost if wrong: none.
 - Ruling: merge v0.11 via a PR handled by Claude. Next, the Kaggle bank (5 runs, gate 0.11.0, bge shipped in the dataset) and calibration on the laptop CPU. The record lands via its own PR, then the round-2 verdict and --check-verdict. Adopting is the user's step. Cost if wrong: main carries v0.11, which is revertable.
+
+## v0.12 Morpheus in Riya
+- Pre-flight resolutions P01–P10 are in the plan (`docs/superpowers/plans/2026-10-22-riya-v0.12-morpheus-in-riya.md`) and apply as written.
+- **C1, Task 2 (2026-11-13):** `test_a_stationary_stream_rarely_changes` (A2) gave 189/200 quiet streams at `STARTLE_FACTOR = 6`, `CUSUM_H = 3.5` (needs ≥ 190). The false changes are spread through the stream, not a start-up transient, and the code follows Resolutions 8 and 9.
+  - Ruling (user): `STARTLE_FACTOR = 8` (in the §4.10 grid). A1's arithmetic holds: 2 × (ln 8 − 0.5) ≈ 3.16 < 3.5 < 3 × (ln 8 − 0.5) ≈ 4.74. A2 gives 196/200. `CUSUM_H` stays 3.5.
+  - Cost if wrong: a startle needs a jump 8× the usual loss instead of 6×, so she is startled a little less often.
+- **C2, branch:** Task 1 was committed on local `main`, which is unpushed. Work continues on `feat/riya-v0.12` from that commit.
+- **C3, environment:** the laptop now runs Linux. Commands use `.venv/bin/python` from the repo root in place of `.venv\Scripts\python` from `E:\riya`.
+- **C4, commit trailer:** GC10's trailer lines are dropped. The user's global rules forbid co-author or AI-attribution lines, and those rules win.

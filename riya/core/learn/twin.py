@@ -31,28 +31,29 @@ def _finite(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
-def decayed(cell: Cell | None, now: float) -> Cell:
+def decayed(cell: Cell | None, now: float, prior: tuple[float, float] = (PRIOR, PRIOR)) -> Cell:
     """The cell as of now: evidence above the prior fades with the time since updated_at."""
+    a0, b0 = prior
     if (cell is None or not (_finite(cell.alpha) and _finite(cell.beta) and _finite(cell.updated_at))
             or cell.alpha + cell.beta <= 0):
-        return Cell(PRIOR, PRIOR, now)  # nothing yet, or a corrupt cell (alpha, beta or time): read as the prior
+        return Cell(a0, b0, now)  # nothing yet, or a corrupt cell (alpha, beta or time): read as the prior
     f = 0.5 ** (max(0.0, now - cell.updated_at) / HALF_LIFE_S)
-    return Cell(PRIOR + (cell.alpha - PRIOR) * f, PRIOR + (cell.beta - PRIOR) * f, now)
+    return Cell(a0 + (cell.alpha - a0) * f, b0 + (cell.beta - b0) * f, now)
 
 
-def updated(cell: Cell | None, engaged: bool, now: float) -> Cell:
-    c = decayed(cell, now)
+def updated(cell: Cell | None, engaged: bool, now: float, prior: tuple[float, float] = (PRIOR, PRIOR)) -> Cell:
+    c = decayed(cell, now, prior)
     return Cell(c.alpha + engaged, c.beta + (not engaged), now)
 
 
-def mean(cell: Cell | None, now: float) -> float:
-    c = decayed(cell, now)
+def mean(cell: Cell | None, now: float, prior: tuple[float, float] = (PRIOR, PRIOR)) -> float:
+    c = decayed(cell, now, prior)
     return c.alpha / (c.alpha + c.beta)
 
 
-def evidence(cell: Cell | None, now: float) -> float:
-    c = decayed(cell, now)
-    return c.alpha + c.beta - 2 * PRIOR
+def evidence(cell: Cell | None, now: float, prior: tuple[float, float] = (PRIOR, PRIOR)) -> float:
+    c = decayed(cell, now, prior)
+    return c.alpha + c.beta - (prior[0] + prior[1])
 
 
 def chance(cell: Cell | None, now: float) -> float:
