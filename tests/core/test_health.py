@@ -63,7 +63,8 @@ def test_clip():
 
 
 def test_the_constants_and_the_check_table():
-    assert ROWS == ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart")
+    assert ROWS == ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart",
+                    "honesty")
     assert STATUSES == ("ok", "warn", "off") and health.CHECK_TIMEOUT_S == 5.0 and CONNECTED_S == 86400
     assert FIXES == ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect",
                      "autostart", "use_base", "use_riya_v1")
@@ -302,7 +303,7 @@ def test_claude_code_partly_connected_offers_connect(tmp_path):
 
 def test_run_checks_returns_every_row_in_order(tmp_path):
     items = run_checks(ctx(tmp_path))
-    assert len(items) == 10 and [i.key for i in items] == list(ROWS)
+    assert len(items) == 11 and [i.key for i in items] == list(ROWS)
     assert all(i.status in STATUSES and i.detail and "\n" not in i.detail and len(i.detail) <= DETAIL_MAX for i in items)
 
 
@@ -371,7 +372,7 @@ def test_no_row_detail_ever_holds_the_key(tmp_path):
             http_get=lambda u, t: b'{"data":[{"id":"riya.gguf"}]}',
             last_tests={k: leaky for k in ("online_test", "eyes_test", "mic_check", "voice_sample")})
     items = run_checks(c)
-    assert len(items) == 10
+    assert len(items) == 11
     text = json.dumps([[i.key, i.status, i.detail, i.fix] for i in items], ensure_ascii=False)
     assert CANARY not in text and CANARY[:-4] not in text
     assert mask in next(i for i in items if i.key == "online").detail  # only the masked tail shows

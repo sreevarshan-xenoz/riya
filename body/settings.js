@@ -8,6 +8,7 @@
     DeferWhileFocused, petControls, eyesCountText, eyesStatusText, glanceRows,
   } = RiyaSettings;
   const { dialRows, historyRows, noteRows, twinRows, rateText, noteDeleteMessage, twinResetMessage, resetMessage } = RiyaLearning;
+  const { cellRows, honestyText, forgetMessage } = RiyaRoutine;
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
   const {
@@ -260,7 +261,7 @@
   }
 
   const CHECK_KEYS = ["mute_voice", "mute_mic", "autostart", "online_enabled", "online_consolidation", "may_start_conversations",
-    "eyes_enabled", "hands_online", "learning_enabled", "pet_enabled"];
+    "eyes_enabled", "hands_online", "learning_enabled", "routine_enabled", "pet_enabled"];
   for (const key of CHECK_KEYS) $(key).addEventListener("change", (e) => changeSetting(key, e.target.checked));
   for (const key of ["glance_daily_cap", "glance_min_gap_s"]) $(key).addEventListener("change", (e) => changeSetting(key, e.target.value));
   for (const [key, save] of [["eyes_deny_titles", "deny-titles-save"], ["eyes_deny_processes", "deny-processes-save"]]) {
@@ -288,6 +289,7 @@
   });
   $("actions-clear").addEventListener("click", clearActions);
   $("learning-reset").addEventListener("click", resetLearning);
+  $("routine-forget").addEventListener("click", forgetRoutines);
   $("mode").addEventListener("change", (e) => changeSetting("mode", e.target.value));
   $("voice").addEventListener("change", (e) => changeSetting("voice", e.target.value));
   $("volume").addEventListener("input", (e) => { $("volume-out").textContent = `${Math.round(e.target.value * 100)}%`; });
@@ -619,6 +621,27 @@
     if (r.ok) act("learning", resetMessage());
   }
 
+  async function forgetRoutines() {
+    const r = await confirmDialog({
+      title: "Forget her routines?",
+      body: "Everything she noticed about your routines is deleted. Her honesty tally stays. This can't be undone.",
+      okLabel: "Forget",
+    });
+    if (r.ok) act("routine", forgetMessage());
+  }
+
+  /** What she noticed about your routines and her honesty line; null (the core is away) empties it. */
+  function renderRoutine(msg) {
+    fill("routine-cells", "routine-cells-empty", (msg ? cellRows(msg) : []).map((row) => {
+      const li = h("li", "item");
+      li.append(h("div", "item-text", row.line));
+      return li;
+    }));
+    $("routine-cells-empty").hidden = !msg || cellRows(msg).length > 0;
+    $("routine-honesty").textContent = msg ? honestyText(msg) : "";
+    $("routine-forget").disabled = !msg || msg.enabled !== true;
+  }
+
   function dialItem(row) {
     const li = h("li", "dial");
     const bar = h("div", "dial-bar");
@@ -672,7 +695,7 @@
   }
 
   function renderMemories(msg) {
-    for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:") && target !== "learning" && !target.startsWith("style-note:") && !target.startsWith("twin:")) errorEls.delete(target);
+    for (const target of [...errorEls.keys()]) if (!target.startsWith("setting:") && target !== "learning" && target !== "routine" && !target.startsWith("style-note:") && !target.startsWith("twin:")) errorEls.delete(target);
     const { facts, episodes, threads, days, notes } = memoryLists(msg);
 
     fill("facts", "facts-empty", facts.map((fact) => {
@@ -720,6 +743,7 @@
     if (!connected) { // a stale log or stale dials would pass for live; the core sends them again on change
       renderActions(null);
       renderLearning(null);
+      renderRoutine(null);
       renderHealth(null);
     }
     updateKeyButtons();
@@ -739,6 +763,9 @@
     } else if (msg.type === "learning") {
       router.settle();
       renderLearning(msg);
+    } else if (msg.type === "routine") {
+      router.settle();
+      renderRoutine(msg);
     } else if (msg.type === "eyes") {
       renderEyes(msg);
     } else if (msg.type === "agents") {
@@ -776,7 +803,9 @@
   });
 
   errorEls.set("learning", $("learning-reset-err"));
+  errorEls.set("routine", $("routine-forget-err"));
   renderLearning(null);
+  renderRoutine(null);
   renderHealth(null);
   showVoice(null);
   window.riya.dontLookHotkey().then((accelerator) => { $("dontlook-hotkey").textContent = hotkeyText(accelerator); },

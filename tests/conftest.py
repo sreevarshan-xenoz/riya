@@ -13,7 +13,7 @@ def pytest_configure(config):
 
 @pytest.fixture(scope="session", autouse=True)
 def real_models_untouched():
-    """The session fails if anything under the user's real models folder (%USERPROFILE%\\models) was added, removed
+    """The session fails if anything under the user's real models folder (~/models) was added, removed
     or changed while it ran (C1: a fake adapter and its champion record once landed there). Read-only: it lists the
     folder at the start and at the end, and never writes. No folder: nothing to guard."""
     before = real_paths.listing(real_paths.REAL_MODELS)

@@ -8,7 +8,7 @@ from riya.core.clock import FakeClock
 from riya.core.embed import HashEmbedder
 from riya.core.models import ModelUnavailable, ToolReply
 from riya.core.presence import FakeIdleSource
-from riya.core.store import open_db
+from riya.core.store import KV, open_db
 
 
 class FakeModel:
@@ -48,16 +48,19 @@ class FakeModel:
         self.finish_reason = self.finish_after
 
 
-def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, tz=None, **eyes):
+def make_core(clock=None, local_replies=("Okay.",), online=None, tmp_path=None, tz=None, routine=False, **eyes):
     """A RiyaCore on fakes: returns (core, emitted messages, idle source, local model). eyes: vision, window_source,
     grab (no window and no vision model by default, so she never looks). Her hands are fake too: core.effects is a
-    FakeEffects, core.http a FakeHttp with no answers, and her folder a fresh temporary path (made only on a write)."""
+    FakeEffects, core.http a FakeHttp with no answers, and her folder a fresh temporary path (made only on a write).
+    routine: "She notices your routines" (off unless a test asks, so every older test is on v0.11's path)."""
     from riya.core.engine import RiyaCore
     from riya.core.hands.effects import FakeEffects
     from riya.core.hands.net import FakeHttp
 
     clock = clock or FakeClock()
     db = open_db(tmp_path / "riya.db" if tmp_path is not None else ":memory:")
+    kv = KV(db)
+    kv.set("settings", {**kv.get("settings", {}), "routine_enabled": routine})  # a reopened db keeps its settings
     riya_dir = (tmp_path if tmp_path is not None else Path(tempfile.gettempdir())) / f"riya-test-{uuid.uuid4().hex}"
     emitted, src, local = [], FakeIdleSource(), FakeModel("local", local_replies)
     core = RiyaCore(db=db, embedder=HashEmbedder(), clock=clock, idle_source=src, local=local, online=online,

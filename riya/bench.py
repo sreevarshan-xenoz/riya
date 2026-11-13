@@ -18,8 +18,9 @@ import statistics
 import subprocess
 import time
 import urllib.request
+from pathlib import Path
 
-LLAMA_SERVER = os.environ.get("LLAMA_SERVER", r"%USERPROFILE%\llama.cpp\llama-server.exe")
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER", str(Path.home() / "llama.cpp" / "llama-server.exe"))
 VRAM_BUDGET_MB = 1536
 
 SYSTEM = "You are Riya, a warm, witty personal AI companion. Answer briefly and naturally, like in a spoken conversation."

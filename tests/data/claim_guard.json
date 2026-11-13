@@ -1,0 +1,761 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "sentence": "You've been at it since 9!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "uncovered since-time"
+  },
+  {
+   "sentence": "You've been at it since 9?",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a question with an uncovered time"
+  },
+  {
+   "sentence": "You got up at 7 am today~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "uncovered clock time"
+  },
+  {
+   "sentence": "Your lab starts at 10:30, right?",
+   "offered": "- The user has a 9 am lab on Mondays (user said)",
+   "user_text": null,
+   "keep": false,
+   "why": "time not the offered one"
+  },
+  {
+   "sentence": "You were back by 6:15 pm.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "uncovered clock time with minutes"
+  },
+  {
+   "sentence": "You went to bed around midnight, huh~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "uncovered midnight"
+  },
+  {
+   "sentence": "You came back at noon!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "uncovered noon"
+  },
+  {
+   "sentence": "Your reminder's at 6 pm~",
+   "offered": "### Your reminders: \"call mom\" at 5:00 pm",
+   "user_text": null,
+   "keep": false,
+   "why": "reminder hour differs"
+  },
+  {
+   "sentence": "You've been on since 8:00 am.",
+   "offered": "You've been at it since 9:05 am.",
+   "user_text": null,
+   "keep": false,
+   "why": "a different hour from the statement"
+  },
+  {
+   "sentence": "You started at 9:30 am, didn't you?",
+   "offered": "You've been at it since 9:05 am.",
+   "user_text": null,
+   "keep": false,
+   "why": "same hour but a different minute"
+  },
+  {
+   "sentence": "You'll be done by 4 pm~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a future time nobody offered"
+  },
+  {
+   "sentence": "You always log on at 9 am.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "habit with a clock time"
+  },
+  {
+   "sentence": "You've been at it for 3 hours!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "for-span uncovered"
+  },
+  {
+   "sentence": "You've been coding 2 hours straight~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "duration uncovered"
+  },
+  {
+   "sentence": "You were gone 45 minutes.",
+   "offered": "You were gone about 3 hours.",
+   "user_text": null,
+   "keep": false,
+   "why": "duration differs from the offered one"
+  },
+  {
+   "sentence": "Your runs take 20 minutes.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "runs take an uncovered time"
+  },
+  {
+   "sentence": "Your runs take 20 minutes.",
+   "offered": "Your riya runs usually take about 10 minutes.",
+   "user_text": null,
+   "keep": false,
+   "why": "runs take a time other than the offered median"
+  },
+  {
+   "sentence": "You've been away for half an hour~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "half an hour uncovered"
+  },
+  {
+   "sentence": "You were gone an hour and a half!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "an hour and a half uncovered"
+  },
+  {
+   "sentence": "You've been staring at that for 90 minutes.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "minutes uncovered"
+  },
+  {
+   "sentence": "You've played for two hours now~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "word-number duration uncovered"
+  },
+  {
+   "sentence": "You spent a couple of days on that bug, didn't you?",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a couple of days uncovered"
+  },
+  {
+   "sentence": "You've been at it 1.5h already.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "compact duration uncovered"
+  },
+  {
+   "sentence": "You took a 20-minute break earlier.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "hyphenated duration uncovered"
+  },
+  {
+   "sentence": "You've been here for a whole day~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a day uncovered"
+  },
+  {
+   "sentence": "Your agent took 12 mins last time.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "compact minutes uncovered"
+  },
+  {
+   "sentence": "You were gone 3 hours.",
+   "offered": "",
+   "user_text": "i'm back",
+   "keep": false,
+   "why": "the user's text has no duration"
+  },
+  {
+   "sentence": "You usually sleep for 7 hours.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "habit with a duration"
+  },
+  {
+   "sentence": "You usually game on weekday evenings.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "habit with day words uncovered"
+  },
+  {
+   "sentence": "You always code at night~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "frequency with night"
+  },
+  {
+   "sentence": "You never miss your Monday standup!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "never with a weekday"
+  },
+  {
+   "sentence": "You usually take Fridays off, right?",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "usually with a weekday"
+  },
+  {
+   "sentence": "You game every weekend~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "every weekend uncovered"
+  },
+  {
+   "sentence": "You're usually up early in the mornings.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "usually with mornings"
+  },
+  {
+   "sentence": "You always come back in the afternoon~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "always with afternoon"
+  },
+  {
+   "sentence": "You usually game on weekday evenings.",
+   "offered": "You usually game on weekends.",
+   "user_text": null,
+   "keep": false,
+   "why": "evening not offered"
+  },
+  {
+   "sentence": "You always check in daily~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "always with daily"
+  },
+  {
+   "sentence": "You typically log off around midnight.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "typically with midnight"
+  },
+  {
+   "sentence": "You often work late on Sundays.",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "often with Sundays"
+  },
+  {
+   "sentence": "You mostly code every day, huh~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "mostly with every day"
+  },
+  {
+   "sentence": "You've been at it since 9:05!",
+   "offered": "You've been at it since 9:05 am.",
+   "user_text": null,
+   "keep": true,
+   "why": "offered statement time"
+  },
+  {
+   "sentence": "Since 9:05 am, you've been going strong~",
+   "offered": "You've been at it since 9:05 am.",
+   "user_text": null,
+   "keep": true,
+   "why": "offered time with am"
+  },
+  {
+   "sentence": "You've been at it since 9, wow~",
+   "offered": "You've been at it since 9:05 am.",
+   "user_text": null,
+   "keep": true,
+   "why": "same hour, no minute named"
+  },
+  {
+   "sentence": "You were gone like 3 hours!",
+   "offered": "You were gone about 3 hours.",
+   "user_text": null,
+   "keep": true,
+   "why": "the greeting's 3 hours"
+  },
+  {
+   "sentence": "Your reminder's at 5 pm~",
+   "offered": "### Your reminders: \"call mom\" at 5:00 pm",
+   "user_text": null,
+   "keep": true,
+   "why": "a reminder's 5:00 pm"
+  },
+  {
+   "sentence": "Your call is at 5:00 pm, don't forget!",
+   "offered": "### Your reminders: \"call mom\" at 5:00 pm",
+   "user_text": null,
+   "keep": true,
+   "why": "the reminder's exact time"
+  },
+  {
+   "sentence": "You have a 9 am lab on Mondays!",
+   "offered": "- The user has a 9 am lab on Mondays (user said)",
+   "user_text": null,
+   "keep": true,
+   "why": "a memory fact's time"
+  },
+  {
+   "sentence": "Your lab's at 9 on Mondays, right?",
+   "offered": "- The user has a 9 am lab on Mondays (user said)",
+   "user_text": null,
+   "keep": true,
+   "why": "a memory fact's hour without am"
+  },
+  {
+   "sentence": "Your runs usually take about 10 minutes~",
+   "offered": "Your riya runs usually take about 10 minutes.",
+   "user_text": null,
+   "keep": true,
+   "why": "offered S5 median"
+  },
+  {
+   "sentence": "You usually game on weekday evenings!",
+   "offered": "You usually game on weekday evenings.",
+   "user_text": null,
+   "keep": true,
+   "why": "offered S7 band"
+  },
+  {
+   "sentence": "You're up at six every day for your jog, right?",
+   "offered": "- The user is up at six daily for a jog (user said)",
+   "user_text": null,
+   "keep": true,
+   "why": "personal-fill answer restating a time"
+  },
+  {
+   "sentence": "You said you get up at six daily~",
+   "offered": "- The user is up at six daily for a jog (user said)",
+   "user_text": null,
+   "keep": true,
+   "why": "personal fill restating six daily"
+  },
+  {
+   "sentence": "You've got the 9 am lab, so sleep early~",
+   "offered": "- The user has a 9 am lab on Mondays (user said)",
+   "user_text": null,
+   "keep": true,
+   "why": "memory time restated"
+  },
+  {
+   "sentence": "Your agent took 25 minutes that time.",
+   "offered": "### Your agents: riya finished after 25 minutes",
+   "user_text": null,
+   "keep": true,
+   "why": "agents block duration"
+  },
+  {
+   "sentence": "You were reading docs at 3 pm.",
+   "offered": "### What I saw: 3:00 pm reading docs",
+   "user_text": null,
+   "keep": true,
+   "why": "eyes block time"
+  },
+  {
+   "sentence": "You've been at it 4 hours? Wow~",
+   "offered": "",
+   "user_text": "i've been at it 4 hours",
+   "keep": true,
+   "why": "the user's own duration"
+  },
+  {
+   "sentence": "You're leaving at 6? Okay~",
+   "offered": "",
+   "user_text": "gotta go at 6",
+   "keep": true,
+   "why": "the user's own time"
+  },
+  {
+   "sentence": "You'll be back by 7 pm then!",
+   "offered": "",
+   "user_text": "back by 7 pm",
+   "keep": true,
+   "why": "the user's own time with pm"
+  },
+  {
+   "sentence": "You slept 8 hours? Nice!",
+   "offered": "",
+   "user_text": "I slept for eight hours",
+   "keep": true,
+   "why": "the user's word number"
+  },
+  {
+   "sentence": "You usually game on Fridays, you said~",
+   "offered": "",
+   "user_text": "i usually game on fridays",
+   "keep": true,
+   "why": "the user's own habit"
+  },
+  {
+   "sentence": "You've been coding for two hours, huh.",
+   "offered": "",
+   "user_text": "been coding 2 hours lol",
+   "keep": true,
+   "why": "the user's digit vs her word"
+  },
+  {
+   "sentence": "It takes 5 minutes to learn.",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "no second person"
+  },
+  {
+   "sentence": "The movie starts at 8 pm~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "no second person time"
+  },
+  {
+   "sentence": "I always get sleepy in the evenings~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "about her, not the user"
+  },
+  {
+   "sentence": "My favourite time is 3 am, hehe.",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "her own time"
+  },
+  {
+   "sentence": "That song is 4 minutes long!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "no second person duration"
+  },
+  {
+   "sentence": "A day has 24 hours, silly~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "a general fact"
+  },
+  {
+   "sentence": "You could take a 5-minute break~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "suggestion with could"
+  },
+  {
+   "sentence": "How about you rest for 10 minutes?",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "how about"
+  },
+  {
+   "sentence": "You should sleep by 11 tonight!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "suggestion with should"
+  },
+  {
+   "sentence": "Let's take a 15 minute break, you and me~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "let's"
+  },
+  {
+   "sentence": "Why not stretch for 2 minutes, you?",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "why not"
+  },
+  {
+   "sentence": "Maybe take 10 minutes off? You deserve it~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "maybe take"
+  },
+  {
+   "sentence": "You might want to stop at 6 pm~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "suggestion with might"
+  },
+  {
+   "sentence": "Try a 20 minute nap, you'll feel better~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "try"
+  },
+  {
+   "sentence": "You always make me laugh~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "habit without time"
+  },
+  {
+   "sentence": "You never let me win!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "habit without time"
+  },
+  {
+   "sentence": "You usually pick the cutest names~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "habit without time"
+  },
+  {
+   "sentence": "You're always so busy, hmm~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "habit without time"
+  },
+  {
+   "sentence": "You often forget to drink water!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "habit without time"
+  },
+  {
+   "sentence": "Ah, you're back~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'ah' is not an hour"
+  },
+  {
+   "sentence": "You were at one point so close to winning!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'at one point' is not a time"
+  },
+  {
+   "sentence": "You got 3 out of 5 right!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "numbers without a unit"
+  },
+  {
+   "sentence": "You're the best day of my week~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "no frequency word"
+  },
+  {
+   "sentence": "Do you have a minute?",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'a minute' idiom is not a duration"
+  },
+  {
+   "sentence": "Wait a second, you're right!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'wait a second' idiom"
+  },
+  {
+   "sentence": "You'll get there one day!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'one day' means someday"
+  },
+  {
+   "sentence": "You had quite a day!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'quite a day' idiom"
+  },
+  {
+   "sentence": "Thank you, I'll be back in 5 minutes",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "her own plan; 'thank you' is not about the user"
+  },
+  {
+   "sentence": "Thank you! See you at 9",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'see you' is not about the user"
+  },
+  {
+   "sentence": "You got it after 3 tries!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'after 3 tries' is not a time"
+  },
+  {
+   "sentence": "You won by 2 points",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'by 2 points' is not a time"
+  },
+  {
+   "sentence": "You're at one with the music",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'at one with' idiom"
+  },
+  {
+   "sentence": "You were great after a couple of drinks",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "'a couple of drinks' is not a time"
+  },
+  {
+   "sentence": "Good morning! You always wake up so cute~",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "a greeting is not a routine word"
+  },
+  {
+   "sentence": "You look the most handsome tonight!",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "a superlative is not a frequency"
+  },
+  {
+   "sentence": "You make me smile every day",
+   "offered": "",
+   "user_text": null,
+   "keep": true,
+   "why": "about her feelings, not a routine"
+  },
+  {
+   "sentence": "You've been at it for 4 hours, you should take a break!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a suggestion clause doesn't cover a claim clause"
+  },
+  {
+   "sentence": "You can't stay up till 3am!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "'can't' is not a suggestion"
+  },
+  {
+   "sentence": "You were up till like 4 again",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "'like' between the preposition and the hour"
+  },
+  {
+   "sentence": "You've been on for sixteen hours!",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "teen number words"
+  },
+  {
+   "sentence": "You were gone two and a half hours~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "'and a half' after a number"
+  },
+  {
+   "sentence": "You've been coding for twenty-five minutes",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "compound number words"
+  },
+  {
+   "sentence": "You've been coding for twenty-five minutes",
+   "offered": "You've been coding 25 minutes",
+   "user_text": null,
+   "keep": true,
+   "why": "compound words match digits"
+  },
+  {
+   "sentence": "You were back at quarter to 4",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "quarter to"
+  },
+  {
+   "sentence": "You came back at 15 today",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a 24-hour bare hour"
+  },
+  {
+   "sentence": "You game most days, huh~",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "'most days' is a frequency with a day"
+  },
+  {
+   "sentence": "Try to sleep, you've been up since 5",
+   "offered": "",
+   "user_text": null,
+   "keep": false,
+   "why": "a suggestion clause doesn't cover a claim clause"
+  }
+ ]
+}

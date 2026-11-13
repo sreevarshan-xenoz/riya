@@ -436,3 +436,25 @@ Every decision taken on the user's behalf while executing the three plans. Each 
   - **M5 is accepted:** a pin hash at startup costs about 0.1 s.
   - Cost if wrong: none.
 - Ruling: merge v0.11 via a PR handled by Claude. Next, the Kaggle bank (5 runs, gate 0.11.0, bge shipped in the dataset) and calibration on the laptop CPU. The record lands via its own PR, then the round-2 verdict and --check-verdict. Adopting is the user's step. Cost if wrong: main carries v0.11, which is revertable.
+
+## v0.12 Morpheus in Riya
+- Pre-flight resolutions P01–P10 are in the plan (`docs/superpowers/plans/2026-10-22-riya-v0.12-morpheus-in-riya.md`) and apply as written.
+- **C1, Task 2 (2026-11-13):** `test_a_stationary_stream_rarely_changes` (A2) gave 189/200 quiet streams at `STARTLE_FACTOR = 6`, `CUSUM_H = 3.5` (needs ≥ 190). The false changes are spread through the stream, not a start-up transient, and the code follows Resolutions 8 and 9.
+  - Ruling (user): `STARTLE_FACTOR = 8` (in the §4.10 grid). A1's arithmetic holds: 2 × (ln 8 − 0.5) ≈ 3.16 < 3.5 < 3 × (ln 8 − 0.5) ≈ 4.74. A2 gives 196/200. `CUSUM_H` stays 3.5.
+  - Cost if wrong: a startle needs a jump 8× the usual loss instead of 6×, so she is startled a little less often.
+- **C2, branch:** Task 1 was committed on local `main`, which is unpushed. Work continues on `feat/riya-v0.12` from that commit.
+- **C3, environment:** the laptop now runs Linux. Commands use `.venv/bin/python` from the repo root in place of `.venv\Scripts\python` from `E:\riya`.
+- **C4, commit trailer:** GC10's trailer lines are dropped. The user's global rules forbid co-author or AI-attribution lines, and those rules win.
+- **C5, Task 4:** the claim guard reads clauses separately: a suggestion clause ("you should take a break") exempts only itself. "thank you", "see you" and idioms ("wait a minute", "after 3 tries", "one day") are not claims. A review found the fixture-only version dropping innocent lines; each fix carries its own fixture case (58 keep / 50 drop).
+- **C6, Task 6:** the audit's per-kind `value` keys are fixed in `audit.py`'s docstring, and the facade (Task 9) writes them. A hand-edited row that fails to score is unverifiable, and never stops the audit.
+- **C7, Task 7:** a stale ("unknown") Claude turn and a new prompt after an unanswered permission get no run time and a clean start, respectively.
+- **C8, Task 9:** the P4 "50% interval" for S8 is the usual outcome (1 or 0). The settings-page lines show the observed median (exp of the mean log), not the predictive, which the prior pulls.
+- **C9, Task 10:** hello carries `RoutineMsg` only while routine is on (the settings already carry the switch), so the existing hello-order pins stay unedited.
+- **Known limit (2026-11-13):** Presence has a real sensor only on Windows (`WindowsIdleSource`). On Linux the fake source never sees an absence, lock or fullscreen game, so routine learning there needs a Linux idle source (a follow-up, outside v0.12).
+- **C10, Task 12:** `body/test/health-logic.test.js` also pins the Health row list; it gains `"honesty"` with the planned `ROW_LABELS` change (a pin the plan missed).
+- **K-dev (2026-11-13):** the dev run (seeds 0-19, after the A5 counting fix `7958095`) fails A3 (P1's 80% interval covers 0.92-0.97, too wide) and A7 (the evidence-off plant scores 95% true). A4, A5, A6 (97.6% / 97.0%) and A9 pass.
+  - The grid was not run. None of its four constants moves either failure. A3's interval width comes from the Normal-Gamma prior (σ₀ = 1.2) against very regular personas. A7's plant only promotes hunches, which already need `HUNCH_N` evidence. So no admissible point can pass, and by Resolution 10 the defaults stand.
+  - Both failures depend on the simulator's personas, which the builder invented. The user decides on the held-out result at the PR.
+- **K0 review (2026-11-13):** the whole-branch review's three fixes landed before the held-out run, which was stopped unseen and restarted on the fixed code. The dev record predates them; its constants still equal the code's.
+- **K-heldout (2026-11-13):** seeds 100-159 FAIL (A3, A5, A7); A4, A6, A9 pass. Per Resolution 28 `CLAIMS_ENABLED = False` (hunches only); A9 passed, so absence remarks stay on. A5 is judged per affected cell, a reading adopted on dev seeds after the pooled count read 0%; under that reading held-out detection is 0.817 against 0.9, so it fails either way.
+- **History rewrite (2026-11-13):** before the first push, the unpushed v0.12 commits were rewritten to drop attribution trailers, a local path and a session link from the plan and spec; code is byte-identical. The records' `git` fields name pre-rewrite commits: dev 7958095 is now 490aac1, held-out 16c5e2b is now 498d0d8.

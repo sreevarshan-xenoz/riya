@@ -29,7 +29,7 @@ from riya.core.learn.dials import BANDS
 from riya.core.models import ModelUnavailable, load_dotenv, load_online_from_env, local_model
 from riya.core.presence import FakeIdleSource
 from riya.core.protocol import ErrorMsg
-from riya.core.store import open_db
+from riya.core.store import KV, open_db
 
 PROBES = Path(__file__).with_name("persona_probes.json")
 STYLE_EXAMPLES = Path(__file__).resolve().parents[1] / "riya" / "core" / "style_examples.md"
@@ -97,15 +97,21 @@ def style_phrases(probes: dict) -> list[str]:
     return out
 
 
+GATE_SETTINGS = {"routine_enabled": False}  # v0.12: the gate measures v0.11's persona, routine off (§4.12.2)
+
+
 def run_conversation(conv: dict, local, online, tmp: str, tag: str = "", dials: dict | None = None,
                      embedder: Embedder | None = None) -> list[dict]:
     """One fresh core on a temp db; one row per turn (empty reply plus an `error` when the model failed). `dials` are
     set on the core's learn store (a temp db, never the user's) right after it is built. `embedder` is shared by every
     conversation of a run (None: a new HashEmbedder).
     known_texts is the seeded facts plus the user's turns so far: her own words are never evidence about the user.
-    facts is what her memory holds at that turn. A "speak_first" turn is her greeting after away_hours away."""
+    facts is what her memory holds at that turn. A "speak_first" turn is her greeting after away_hours away.
+    The core runs with GATE_SETTINGS (routine off): a known limit is that the gate covers neither the routine features
+    nor the claim guard; routine_sim and the live honesty audit measure those."""
     clock, emitted = FakeClock(), []
     db = open_db(Path(tmp) / "riya.db")
+    KV(db).set("settings", GATE_SETTINGS)
     try:
         emb = HashEmbedder() if embedder is None else embedder
         core = RiyaCore(db=db, embedder=emb, clock=clock, idle_source=FakeIdleSource(), local=local,

@@ -362,3 +362,23 @@ def bid_situation(reason: str, thread: Thread | None) -> str:
     if thread:
         s += f" You could bring up: {thread.text}."
     return s + " Say one short, playful line. No lecture."
+
+
+# v0.12: her routine. A statement is an engine line; the model may only add a warm sentence around it
+STATEMENT_SITUATION = ('You already said: "{line}". That\'s all you know about it: don\'t add other times, numbers or '
+                       "habits. Add one short, warm sentence.")
+STATEMENT_TAIL_SITUATION = ('After your sentence you\'ll add: "{line}". Don\'t say it yourself, and don\'t add other '
+                            "times, numbers or habits.")
+
+
+def statement_situation(line: str) -> str:
+    return STATEMENT_SITUATION.format(line=line)
+
+
+def statement_tail_situation(line: str) -> str:
+    return STATEMENT_TAIL_SITUATION.format(line=line)
+
+
+def offered_text(retrieved: Retrieved, now: float) -> str:
+    """The memory block exactly as the prompt carries it: what the claim guard counts as offered."""
+    return _memory_block(retrieved, now)

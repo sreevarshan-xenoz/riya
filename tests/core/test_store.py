@@ -52,7 +52,7 @@ def test_a_v1_database_migrates_to_current_keeping_its_data(tmp_path):
     p = tmp_path / "riya.db"
     _v1_db(p)
     db = open_db(p)
-    assert SCHEMA_VERSION == 5 and db.execute("pragma user_version").fetchone()[0] == 5
+    assert SCHEMA_VERSION == 6 and db.execute("pragma user_version").fetchone()[0] == 6
     mem = Memory(db, HashEmbedder(), FakeClock())
     assert [f.text for f in mem.list_facts()] == ["The user likes tea"]
     assert [r["text"] for r in mem.unconsolidated()] == ["hi"]
@@ -114,14 +114,14 @@ def test_a_v2_database_migrates_to_current_keeping_its_rows(tmp_path):
     p = tmp_path / "riya.db"
     _v2_db(p)
     db = open_db(p)
-    assert db.execute("pragma user_version").fetchone()[0] == 5
+    assert db.execute("pragma user_version").fetchone()[0] == 6
     assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
     assert db.execute("select count(*) from glances").fetchone()[0] == 1
     assert KV(db).get("settings") == {"mode": "panel", "onboarded": True}
     names = {r[0] for r in db.execute("select name from sqlite_master")}
     assert {"reminders", "notes", "actions", "reminders_due", "actions_at"} <= names
     db.close()
-    assert open_db(p).execute("pragma user_version").fetchone()[0] == 5        # a second open doesn't migrate again
+    assert open_db(p).execute("pragma user_version").fetchone()[0] == 6        # a second open doesn't migrate again
 
 
 def test_a_failed_v3_migration_leaves_the_v2_database_untouched(tmp_path, monkeypatch):
@@ -228,7 +228,7 @@ def test_a_populated_v3_db_migrates_to_current(tmp_path):
     p = tmp_path / "riya.db"
     _v3_db(p)
     db = open_db(p)
-    assert db.execute("pragma user_version").fetchone()[0] == 5
+    assert db.execute("pragma user_version").fetchone()[0] == 6
     assert _counts(db) == _V3_ROWS
     assert db.execute("select text from facts").fetchone()[0] == "The user likes tea"
     assert KV(db).get("settings") == {"mode": "panel", "onboarded": True}
@@ -239,7 +239,7 @@ def test_a_populated_v3_db_migrates_to_current(tmp_path):
     assert {"trait_history", "style_notes", "twin", "events", "events_at"} <= names
     assert LearnDB(db).dials() == load_traits()
     db.close()
-    bak = tmp_path / "riya.db.pre-v5.bak"
+    bak = tmp_path / "riya.db.pre-v6.bak"
     old = sqlite3.connect(str(bak))
     assert old.execute("pragma user_version").fetchone()[0] == 3
     assert _counts(old) == _V3_ROWS
@@ -247,7 +247,7 @@ def test_a_populated_v3_db_migrates_to_current(tmp_path):
     old.close()
     mtime = bak.stat().st_mtime_ns
     again = open_db(p)                                    # already current: no second migration, no new backup
-    assert again.execute("pragma user_version").fetchone()[0] == 5 and _counts(again) == _V3_ROWS
+    assert again.execute("pragma user_version").fetchone()[0] == 6 and _counts(again) == _V3_ROWS
     assert bak.stat().st_mtime_ns == mtime
     again.close()
 

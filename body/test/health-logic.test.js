@@ -33,7 +33,7 @@ test("healthRows keeps the core's order and labels, and skips bad rows", () => {
 });
 
 test("every row key has a label, in the core's order", () => {
-  assert.deepEqual(Object.keys(H.ROW_LABELS), ["local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart"]);
+  assert.deepEqual(Object.keys(H.ROW_LABELS), ["local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart", "honesty"]);
   assert.deepEqual(H.CONFIRM_GATED, ["online_test", "eyes_test", "hooks_connect", "hooks_disconnect"]);
   assert.equal(H.REFRESH_MS, 30000);
   assert.equal(H.MAX_KEY, 200);

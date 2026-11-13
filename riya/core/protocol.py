@@ -434,15 +434,49 @@ class FocusAgent(BaseModel):
     id: str = Field(min_length=1, max_length=128)
 
 
+class RoutineCellInfo(BaseModel):
+    """One routine she has learned, in her own words (never anything the user typed): the line, her confidence and
+    the decayed evidence behind it."""
+    line: str
+    confidence: float
+    n: float
+
+
+class RoutineHonestyInfo(BaseModel):
+    """Her honesty numbers over the last 30 days: claims in the user reading (a disputed claim counts false)."""
+    claims_true: int
+    claims_scored: int
+    hunches_right: int
+    hunches_scored: int
+    unverifiable: int
+    expired: int
+    claims_enabled: bool
+
+
+class RoutineMsg(BaseModel):
+    """What she has noticed about the user's routines, for the settings page (on hello, on change and on
+    get_memories)."""
+    type: Literal["routine"] = "routine"
+    enabled: bool
+    cells: list[RoutineCellInfo]
+    honesty: RoutineHonestyInfo
+
+
+class RoutineForget(BaseModel):
+    """Forget every routine she has learned (the body confirms first). Her lifetime honesty tally is kept."""
+    type: Literal["routine_forget"] = "routine_forget"
+
+
 CoreMessage = Annotated[Union[Hello, SettingsMsg, StateMsg, ExpressionMsg, Say, SayEnd, Mouth, MemoriesMsg, ErrorMsg,
                               Look, EyesMsg, AgentsMsg, ConfirmRequest, ConfirmDone, RemindersMsg, ActionsMsg,
                               LearningMsg, HealthMsg, SetupResult, SetupConfirm, VoicesMsg, AgentActivity, PresenceMsg,
-                              AgentWindow],
+                              AgentWindow, RoutineMsg],
                         Field(discriminator="type")]
 BodyMessage = Annotated[Union[BodyReady, UserText, TalkHotkey, GetMemories, MemoryDelete, MemoryCorrect,
                               TranscriptDelete, EpisodeDelete, ThreadResolve, SetSettings, DontLook, GlanceDelete,
                               QuitCore, Confirm, ReminderCancel, NoteDelete, ActionsClear, StyleNoteDelete, TwinReset,
-                              LearningReset, HealthGet, SetupRequest, SetupAction, OnboardingDone, FocusAgent],
+                              LearningReset, HealthGet, SetupRequest, SetupAction, OnboardingDone, FocusAgent,
+                              RoutineForget],
                         Field(discriminator="type")]
 _CORE = TypeAdapter(CoreMessage)
 _BODY = TypeAdapter(BodyMessage)

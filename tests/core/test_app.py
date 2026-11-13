@@ -517,6 +517,54 @@ def test_no_parse_error_over_the_socket_echoes_the_key(caplog):
         assert not any(part in text for part in (CANARY, CANARY[:10], CANARY[-10:]))
 
 
+@pytest.mark.parametrize("patch", [
+    {"eyes_deny_titles": [CANARY + "["]},
+    {"eyes_deny_processes": [CANARY + "["]},
+    {CANARY: True},
+    {"volume": CANARY},
+])
+def test_invalid_settings_are_private_input_free_and_leave_settings_unchanged(patch, caplog):
+    caplog.set_level("DEBUG")
+    with client() as c, c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
+        for ws in (a, b):
+            receive_until(ws, "actions")
+        core = c.app.state.core
+        before, saved = core.settings, core.kv.get("settings")
+        a.send_json({"type": "set_settings", "patch": patch})
+        error = a.receive_json()
+        assert error == {"type": "error", "message": "invalid set_settings"}
+        assert core.settings == before and core.kv.get("settings") == saved
+
+        # A valid patch on the same socket bounds B's observation without a timing-based absence check.
+        a.send_json({"type": "set_settings", "patch": {"mode": "panel"}})
+        for ws in (a, b):
+            assert receive_until(ws, "settings") == ["settings"]
+        assert core.settings.mode == "panel"
+    assert not any(part in caplog.text for part in (CANARY, CANARY[:10], CANARY[-10:]))
+
+
+def test_settings_os_errors_are_private_and_do_not_echo_exception_details(monkeypatch):
+    from riya.core import engine
+
+    def failed_autostart(*args, **kwargs):
+        raise OSError(CANARY)
+
+    monkeypatch.setattr(engine, "set_autostart", failed_autostart)
+    with client() as c, c.websocket_connect("/ws") as a, c.websocket_connect("/ws") as b:
+        for ws in (a, b):
+            receive_until(ws, "actions")
+        a.send_json({"type": "set_settings", "patch": {"autostart": True}})
+        frames = []
+        while not frames or frames[-1]["type"] != "error":
+            frames.append(a.receive_json())
+        assert frames[-1] == {"type": "error", "message": "couldn't change autostart: check Settings → Health"}
+        assert CANARY not in str(frames)
+        assert "settings" in [m["type"] for m in frames]  # other settings still apply on a shortcut failure
+        a.send_json({"type": "get_memories"})
+        assert "error" not in receive_until(b, "memories")
+        assert c.app.state.core.settings.autostart is True
+
+
 # --- fix round 1: her voices without the voice loop -----------------------------------------------------------------
 
 def test_voice_choices_fall_back_to_the_feminine_list(monkeypatch):
