@@ -276,3 +276,15 @@ def test_a_shared_free_limit_benches_the_whole_group_at_once():
     p = ModelPool("online", [Member(d, group="opencode"), Member(e, group="opencode")], clock=Clock())
     list(p.stream(MSGS))
     assert [s.live for s in p.states()] == [False, True]  # a plain 429 is that model's own
+
+
+def test_health_shows_the_pool():
+    from riya.core.health import pool_detail
+    from riya.core.pool import MemberState
+    states = [MemberState("opencode", "a", False, 45000, False, "x"), MemberState("opencode", "b", False, 45000, False, "x"),
+              MemberState("kilo", "k", True, 0, True, None)]
+    status, text = pool_detail(states)
+    assert status == "ok" and text == "1 of 3 models ready (kilo) · resting: opencode back in 12 h"
+    status, text = pool_detail([MemberState("opencode", "a", False, 90, False, "x")])
+    assert status == "warn" and "back in 2 min" in text and "her own model" in text
+    assert pool_detail([]) is None

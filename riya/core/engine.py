@@ -1019,6 +1019,14 @@ class RiyaCore:
         self._save_feelings()
         self._sync_expression()
 
+    def _pool_states(self) -> list | None:
+        states = getattr(self.online, "states", None)
+        try:
+            return states() if callable(states) else None
+        except Exception:
+            log.exception("couldn't read the model pool for Health")
+            return None
+
     def _end_thinking(self, thinking: bool) -> bool:
         if thinking:
             self.feelings.on_event("thinking_done")
@@ -2615,6 +2623,7 @@ class RiyaCore:
             now=now, settings=read("settings", lambda: self.settings),
             local_url=self.local_url, key=read("key", lambda: self.setup.deps.key.info()),
             online_keyless=self.online is not None and not self.setup.deps.key.info().mask,
+            online_pool=self._pool_states(),
             last_tests=read("tests", tests),
             voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
             receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,
