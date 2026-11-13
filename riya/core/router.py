@@ -1,6 +1,8 @@
 """Local-vs-online routing: small talk stays on her own model, hard thinking goes online with local as the fallback."""
 import logging
+import queue
 import re
+import threading
 from typing import Iterator
 
 from riya.bench import REFUSAL_PATTERNS
@@ -69,3 +71,47 @@ class Router:
             log.warning("online model failed, falling back to local: %s", e)
         self.last_source = "local"
         yield from self.local.stream(messages, max_tokens, LOCAL_TEMPERATURE)
+
+
+class Prefetched:
+    """A stream run in a background thread, so the caller can wait for its first piece with a timeout (and say
+    something meanwhile). Pieces and the stream's exception come out of iteration in order; leaving the iteration
+    early stops the worker at its next piece."""
+
+    def __init__(self, source: Iterator[str]):
+        self._q: queue.Queue = queue.Queue()
+        self._first, self._stop = threading.Event(), threading.Event()
+        threading.Thread(target=self._run, args=(source,), daemon=True, name="riya-prefetch").start()
+
+    def _run(self, source: Iterator[str]) -> None:
+        try:
+            for piece in source:
+                if self._stop.is_set():
+                    close = getattr(source, "close", None)
+                    if close:
+                        close()
+                    return
+                self._q.put(("piece", piece))
+                self._first.set()
+        except BaseException as e:  # handed to the reader, raised where the stream would have raised it
+            self._q.put(("error", e))
+        finally:
+            self._q.put(("end", None))
+            self._first.set()
+
+    def ready(self, timeout_s: float) -> bool:
+        """True once the first piece (or the end, or an error) is in; False after timeout_s without one."""
+        return self._first.wait(timeout_s)
+
+    def __iter__(self) -> Iterator[str]:
+        try:
+            while True:
+                kind, value = self._q.get()
+                if kind == "piece":
+                    yield value
+                elif kind == "error":
+                    raise value
+                else:
+                    return
+        finally:
+            self._stop.set()

@@ -25,7 +25,31 @@ log = logging.getLogger("riya.models")
 
 
 class ModelUnavailable(Exception):
-    """The model can't answer right now (network, rate limit, server error, or no first token in time)."""
+    """The model can't answer right now (network, rate limit, server error, or no first token in time). status: the
+    HTTP status when there was one; retry_after_s: the server's Retry-After; detail: the start of its error body
+    (what tells a quota from other refusals). None of these ever holds the key."""
+
+    def __init__(self, message: str, status: int | None = None, retry_after_s: float | None = None,
+                 detail: str | None = None):
+        super().__init__(message)
+        self.status, self.retry_after_s, self.detail = status, retry_after_s, detail
+
+
+def _http_unavailable(name: str, e: urllib.error.HTTPError) -> ModelUnavailable:
+    """A ModelUnavailable from an HTTP error: its status, Retry-After (seconds) and the start of its body."""
+    retry = None
+    try:
+        raw = (e.headers or {}).get("Retry-After")
+        retry = float(raw) if raw is not None and float(raw) >= 0 else None
+    except (TypeError, ValueError):
+        retry = None
+    try:
+        detail = e.read(500).decode("utf-8", "ignore")
+    except Exception:
+        detail = None
+    finally:
+        e.close()
+    return ModelUnavailable(f"{name}: HTTP {e.code}", status=e.code, retry_after_s=retry, detail=detail)
 
 
 @dataclass
@@ -80,7 +104,7 @@ class OpenAICompatModel:
                             _set_read_timeout(r, READ_TIMEOUT_S)
                         yield piece
         except urllib.error.HTTPError as e:
-            raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
+            raise _http_unavailable(self.name, e) from e
         except (urllib.error.URLError, OSError) as e:  # URLError, socket timeout, connection reset
             raise ModelUnavailable(f"{self.name}: {e}") from e
         except ValueError as e:  # a malformed event
@@ -100,8 +124,7 @@ class OpenAICompatModel:
             with urllib.request.urlopen(req, timeout=timeout_s) as r:
                 return _tool_reply(json.loads(r.read(MAX_REPLY_BYTES)))
         except urllib.error.HTTPError as e:
-            e.close()
-            raise ModelUnavailable(f"{self.name}: HTTP {e.code}") from e
+            raise _http_unavailable(self.name, e) from e
         except ModelUnavailable:
             raise
         except Exception as e:  # URLError, timeouts, IncompleteRead, bad JSON or shape, RecursionError: never leaks
@@ -229,11 +252,38 @@ def load_online_from_env(env=os.environ, name: str = "online", model: str | None
     return OpenAICompatModel(name, online_base(env), key, chosen, **kw)
 
 
-def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> OpenAICompatModel | None:
+def online_model(env: Mapping[str, str], name: str, timeout_s: float) -> ChatModel | None:
+    """Her online brain: a pool (riya.core.pool) led by the configured model. On opencode's free endpoint the other
+    free models follow it (one shared daily allowance); then every provider with a key in providers.env
+    (riya.core.providers), re-read live, so a key added later joins without a restart. Her eyes' pool keeps only the
+    models that take images. None when nothing online is available."""
+    from riya.core import pool, providers
+    from riya.core.secrets import KEY_VAR
+    if env.get("RIYA_ONLINE_OFFLINE") == "1" or (env.get(KEY_VAR) is not None and not env[KEY_VAR].strip()):
+        return None  # online turned off: no pool, no providers, no agents
     model = None
     if name == "vision":
         model = (env.get("RIYA_ONLINE_VISION_MODEL") or "").strip() or ONLINE_VISION_MODEL
-    return load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
+    one = load_online_from_env(env, name=name, model=model, first_token_timeout_s=timeout_s)
+    vision_only = name == "vision"
+
+    def extra() -> list:
+        keyed = providers.members(providers.all_keys(env), name, timeout_s, vision_only=vision_only)
+        if vision_only or env.get("RIYA_NO_AGENTS") == "1":
+            return keyed
+        from riya.core import agent_server
+        return keyed + agent_server.kilo_members(name)  # no key needed; slower, so after every fast member
+    if one is not None and not one.api_key and keyless_base(one.base_url):
+        def make(model_id: str) -> OpenAICompatModel:
+            return OpenAICompatModel(name, one.base_url, None, model_id, first_token_timeout_s=timeout_s)
+        return pool.free_pool(name, make, one.model, vision_only=vision_only,
+                              list_ids=lambda: pool.opencode_free_ids(one.base_url), extra=extra,
+                              token=providers.keys_token)
+    base = [pool.Member(one, vision=True, provider="online")] if one is not None else []
+    try:
+        return pool.ModelPool(name, base, extra=extra, token=providers.keys_token)
+    except ValueError:  # no configured model and no provider keys
+        return None
 
 
 def online_pair(env: Mapping[str, str], make: Callable[[Mapping[str, str], str, float], ChatModel | None] = online_model

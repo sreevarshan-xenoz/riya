@@ -57,7 +57,7 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, Actio
                                 TranscriptDelete, TwinInfo, TwinReset, VoicesMsg)
 from riya.core.protocol import RoutineForget, RoutineHonestyInfo, RoutineMsg
 from riya.core.prompt import offered_text, statement_situation, statement_tail_situation
-from riya.core.router import Router, needs_thinking
+from riya.core.router import Prefetched, Router, needs_thinking
 from riya.core.routine import P2_KINDS as ROUTINE_P2_KINDS
 from riya.core.routine import Routine, Sensed
 from riya.core.routine import detect as routine_detect
@@ -85,6 +85,10 @@ PURGE_EVERY_S = 86400
 CONSOLIDATE_RETRY_S = 600
 KEY_NOT_REMEMBERED = ("That looks like a key, so I won't remember it~ Paste it in Settings, under Health, and I'll keep "
                       "it safe.")  # a remember-that turn holding a pasted key (the welcome's name step comes first)
+# Said when an online answer hasn't started within FILLER_AFTER_S (a slow or failing-over model): spoken and shown,
+# never part of the reply she remembers.
+FILLER_AFTER_S = 2.0
+FILLERS = ("Hmm, let me think~", "Ooh, one sec.", "Hmm, give me a moment.", "Let me think about that~")
 REMEMBER_ACKS = ("Got it~ I'll remember that.", "Noted, I won't forget.", "Okay, saved it.",
                  "Mm, I'll remember that one.")  # templated, in her voice; the small model can't be trusted to confirm
 GLANCE_BACKOFF_S = 1800  # after a failed look (an outage, a 429, the network): no unforced glances for 30 min
@@ -314,6 +318,7 @@ class RiyaCore:
         self._last_consolidation: float | None = None
         self._away_s = 0.0  # absence behind the greeting that speak_first is about to make
         self._acks = 0  # remember-that acks said so far, which picks the next one
+        self._fillers = 0  # fillers said so far (a slow online answer), which picks the next one
         s = self.settings
         self.policy = GlancePolicy(clock, cap=s.glance_daily_cap, min_gap_s=s.glance_min_gap_s)
         if isinstance(today := self.kv.get(TODAY_KEY), dict):
@@ -747,6 +752,12 @@ class RiyaCore:
                 # the route the prompt was built for, decided once: a toggle meanwhile can't send the notes online
                 stream = self.router.stream(messages, route_text, budget, ONLINE_BUDGETS.get(turn), route=route)
                 ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
+                if route == "online":
+                    stream = Prefetched(stream)
+                    if not stream.ready(FILLER_AFTER_S):  # a slow answer: a filler, so the wait never feels dead
+                        filler, self._fillers = FILLERS[self._fillers % len(FILLERS)], self._fillers + 1
+                        say(filler, spoken)
+                        yield filler
             kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead or ack),
                                                 emoji_max=emoji_max), others=bool(lead or ack), dropped=dropped)
             if routine:
@@ -1007,6 +1018,14 @@ class RiyaCore:
             self.last_turn_at = self.clock.now()
         self._save_feelings()
         self._sync_expression()
+
+    def _pool_states(self) -> list | None:
+        states = getattr(self.online, "states", None)
+        try:
+            return states() if callable(states) else None
+        except Exception:
+            log.exception("couldn't read the model pool for Health")
+            return None
 
     def _end_thinking(self, thinking: bool) -> bool:
         if thinking:
@@ -2604,6 +2623,7 @@ class RiyaCore:
             now=now, settings=read("settings", lambda: self.settings),
             local_url=self.local_url, key=read("key", lambda: self.setup.deps.key.info()),
             online_keyless=self.online is not None and not self.setup.deps.key.info().mask,
+            online_pool=self._pool_states(),
             last_tests=read("tests", tests),
             voice_running=self.voice_sampler is not None, vision_ready=self.vision is not None,
             receiver_ok=None if receiver is None else bool(receiver.ok), hooks_seen_at=self._hooks_seen_at,

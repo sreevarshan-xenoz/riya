@@ -149,6 +149,7 @@ class HealthCtx:
     session_start: float | None = None  # when this core started; None: no test counts as this session's
     adapter_path: Path | None = None  # her Riya v1 adapter file (it may not exist); None: no switch is offered
     online_keyless: bool = False  # the endpoint serves free models without a key (OpenCode)
+    online_pool: list | None = None  # the model pool's member states (riya.core.pool.MemberState), when it is one
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
     honesty: object = None  # v0.12: a Later of routine.audit.Honesty (read by attribute), or None (off)
@@ -236,6 +237,30 @@ _SOURCES = {"app": " saved in Riya", ".env": " set via .env (edit that file to r
             "env": " set via the RIYA_ONLINE_API_KEY environment variable"}
 
 
+def _wait(seconds: float) -> str:
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes} min" if minutes < 60 else f"{minutes / 60:.0f} h" if minutes < 600 else f"{minutes // 60} h"
+
+
+def pool_detail(states: list) -> tuple[str, str] | None:
+    """(status, text) for the model pool: how many models are live and from where, and when the resting providers
+    come back. None without a pool. warn when every model is resting (she answers on her local model meanwhile)."""
+    if not states:
+        return None
+    by: dict[str, list] = {}
+    for st in states:
+        by.setdefault(st.provider or "online", []).append(st)
+    live = [p for p, sts in by.items() if any(s.live for s in sts)]
+    resting = {p: min(s.benched_for_s for s in sts) for p, sts in by.items() if p not in live}
+    n_live = sum(s.live for s in states)
+    parts = [f"{n_live} of {len(states)} models ready" + (f" ({', '.join(live)})" if live else "")]
+    if resting:
+        parts.append("resting: " + ", ".join(f"{p} back in {_wait(w)}" for p, w in resting.items()))
+    if not live:
+        return "warn", "Every online model is resting; she answers on her own model meanwhile · " + " · ".join(parts)
+    return "ok", " · ".join(parts)
+
+
 def check_online(ctx: HealthCtx) -> HealthItem:
     if not ctx.settings.online_enabled:
         return HealthItem("online", "off", "Online brain is switched off in Settings.")
@@ -251,7 +276,10 @@ def check_online(ctx: HealthCtx) -> HealthItem:
     else:
         text += f" · last test failed {_t(ctx, t['at'])}: {t.get('detail', '')}"
         status = "warn"
-    return HealthItem("online", status, text, "online_test")
+    if (pool := pool_detail(ctx.online_pool or [])) is not None:
+        text += f" · {pool[1]}"
+        status = "warn" if pool[0] == "warn" else status
+    return HealthItem("online", status, clip(text), "online_test")
 
 
 def check_voice(ctx: HealthCtx) -> HealthItem:
