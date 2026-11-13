@@ -21,6 +21,12 @@ riya_slots/
 .superpowers/
 riya images/
 /sprites/
+# a 3D Riya's model files are private art too
+*.vrm
+*.glb
+*.gltf
+*.fbx
+*.blend
 *.db
 *.db-wal
 *.db-shm
