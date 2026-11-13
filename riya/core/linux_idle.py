@@ -23,7 +23,8 @@ import time
 from typing import Callable
 
 PROBE_TIMEOUT_S = 1.0
-CACHE_S = 2.0  # lock and fullscreen probes are re-run at most this often
+CACHE_S = 2.0  # lock, fullscreen and fallback idle probes are re-run at most this often
+RESCAN_S = 30.0  # the watcher looks for newly plugged keyboards and mice this often
 LOCKERS = ("hyprlock", "swaylock", "i3lock", "waylock", "gtklock", "xsecurelock", "slock", "xscreensaver-auth")
 _EVENT_SIZE = struct.calcsize("llHHi")  # struct input_event on 64-bit Linux: timeval, type, code, value
 _USER_EVENTS = (1, 2, 3)  # EV_KEY, EV_REL, EV_ABS (not EV_SYN or EV_MSC reports)
@@ -34,7 +35,8 @@ def input_paths(devices: str = DEVICES) -> list[str]:
     """The event devices of keyboards, mice and touchpads (a kbd or mouse handler). Sensors that stream on their own,
     such as an accelerometer (often a js handler) or a lid switch, are left out: they'd never let her see idle."""
     try:
-        text = open(devices, encoding="utf-8", errors="replace").read()
+        with open(devices, encoding="utf-8", errors="replace") as f:
+            text = f.read()
     except OSError:
         return []
     out = []
@@ -65,11 +67,9 @@ class InputWatcher:
         self.clock = clock
         self.last = clock()
         self.fds: list[int] = []
-        for path in paths if paths is not None else input_paths():
-            try:
-                self.fds.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
-            except OSError:
-                continue
+        self._paths: dict[int, str] = {}
+        self._fixed = paths is not None  # tests pass their own paths; the real watcher rescans for new devices
+        self._open(paths if paths is not None else input_paths())
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -83,12 +83,39 @@ class InputWatcher:
             self._thread.start()
         return self
 
+    def _open(self, paths: list[str]) -> None:
+        known = set(self._paths.values())
+        for path in paths:
+            if path in known:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            self.fds.append(fd)
+            self._paths[fd] = path
+
+    def _drop(self, fd: int) -> None:
+        self.fds = [f for f in self.fds if f != fd]
+        self._paths.pop(fd, None)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
     def _loop(self) -> None:
-        while not self._stop.is_set() and self.fds:
+        rescan = self.clock() + RESCAN_S
+        while not self._stop.is_set():
+            if not self._fixed and self.clock() >= rescan:  # a keyboard or mouse plugged in later
+                rescan = self.clock() + RESCAN_S
+                self._open(input_paths())
+            if not self.fds:
+                self._stop.wait(1.0)
+                continue
             try:
                 ready, _, _ = select.select(self.fds, [], [], 1.0)
-            except (OSError, ValueError):
-                return
+            except (OSError, ValueError):  # a device went away between scans: find it on the next read
+                ready = list(self.fds)
             for fd in ready:
                 self.drain(fd)
 
@@ -98,7 +125,7 @@ class InputWatcher:
         except BlockingIOError:
             return
         except OSError:  # unplugged
-            self.fds = [f for f in self.fds if f != fd]
+            self._drop(fd)
             return
         for i in range(0, len(data) - _EVENT_SIZE + 1, _EVENT_SIZE):
             if struct.unpack_from("llHHi", data, i)[2] in _USER_EVENTS:
@@ -110,12 +137,8 @@ class InputWatcher:
 
     def close(self) -> None:
         self._stop.set()
-        for fd in self.fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        self.fds = []
+        for fd in list(self.fds):
+            self._drop(fd)
 
 
 def _first_number(text: str | None) -> float | None:
@@ -158,7 +181,7 @@ def logind_idle_seconds(run=_run, monotonic: Callable[[], float] = time.monotoni
 def locked(run=_run) -> bool:
     if _session_props(run).get("LockedHint") == "yes":
         return True
-    if run(["pidof", *LOCKERS]):
+    if run(["pgrep", "-u", str(os.getuid()), f"^({'|'.join(LOCKERS)})$"]):  # this user's locker, not another's
         return True
     active = run(["gdbus", "call", "--session", "--dest", "org.freedesktop.ScreenSaver",
                   "--object-path", "/org/freedesktop/ScreenSaver", "--method", "org.freedesktop.ScreenSaver.GetActive"])
@@ -178,7 +201,9 @@ def _hypr_fullscreen(run) -> bool | None:
     if not isinstance(win, dict):
         return False
     fs = win.get("fullscreen")
-    return bool(fs) if isinstance(fs, (bool, int)) else False
+    if isinstance(fs, bool):  # older Hyprland
+        return fs
+    return isinstance(fs, int) and fs >= 2  # 0 none, 1 maximized, 2 fullscreen, 3 both
 
 
 def _sway_fullscreen(run) -> bool | None:
@@ -230,15 +255,23 @@ class LinuxIdleSource:
         if self.watcher.available:
             self.watcher.start()
         self._cache: dict[str, tuple[float, bool]] = {}
+        self._idle_cache: tuple[float, float] | None = None
 
     def idle_seconds(self) -> float:
         if self.watcher.available:
             return self.watcher.idle_seconds()
+        now = self._mono()
+        hit = self._idle_cache
+        if hit and now - hit[0] < CACHE_S:
+            return hit[1] + (now - hit[0] if hit[1] > 0 else 0.0)
+        got = 0.0
         for probe in (lambda: dbus_idle_seconds(self._run), lambda: logind_idle_seconds(self._run, self._mono)):
-            got = probe()
-            if got is not None:
-                return got
-        return 0.0
+            value = probe()
+            if value is not None:
+                got = value
+                break
+        self._idle_cache = (now, got)
+        return got
 
     def _cached(self, key: str, fn: Callable[[], bool]) -> bool:
         now = self._mono()
@@ -254,3 +287,6 @@ class LinuxIdleSource:
 
     def fullscreen(self) -> bool:
         return self._cached("fullscreen", lambda: fullscreen(self._run))
+
+    def close(self) -> None:
+        self.watcher.close()

@@ -89,7 +89,7 @@ def test_idle_falls_back_to_the_session_idle_monitor_then_logind(monkeypatch):
 
 def test_locked_reads_logind_a_locker_or_the_screensaver():
     assert li.locked(runner({"loginctl show-session": "LockedHint=yes\n"}))
-    assert li.locked(runner({"loginctl show-session": "LockedHint=no\n", "pidof": "4242\n"}))
+    assert li.locked(runner({"loginctl show-session": "LockedHint=no\n", "pgrep -u": "4242\n"}))
     assert li.locked(runner({"gdbus call --session --dest org.freedesktop.ScreenSaver": "(true,)\n"}))
     assert not li.locked(runner({"loginctl show-session": "LockedHint=no\n"}))
     assert not li.locked(runner({}))
@@ -101,6 +101,9 @@ def test_fullscreen_on_hyprland_sway_and_x11(monkeypatch):
     monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "x")
     assert li.fullscreen(runner({"hyprctl activewindow -j": json.dumps({"class": "game", "fullscreen": 2})}))
     assert not li.fullscreen(runner({"hyprctl activewindow -j": json.dumps({"class": "kitty", "fullscreen": 0})}))
+    assert not li.fullscreen(runner({"hyprctl activewindow -j": json.dumps({"fullscreen": 1})}))  # maximized
+    assert li.fullscreen(runner({"hyprctl activewindow -j": json.dumps({"fullscreen": 3})}))
+    assert li.fullscreen(runner({"hyprctl activewindow -j": json.dumps({"fullscreen": True})}))  # older Hyprland
     assert not li.fullscreen(runner({"hyprctl activewindow -j": "Invalid"}))
     monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE")
     monkeypatch.setenv("SWAYSOCK", "/run/sway")
@@ -132,3 +135,26 @@ def test_make_idle_source_picks_linux_on_linux(monkeypatch):
     assert isinstance(presence.make_idle_source(), li.LinuxIdleSource)
     monkeypatch.setattr(presence.sys, "platform", "darwin")
     assert isinstance(presence.make_idle_source(), presence.FakeIdleSource)
+
+
+def test_an_unplugged_device_is_closed_and_dropped():
+    r, w = os.pipe()
+    watcher = li.InputWatcher(paths=[])
+    watcher.fds, watcher._paths = [r], {r: "/dev/input/event99"}
+    os.close(r)  # the device went away
+    watcher.drain(r)
+    assert watcher.fds == [] and watcher._paths == {}
+    os.close(w)
+
+
+def test_the_fallback_idle_probe_is_cached():
+    mono = Clock()
+    run = runner({"gdbus call --session --dest org.gnome.Mutter.IdleMonitor": "(uint64 10000,)\n"})
+    src = li.LinuxIdleSource(run=run, watcher=NoInput(), monotonic=mono)
+    assert src.idle_seconds() == 10.0
+    n = len(run.calls)
+    mono.t += 1.0
+    assert src.idle_seconds() == 11.0 and len(run.calls) == n  # cached, and still counting up
+    mono.t += li.CACHE_S
+    src.idle_seconds()
+    assert len(run.calls) > n
