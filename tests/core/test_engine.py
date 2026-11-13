@@ -812,3 +812,34 @@ def test_an_online_explain_turn_gets_600_tokens():
     online.stream = lambda m, max_tokens=300, temperature=0.8: (seen.append(max_tokens), stream(m, max_tokens))[1]
     list(core.reply("explain recursion to me"))
     assert seen == [600]
+
+
+def test_a_slow_online_answer_gets_a_filler_that_isn_t_remembered(monkeypatch):
+    from riya.core import engine
+    from tests.fakes import FakeModel
+    monkeypatch.setattr(engine, "FILLER_AFTER_S", 0.05)
+    online = FakeModel("online", ["Recursion is a function calling itself."], delay=0.1)
+    core, emitted, _, _ = make_core(online=online)
+    out = list(core.reply("explain recursion to me"))
+    assert out[0] in engine.FILLERS and "Recursion is a function calling itself." in " ".join(out[1:])
+    says = [m.text for m in emitted if isinstance(m, Say)]
+    assert says[0] == out[0]
+    assert all(engine.FILLERS[0] not in t["content"] for t in core.turns)  # never part of what she remembers
+    assert core.turns[-1]["content"].startswith("Recursion")
+
+
+def test_a_quick_online_answer_gets_no_filler(monkeypatch):
+    from riya.core import engine
+    from tests.fakes import FakeModel
+    monkeypatch.setattr(engine, "FILLER_AFTER_S", 5.0)
+    online = FakeModel("online", ["Recursion is a function calling itself."])
+    core, _, _, _ = make_core(online=online)
+    out = list(core.reply("explain recursion to me"))
+    assert not any(line in engine.FILLERS for line in out)
+
+
+def test_small_talk_never_gets_a_filler(monkeypatch):
+    from riya.core import engine
+    monkeypatch.setattr(engine, "FILLER_AFTER_S", 0.0)
+    core, _, _, _ = make_core(local_replies=["Hey you!"])
+    assert not any(line in engine.FILLERS for line in core.reply("hi"))

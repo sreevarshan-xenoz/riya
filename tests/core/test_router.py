@@ -303,3 +303,40 @@ def test_openai_compat_sends_list_content_parts_unchanged():
     assert "".join(OpenAICompatModel("t", url).stream(msgs)) == "ok"
     srv.shutdown()
     assert __import__("json").loads(seen["body"])["messages"] == msgs
+
+
+def test_prefetched_keeps_order_errors_and_stops_when_left():
+    import threading
+    import time
+
+    from riya.core.router import Prefetched
+
+    def slow():
+        time.sleep(0.2)
+        yield "a"
+        yield "b"
+    p = Prefetched(slow())
+    assert not p.ready(0.01) and p.ready(2.0)
+    assert list(p) == ["a", "b"]
+
+    def broken():
+        yield "x"
+        raise ModelUnavailable("drop")
+    with pytest.raises(ModelUnavailable):
+        assert list(Prefetched(broken())) == ["x"]
+    assert Prefetched(iter(())).ready(1.0)  # an empty stream is "ready" (its end is in)
+
+    pulled, gate = [], threading.Event()
+
+    def endless():
+        for i in range(1000):
+            pulled.append(i)
+            gate.wait(0.01)
+            yield str(i)
+    it = iter(Prefetched(endless()))
+    assert next(it) == "0"
+    it.close()
+    time.sleep(0.1)
+    n = len(pulled)
+    time.sleep(0.1)
+    assert len(pulled) == n < 1000  # left early: the worker stopped
