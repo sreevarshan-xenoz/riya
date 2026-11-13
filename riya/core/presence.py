@@ -106,7 +106,13 @@ class WindowsIdleSource:
 
 
 def make_idle_source() -> IdleSource:
-    return WindowsIdleSource() if sys.platform == "win32" else FakeIdleSource()
+    """The real sensors on Windows and Linux; elsewhere a stand-in that always reads as present."""
+    if sys.platform == "win32":
+        return WindowsIdleSource()
+    if sys.platform.startswith("linux"):
+        from riya.core.linux_idle import LinuxIdleSource
+        return LinuxIdleSource()
+    return FakeIdleSource()
 
 
 @dataclass
