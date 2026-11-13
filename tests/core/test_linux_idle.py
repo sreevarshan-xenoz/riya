@@ -109,3 +109,11 @@ def test_lock_and_fullscreen_probes_are_cached():
     mono.t += li.CACHE_S + 0.1
     assert src.locked() and len(run.calls) > n
 
+
+def test_make_idle_source_picks_linux_on_linux(monkeypatch):
+    from riya.core import presence
+    monkeypatch.setattr(presence.sys, "platform", "linux")
+    monkeypatch.setattr(li, "InputWatcher", lambda *a, **k: NoInput())
+    assert isinstance(presence.make_idle_source(), li.LinuxIdleSource)
+    monkeypatch.setattr(presence.sys, "platform", "darwin")
+    assert isinstance(presence.make_idle_source(), presence.FakeIdleSource)
