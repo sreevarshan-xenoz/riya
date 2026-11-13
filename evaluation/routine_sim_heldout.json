@@ -1,0 +1,205 @@
+{
+ "blocking_pass": false,
+ "constants": {
+  "CLAIM_C": 0.7,
+  "CUSUM_H": 3.5,
+  "STARTLE_FACTOR": 8.0,
+  "SURPRISE_FACTOR": 2.0
+ },
+ "criteria": {
+  "A20": {
+   "blocking": false,
+   "note": "",
+   "pass": true,
+   "threshold": 2.0,
+   "value": 0.278
+  },
+  "A3": {
+   "blocking": true,
+   "note": "chaotic and late are not judged",
+   "pass": false,
+   "threshold": [
+    0.72,
+    0.9
+   ],
+   "value": {
+    "night_owl:P1": 0.933,
+    "night_owl:P3": 0.851,
+    "office:P1": 0.975,
+    "office:P3": 0.859,
+    "shift:P1": 0.967,
+    "shift:P3": 0.854,
+    "vacation:P1": 0.962,
+    "vacation:P3": 0.855
+   }
+  },
+  "A4": {
+   "blocking": true,
+   "note": "",
+   "pass": true,
+   "threshold": 0.85,
+   "value": 0.903
+  },
+  "A5": {
+   "blocking": true,
+   "note": "",
+   "pass": false,
+   "threshold": {
+    "false_per_cell_4w": 1.0,
+    "shift_detected": 0.9
+   },
+   "value": {
+    "false_per_cell_4w": 0.044,
+    "shift_detected": 0.8166666666666667
+   }
+  },
+  "A6": {
+   "blocking": true,
+   "note": "",
+   "pass": true,
+   "threshold": {
+    "five": 0.9,
+    "office_night_owl": 0.95
+   },
+   "value": {
+    "five": 0.9713935431140172,
+    "n2": 2632,
+    "n5": 4894,
+    "office_night_owl": 0.979483282674772,
+    "unverifiable_or_expired": 0
+   }
+  },
+  "A7": {
+   "blocking": true,
+   "note": "",
+   "pass": false,
+   "threshold": 0.85,
+   "value": {
+    "n": 9241,
+    "rate": 0.9545503733362191
+   }
+  },
+  "A8": {
+   "blocking": false,
+   "note": "",
+   "pass": false,
+   "threshold": {
+    "claims_per_week_3_6": 2,
+    "week1_claims": 0
+   },
+   "value": {
+    "chances_per_week": 31.26,
+    "claims_per_week_3_6": 3.85,
+    "week1_claims": 5
+   }
+  },
+  "A9": {
+   "blocking": true,
+   "note": "",
+   "pass": true,
+   "threshold": 0,
+   "value": {
+    "n": 0,
+    "violations": []
+   }
+  }
+ },
+ "git": "16c5e2bfb6bffea2bc6b840e374dd252f7275d9d",
+ "personas": {
+  "chaotic": {
+   "claims": 900,
+   "hunches": 805,
+   "wall_s": 2001.1000000000004
+  },
+  "late": {
+   "claims": 489,
+   "hunches": 707,
+   "wall_s": 1462.8999999999999
+  },
+  "night_owl": {
+   "claims": 1362,
+   "hunches": 1085,
+   "wall_s": 2523.5
+  },
+  "office": {
+   "claims": 1270,
+   "hunches": 1154,
+   "wall_s": 2465.9000000000005
+  },
+  "shift": {
+   "claims": 457,
+   "hunches": 604,
+   "wall_s": 1836.4000000000003
+  },
+  "vacation": {
+   "claims": 905,
+   "hunches": 683,
+   "wall_s": 2007.1999999999994
+  }
+ },
+ "seed_list": [
+  100,
+  101,
+  102,
+  103,
+  104,
+  105,
+  106,
+  107,
+  108,
+  109,
+  110,
+  111,
+  112,
+  113,
+  114,
+  115,
+  116,
+  117,
+  118,
+  119,
+  120,
+  121,
+  122,
+  123,
+  124,
+  125,
+  126,
+  127,
+  128,
+  129,
+  130,
+  131,
+  132,
+  133,
+  134,
+  135,
+  136,
+  137,
+  138,
+  139,
+  140,
+  141,
+  142,
+  143,
+  144,
+  145,
+  146,
+  147,
+  148,
+  149,
+  150,
+  151,
+  152,
+  153,
+  154,
+  155,
+  156,
+  157,
+  158,
+  159
+ ],
+ "seeds": "heldout",
+ "version": 1,
+ "wall_s": 3883.2
+}

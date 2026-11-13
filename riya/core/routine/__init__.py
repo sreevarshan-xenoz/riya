@@ -21,7 +21,7 @@ from riya.core.routine.appraisal import Appraisal
 from riya.core.routine.records import RoutineDB
 from riya.core.routine.statements import SaidRow, Statement
 
-CLAIMS_ENABLED = True
+CLAIMS_ENABLED = False  # the held-out record failed A3, A5, A7 (Resolution 28): hunches only
 ABSENCE_REMARKS_ENABLED = True
 PLACEHOLDER = "[a remark about your routine]"
 

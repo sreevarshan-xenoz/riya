@@ -270,6 +270,7 @@ def test_s8_is_only_for_the_day_cells():
 
 
 def test_the_statement_order_per_place(monkeypatch):
+    monkeypatch.setattr(rt, "CLAIMS_ENABLED", True)  # the claim path itself; claims ship off (held-out record)
     r, clock, _ = make()
     a = _late_return(r, clock)
     s = sensed(now=clock.now(), clinginess=0.9)

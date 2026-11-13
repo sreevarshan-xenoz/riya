@@ -3,6 +3,7 @@ A9, A13, A14, A15, A19)."""
 import json
 from datetime import datetime, timedelta, timezone
 
+import riya.core.routine as routine
 from riya.core.clock import FakeClock
 from riya.core.consolidate import Consolidator
 from riya.core.initiative import Action
@@ -107,7 +108,8 @@ def _long_stretch(core, src):
     run(core, 2 * H + 600)
 
 
-def test_a_bid_leads_with_s1_and_its_reason_drops_the_number():
+def test_a_bid_leads_with_s1_and_its_reason_drops_the_number(monkeypatch):
+    monkeypatch.setattr(routine, "CLAIMS_ENABLED", True)  # the claim path itself; claims ship off (held-out record)
     core, emitted, src, local = core_on()
     _long_stretch(core, src)
     emitted.clear()
@@ -130,7 +132,8 @@ def test_a_bid_without_a_statement_is_v011s_bid():
     assert bid(True) == bid(False)
 
 
-def test_a_bid_statement_goes_out_when_the_model_fails():
+def test_a_bid_statement_goes_out_when_the_model_fails(monkeypatch):
+    monkeypatch.setattr(routine, "CLAIMS_ENABLED", True)  # the claim path itself; claims ship off (held-out record)
     core, emitted, src, local = core_on()
     _long_stretch(core, src)
     local.fail = RuntimeError("down")

@@ -122,6 +122,7 @@ def test_criteria_on_hand_made_results():
 
 
 def test_disputes_follow_the_persona(monkeypatch):
+    monkeypatch.setattr(routine, "CLAIMS_ENABLED", True)  # the claim path itself; claims ship off (held-out record)
     monkeypatch.setattr(rs, "oracle", lambda row, p, truth: not row.get("claim"))  # every claim is "false"
     r = rs.simulate("office", 3)
     claims = [s for s in r.statements if s["claim"]]

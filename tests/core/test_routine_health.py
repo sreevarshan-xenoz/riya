@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import riya.core.routine as routine
 from riya.core import health
 from riya.core.health import DETAIL_MAX, check_honesty, honesty_detail
 
@@ -49,7 +50,8 @@ def test_the_row_is_last():
     assert health.ROWS[-1] == "honesty" and health.CHECKS["honesty"] is check_honesty
 
 
-def test_the_engine_reads_her_honesty_into_health():
+def test_the_engine_reads_her_honesty_into_health(monkeypatch):
+    monkeypatch.setattr(routine, "CLAIMS_ENABLED", True)  # the claim path itself; claims ship off (held-out record)
     from tests.fakes import make_core
     core, *_ = make_core(routine=True)
     item = check_honesty(core._health_ctx())
