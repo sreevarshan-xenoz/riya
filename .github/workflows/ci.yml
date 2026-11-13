@@ -16,7 +16,6 @@ jobs:
     env:
       # Local hook/websocket tests must not go through an outbound proxy.
       NO_PROXY: 127.0.0.1,localhost
-      no_proxy: 127.0.0.1,localhost
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
