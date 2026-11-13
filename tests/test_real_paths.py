@@ -23,9 +23,9 @@ def test_every_brain_default_is_redirected_into_tmp(tmp_path):
 
 
 def test_the_real_paths_are_the_code_s_own():
-    assert real_paths.REAL_ADAPTER_DIR == Path("~/models/riya")
-    assert real_paths.REAL_MODELS == Path("~/models")
-    assert real_paths.REAL_DEFAULT_MODEL.startswith("~/models/riya/")
+    assert real_paths.REAL_ADAPTER_DIR.is_absolute() and real_paths.REAL_ADAPTER_DIR.parts[-2:] == ("models", "riya")
+    assert real_paths.REAL_MODELS == real_paths.REAL_ADAPTER_DIR.parent
+    assert real_paths.REAL_DEFAULT_MODEL.startswith(real_paths.REAL_ADAPTER_DIR.as_posix() + "/")
 
 
 def test_listing_and_changes(tmp_path):

@@ -9,8 +9,8 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-DEFAULT_MODEL = "~/models/riya/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
-ADAPTER_DIR = Path("~/models/riya")
+ADAPTER_DIR = Path.home() / "models" / "riya"
+DEFAULT_MODEL = (ADAPTER_DIR / "Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf").as_posix()
 ADAPTER_NAME = "riya-v1-lora.gguf"  # the adopted adapter: only the champion gate installs a file here
 CANDIDATE_NAME = "riya-v1-candidate-lora.gguf"  # a new adapter waiting for the gate (the runbook copies it here)
 RECORD_SUFFIX = ".champion.json"

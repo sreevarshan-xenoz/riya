@@ -13,7 +13,7 @@ CANDIDATES = [
     "mradermacher/LFM2.5-1.2B-Instruct-Heretic-i1-GGUF",
     "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF",
 ]
-DEST = Path("~/models/riya")
+DEST = Path.home() / "models" / "riya"
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

@@ -312,7 +312,7 @@ Copy the adapter to the **candidate** path next to the served GGUF, and the verd
 adapter over `riya-v1-lora.gguf` there: that is the adopted adapter, and only the gate replaces it.
 
 ```powershell
-Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "~/models/riya/riya-v1-candidate-lora.gguf"
+Copy-Item "G:/My Drive/riya_v1/riya-v1-lora.gguf" "$env:USERPROFILE/models/riya/riya-v1-candidate-lora.gguf"
 New-Item -ItemType Directory -Force scratch_runs/riya_v1/gate | Out-Null
 Copy-Item "G:/My Drive/riya_v1/verdict-<sha8>.json" scratch_runs/riya_v1/gate/
 ```

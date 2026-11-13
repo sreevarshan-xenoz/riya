@@ -2,7 +2,7 @@
 # or after 60 s regardless).
 # PowerShell 5.1 compatible.
 param(
-    [string]$Model = "~/models/riya/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
+    [string]$Model = "$env:USERPROFILE/models/riya/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf"
 )
 
 $ErrorActionPreference = "Stop"

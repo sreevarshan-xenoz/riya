@@ -258,7 +258,7 @@ def test_runbook_cells():
                    "evaluation.gate_calibrate --bank scratch_runs/riya_v1/gate/bank",
                    "evaluation/gate_calibration.json",
                    "## 9. Local: adopt from the verdict",
-                   "~/models/riya/riya-v1-candidate-lora.gguf",
+                   "$env:USERPROFILE/models/riya/riya-v1-candidate-lora.gguf",
                    "--check-verdict", "--adopt-verdict", "-ngl 0"):
         nxt = text.find(needle, pos + 1)
         assert nxt > pos, f"{needle!r} is missing or out of order"

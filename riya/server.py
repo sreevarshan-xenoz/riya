@@ -25,7 +25,7 @@ from pathlib import Path
 from riya import brain
 from riya.brain import slot_key, usable_adapter, vetted_adapter
 
-LLAMA_SERVER = os.environ.get("LLAMA_SERVER", r"%USERPROFILE%\llama.cpp\llama-server.exe")
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER", str(Path.home() / "llama.cpp" / "llama-server.exe"))
 
 
 def free_vram_mb():
