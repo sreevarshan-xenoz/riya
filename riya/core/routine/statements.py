@@ -209,7 +209,7 @@ def render(kind: str, variant: str, slots: dict, rotation: int) -> str:
     s = dict(slots)
     if "band" in s and "band_cap" not in s:
         s["band_cap"] = str(s["band"])[:1].upper() + str(s["band"])[1:]
-    text = options[rotation % len(options)].format(**s)
+    text = options[rotation % len(options)].format(**s).replace("about about", "about")  # fmt_span's own "about"
     return text[:1].upper() + text[1:]
 
 
@@ -220,10 +220,12 @@ def round_minutes(seconds: float) -> int:
 
 
 def fmt_span(seconds: float) -> str:
-    """'25 minutes', '1 minute', 'about an hour', 'about an hour and a half', 'about 2 hours'."""
+    """'25 minutes', '1 minute', 'about an hour', 'about an hour and a half', 'about 2 hours' (whole hours from 10)."""
     m = round_minutes(seconds)
     if m < 60:
         return f"{m} minute" if m == 1 else f"{m} minutes"
+    if seconds >= 10 * 3600:
+        return f"about {round(seconds / 3600.0)} hours"
     halves = max(2, round(seconds / 1800.0))
     whole, half = divmod(halves, 2)
     if whole == 1:

@@ -184,3 +184,8 @@ def test_render_rotates_and_fills_slots():
     assert len(texts) == 3 and all("9:05 am" in t for t in texts)
     assert st.render("S1", "claim", SLOTS, 3) == st.render("S1", "claim", SLOTS, 0)
     assert math.isfinite(len(st.render("S7", "claim", SLOTS, 1)))
+
+
+def test_a_span_with_its_own_about_isnt_doubled():
+    text = st.render("S5", "claim", {"agent": "riya", "median": st.fmt_span(2 * 3600)}, 0)
+    assert "about about" not in text and "about 2 hours" in text

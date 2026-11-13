@@ -56,9 +56,12 @@ from riya.core.protocol import (EXPRESSIONS, PROTOCOL_VERSION, ActionInfo, Actio
                                 StateMsg, StyleNoteDelete, StyleNoteInfo, TalkHotkey, ThreadResolve, TraitChangeInfo,
                                 TranscriptDelete, TwinInfo, TwinReset, VoicesMsg)
 from riya.core.protocol import RoutineForget, RoutineHonestyInfo, RoutineMsg
+from riya.core.prompt import offered_text, statement_situation, statement_tail_situation
 from riya.core.router import Router, needs_thinking
 from riya.core.routine import P2_KINDS as ROUTINE_P2_KINDS
 from riya.core.routine import Routine, Sensed
+from riya.core.routine import detect as routine_detect
+from riya.core.routine.statements import Statement
 from riya.core.routine.appraisal import Appraisal
 from riya.core.secrets import KeyInfo
 from riya.core.settings import (Settings, apply_patch, default_startup_dir, in_quiet_hours, load_settings,
@@ -95,6 +98,7 @@ BUDDY_HALF_W = 150  # the buddy window is 300 px wide; buddy_position is its top
 CENTER_BAND = 0.1  # the window's centre within 10% of its monitor's width of hers: "center"
 TITLE_CHARS = 200
 COULDNT_SEE = "you tried to look but couldn't see it (your eyes didn't answer)"
+BID_STRETCH_REASON = "they've been at it a long stretch"  # v0.12: a bid with a routine line names no number
 REPORT_GAP_S = 20  # at most one agent report this often; whatever arrives meanwhile merges into the next
 REPORT_MAX_AGE_S = 6 * 3600  # a report still pending after this long is dropped
 REPORT_FACE_S = 20
@@ -396,8 +400,23 @@ class RiyaCore:
                 return
             gate = _chat_mid_game if self.game is not None else _priority
             chat, call = gate(text), None
+            routine_st = None  # v0.12: a routine question or a goodbye takes the turn from the hands
+            if self.game is None and not chat and self._routine_on():
+                try:
+                    sensed = self._sensed(self.clock.now())
+                    topic = self.routine.question(text)
+                    if topic:
+                        routine_st = self.routine.answer(topic, text, sensed)
+                    elif not is_forbidden(text) and self._match(text) is None:  # "bye, pause the music" acts
+                        routine_st = self.routine.farewell(text, sensed)
+                except Exception:
+                    log.exception("couldn't read the turn for her routine")
+                    routine_st = None
+                chat = routine_st is not None
             try:
-                if not chat or (is_screen_question(text) and not gate(text, screen=False)):
+                if routine_st is not None:
+                    pass
+                elif not chat or (is_screen_question(text) and not gate(text, screen=False)):
                     found = FORBIDDEN if is_forbidden(text) else self._match(text)
                     if not chat or (isinstance(found, Call) and found.tool in SCREEN_LOSES_TO):
                         chat, call = False, found
@@ -448,6 +467,12 @@ class RiyaCore:
             lead = refused
             if saved:
                 lead, self._acks = REMEMBER_ACKS[self._acks % len(REMEMBER_ACKS)], self._acks + 1
+            if routine_st is not None and lead is None:  # her routine line leads, forced local, never consolidated
+                yield from self._speak("reply", user_text=text, query=text, spoken=True,
+                                       situation=" ".join(filter(None, [situation,
+                                                                        statement_situation(routine_st.text)])),
+                                       lead=routine_st.text, small=True, consolidate=False, statement=routine_st)
+                return
             yield from self._speak("reply", user_text=text, query=text, spoken=True, situation=situation, lead=lead,
                                    ack=ack, small=bool(saved or refused),
                                    seeing=seeing if seeing and seeing.jpeg else None,
@@ -503,6 +528,11 @@ class RiyaCore:
         greeting gets its engagement here (a game offer in _game_move), and right after her line the move in their
         mood estimate is logged."""
         now = self.clock.now()
+        if self._routine_on():
+            try:
+                self.routine.on_user_turn(text, now)  # "that's wrong" right after a statement disputes it
+            except Exception:
+                log.exception("couldn't read the turn for a dispute")
         answered_bid = self.pending_bid_at is not None and now - self.pending_bid_at < BID_IGNORED_S
         if answered_bid and self._bid_thread is not None:
             self.memory.mark_thread(self._bid_thread, status="followed_up")
@@ -547,6 +577,11 @@ class RiyaCore:
                 due = [r for r in self.hands.due(now) if r.id in ids] if ids else []  # not cancelled meanwhile
                 tail = reminder_line(due, now, self.tz) or None
                 said: list[str] = []
+                st, self._return_appraisal = self._greeting_statement(short, reports, tail, now), None
+                lead = None
+                if st is not None:
+                    lead = st.text
+                    situation += " " + statement_situation(st.text)
 
                 def after(outcome: str) -> None:
                     if due:  # fired first: no bookkeeping failure can make the tail go out again
@@ -558,10 +593,20 @@ class RiyaCore:
                         self._greet_open = (b, self.clock.now()) if self.settings.learning_enabled else None
                 yield from self._counted(self._speak(
                     "greet", user_text=None, query=_query(action), situation=situation, spoken=action.spoken,
-                    threads=_threads(action), after=after, consolidate=not (reports or tail), tail=tail,
-                    short=short), said)
+                    threads=_threads(action), after=after, consolidate=not (reports or tail or st), tail=tail,
+                    short=short, lead=lead, statement=st), said)
             finally:
                 self._release(ids)
+
+    def _greeting_statement(self, short: bool, reports: list, tail: str | None, now: float) -> Statement | None:
+        """The greeting's routine line (S2, else S8): never on a greeting carrying news (reports, a reminder tail)."""
+        if not self._routine_on() or reports or tail:
+            return None
+        try:
+            return self.routine.greeting(self._return_appraisal, self._away_s, self._sensed(now, short=short))
+        except Exception:
+            log.exception("couldn't pick the greeting's routine line")
+            return None
 
     @staticmethod
     def _counted(sentences: Iterator[str], said: list[str]) -> Iterator[str]:
@@ -589,7 +634,8 @@ class RiyaCore:
                lead: str | None = None, ack: str | None = None, small: bool = False,
                seeing: SimpleNamespace | None = None,
                game: SimpleNamespace | None = None, consolidate: bool = True, shape: str | None = None,
-               tail: str | None = None, tail_if_silent: bool = False, short: bool = False) -> Iterator[str]:
+               tail: str | None = None, tail_if_silent: bool = False, short: bool = False,
+               statement: Statement | None = None) -> Iterator[str]:
         """Streams one utterance. The outcome is "done", "closed" (the consumer stopped early) or "failed" (model).
         threads, when given, replaces the retrieved follow-ups (speaking first carries only its chosen thread).
         lead is a fixed sentence said first, before the model is even asked; the model may add only one more. ack (a
@@ -611,8 +657,21 @@ class RiyaCore:
         plain reply feeds the verbosity drift. A plain reply on the local route (no game, tool, small or screen
         question, even one she can't look for) asks memory for the personal fill, and a personal request with a fact
         in the block adds personal_situation() after the situation; an online-routed request ("plan my week for me"
-        goes online on "plan") gets neither, even when it falls back to local, a known limit (v0.11 §4.7.9)."""
+        goes online on "plan") gets neither, even when it falls back to local, a known limit (v0.11 §4.7.9).
+        statement (v0.12, routine on): her routine line, the lead or the tail; it's logged the moment it goes out.
+        While routine is on every model sentence passes the claim guard (after drop_generic, before the cap), and an
+        online or vision prompt carries the scrubbed turns."""
         uid, parts, said, thinking, outcome = uuid4().hex, [], [], False, "failed"
+        routine = self._routine_on()
+        logged = {"done": False}
+
+        def log_statement(text: str) -> None:
+            if statement is not None and not logged["done"] and text == statement.text:
+                logged["done"] = True
+                try:
+                    self.routine.said(statement, self.clock.now())
+                except Exception:
+                    log.exception("couldn't log her routine statement")
         sentences, done, dropped, model_said, told = None, {"stream": False}, [], [], {"tail": False}
         tool, first_at = shape == "tool", None
 
@@ -623,6 +682,7 @@ class RiyaCore:
                 with self._barge_lock:
                     self._streaming = (uid, first_at)
             self.emit(Say(utterance_id=uid, text=text, spoken=aloud, kind=kind))
+            log_statement(text)
 
         def engine_line() -> str | None:
             """The engine's line, at most once: the game's (unless she already said its key), or the tail."""
@@ -660,10 +720,14 @@ class RiyaCore:
                 situation = " ".join(filter(None, [situation, personal_situation()]))
             reminders = self._reminders_context()
             likes = None if route == "online" else self._likes_context()  # the notes never go online
+            online_call = route == "online" or seeing is not None
+            turns = self._scrubbed(self.turns) if online_call else self.turns
 
             def build(persona: str, situation: str | None) -> list[dict]:
-                return build_messages(persona=persona, examples=self.examples, feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=retrieved, turns=self.turns, user_text=user_text, situation=situation,
+                tag = (self._statement_tag(statement) if statement is not None and not online_call
+                       else self.feelings.prompt_tag())  # read at build time, as v0.11 does
+                return build_messages(persona=persona, examples=self.examples, feelings_tag=tag,
+                                      retrieved=retrieved, turns=turns, user_text=user_text, situation=situation,
                                       now=self.clock.now(), kind=turn, eyes=eyes, agents=agents, reminders=reminders,
                                       cap=cap if turn == "small" else None, likes=likes)
 
@@ -685,6 +749,10 @@ class RiyaCore:
                 ran_out = lambda: self.router.last_finish_reason == "length"  # noqa: E731
             kept = drop_generic(self._sentences(stream, parts, done, ran_out, said=bool(lead or ack),
                                                 emoji_max=emoji_max), others=bool(lead or ack), dropped=dropped)
+            if routine:
+                offered = " ".join(filter(None, [situation, user_text, offered_text(retrieved, self.clock.now()),
+                                                 eyes, agents, reminders]))
+                kept = self._guarded(kept, offered, user_text, dropped)
             sentences = cap_sentences(kept, 1 if lead else cap)
             for sentence in sentences:
                 thinking = self._end_thinking(thinking)
@@ -716,6 +784,7 @@ class RiyaCore:
                 sentences.close()  # stops the model stream however the utterance ended
             if outcome == "closed" and (line := engine_line()):  # barged in on: shown, not spoken, and kept
                 self.emit(Say(utterance_id=uid, text=line, spoken=False, kind=kind))
+                log_statement(line)
                 said.append(line)
             # the model finished on its own and nothing of it was dropped: keep its own spacing
             whole = (outcome == "done" and done["stream"] and not dropped and not done.get("cut") and not game
@@ -954,6 +1023,31 @@ class RiyaCore:
         return f"{action.reason}; last you saw, they were {g.activity} in {g.app}" + (
             f" ({g.notable})" if g.notable else "")
 
+    def _bid_statement(self, action: Action) -> Statement | None:
+        """The bid's routine line: S1 when the reason is the long stretch, else S8, else the S7 hunch."""
+        try:
+            return self.routine.bid(self._sensed(self.clock.now()), long_stretch=action.thread is None)
+        except Exception:
+            log.exception("couldn't pick the bid's routine line")
+            return None
+
+    def _guard_line(self, line: str, offered: str, one: bool = False) -> str:
+        """The claim guard over a whole line (a bid's): uncovered sentences go; with one, only the first kept stays.
+        A line the guard leaves whole comes back unchanged."""
+        parts = [p for p in re.split(r"(?<=[.!?~])\s+", line) if p]
+        kept = []
+        for p in parts:
+            try:
+                ok = routine_detect.claim_guard(p, offered, None)
+            except Exception:
+                log.exception("the claim guard failed")
+                ok = True
+            if ok:
+                kept.append(p)
+        if len(kept) == len(parts) and not (one and len(parts) > 1):
+            return line
+        return " ".join(kept[:1] if one else kept)
+
     def _may_offer(self) -> bool:
         """A bid now would offer a game: no game is on and an agent is at work."""
         return self.game is None and any(a["status"] in BUSY for a in self.agents.snapshot())
@@ -963,34 +1057,58 @@ class RiyaCore:
         the model's line doesn't; a yes within BID_IGNORED_S starts it. bucket (the twin's, from _maybe_bid): once
         the line went out it waits in _twin_open for its engagement; a direct call records nothing."""
         offer, self._bid_p = None, None
+        routine = self._routine_on()
+        st = self._bid_statement(action) if routine else None
+        uid = uuid4().hex if st is not None else None
+        if st is not None:  # her routine line goes out (and is logged) before the model is even asked
+            self.emit(Say(utterance_id=uid, text=st.text, spoken=False, kind="bid"))
+            try:
+                self.routine.said(st, self.clock.now())
+            except Exception:
+                log.exception("couldn't log her routine statement")
         try:
             if self._may_offer():
                 offer = self.game_rng.choice(games.GAMES)
-            situation = bid_situation(self._bid_reason(action), action.thread)
+            reason = BID_STRETCH_REASON if st is not None and st.kind == "S1" else self._bid_reason(action)
+            situation = bid_situation(reason, action.thread)
+            if st is not None:
+                situation += " " + statement_situation(st.text)
             if offer:
                 situation += " " + games.offer_situation(offer)
+            retrieved, eyes, agents = self._retrieve(_query(action), _threads(action)), self._eyes_context(), \
+                self._agents_context()
+            reminders = self._reminders_context()
             messages = build_messages(persona=self._persona("local"), examples=self.examples,
-                                      feelings_tag=self.feelings.prompt_tag(),
-                                      retrieved=self._retrieve(_query(action), _threads(action)), turns=self.turns,
+                                      feelings_tag=self._statement_tag(st) if st is not None
+                                      else self.feelings.prompt_tag(),
+                                      retrieved=retrieved, turns=self.turns,
                                       user_text=None, situation=situation,
-                                      now=self.clock.now(), eyes=self._eyes_context(), agents=self._agents_context(),
-                                      reminders=self._reminders_context(), likes=self._likes_context())
+                                      now=self.clock.now(), eyes=eyes, agents=agents,
+                                      reminders=reminders, likes=self._likes_context())
             line = "".join(self.local.stream(messages, BUDGETS["bid"], LOCAL_TEMPERATURE))
             line = limit_emoji(strip_label(line).strip(), emoji_limit(self.learn.dials()["emoji"]))
+            if routine:
+                offered = " ".join(filter(None, [situation, offered_text(retrieved, self.clock.now()), eyes, agents,
+                                                 reminders]))
+                line = self._guard_line(line, offered, one=st is not None)
         except Exception:
             log.exception("model failed during a bid")
-            return
-        if not line:
+            if st is None:
+                return
+            line = ""
+        if not line and st is None:
             return
         if offer and not games.offers(line, offer):
-            line = f"{line} {games.offer_line(offer)}"
+            line = f"{line} {games.offer_line(offer)}" if line else games.offer_line(offer)
         self._offer = (offer, self.clock.now()) if offer else None
         if action.thread:
             self.memory.mark_thread(action.thread.id, raised_at=self.clock.now())
-        uid = uuid4().hex
-        self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="bid"))
+        uid = uid or uuid4().hex
+        if line:
+            self.emit(Say(utterance_id=uid, text=line, spoken=False, kind="bid"))
         self.emit(SayEnd(utterance_id=uid))
-        self.memory.append_transcript("assistant", line)
+        line = " ".join(filter(None, [st.text if st is not None else None, line]))
+        self.memory.append_transcript("assistant", line, **({"consolidate": False} if st is not None else {}))
         self.turns = (self.turns + [{"role": "assistant", "content": line}])[-KEEP_TURNS:]
         self.last_turn_at = self.pending_bid_at = self.clock.now()
         self._bid_thread = action.thread.id if action.thread else None
@@ -1371,6 +1489,37 @@ class RiyaCore:
             return self.settings.routine_enabled
         except Exception:
             return False
+
+    def _guarded(self, sentences: Iterator[str], offered: str, user_text: str | None,
+                 dropped: list) -> Iterator[str]:
+        """The claim guard over model sentences: a sentence about the user stating a time, a span or a habit that
+        nothing offered backs is dropped (and noted in dropped, like drop_generic's). A guard error keeps it."""
+        for sentence in sentences:
+            try:
+                keep = routine_detect.claim_guard(sentence, offered, user_text)
+            except Exception:
+                log.exception("the claim guard failed")
+                keep = True
+            if keep:
+                yield sentence
+            else:
+                dropped.append(sentence)
+
+    def _statement_tag(self, statement: Statement) -> str:
+        """The state tag with the statement's clause, on the local route only."""
+        try:
+            return self.feelings.prompt_tag(self.routine.clause(statement, self.clock.now()))
+        except Exception:
+            log.exception("couldn't add the routine clause")
+            return self.feelings.prompt_tag()
+
+    def _scrubbed(self, turns: list[dict]) -> list[dict]:
+        """The turns an online model may see: her routine remarks become a placeholder."""
+        try:
+            return self.routine.scrub(turns)
+        except Exception:
+            log.exception("couldn't scrub the turns")
+            return [t for t in turns if t.get("role") != "assistant"]
 
     def _sensed(self, now: float, *, short: bool = False, news: bool = False) -> Sensed:
         start = self.presence.stretch_start()
@@ -1853,9 +2002,25 @@ class RiyaCore:
                 self._engage("report", self._bucket(), not self._last_barged)
 
         with self._lock:
+            st = self._report_statement(events)
+            situation = report_situation(events)
+            if st is not None:
+                situation += " " + statement_tail_situation(st.text)
             yield from self._counted(self._speak("report", user_text=None, query=report_line(events, detail=False),
-                                                 situation=report_situation(events), spoken=True, threads=[],
-                                                 after=after), said)
+                                                 situation=situation, spoken=True, threads=[], after=after,
+                                                 tail=st.text if st is not None else None, statement=st), said)
+
+    def _report_statement(self, events: list[AgentEvent]) -> Statement | None:
+        """S4 as a report's tail: a single finished or failed event whose run she appraised."""
+        if len(events) != 1 or events[0].kind not in ("finished", "failed") or not self._routine_on():
+            return None
+        ev = events[0]
+        a = self._run_appraisals.pop(ev.agent_id, None)
+        try:
+            return self.routine.report(ev, a, self._sensed(self.clock.now()))
+        except Exception:
+            log.exception("couldn't pick the report's routine line")
+            return None
 
     def _load_reports(self) -> dict[str, tuple[AgentEvent, float]]:
         """The pending reports saved before a restart (the 6 h drop applies on the next tick); bad rows are skipped."""

@@ -33,6 +33,7 @@ S8_KEY = "routine.s8_last"
 UNSURE_OK_C = 0.5
 UNSURE_OK_N = 2
 P2_KINDS = ("bid", "game_offer", "greeting")
+AGENT_NAME_MAX = 20  # an agent's name in her line, so a statement turn's added text stays within 280 characters
 _BANDS = {"night": (22, 7), "morning": (5, 7), "afternoon": (12, 5), "evening": (17, 5)}  # (start hour, hours)
 _PRESENCE = {"came_back": "back", "went_away": "away", "break_started": "break", "break_ended": "break_end"}
 
@@ -468,14 +469,15 @@ class Routine:
         level = self._level(st.rule_s5(c.n, conf, pr.within_band(pred, 2.0)))
         if level is None:
             return None
-        name = bucket.split(":", 1)[1]
+        name = bucket.split(":", 1)[1][:AGENT_NAME_MAX]
         median, lo, hi = pred.median_s(), pred.quantile_s(0.1), pred.quantile_s(0.9)
         value = {"predictor": "P3", "bucket": use, "median_s": median, "lo_s": lo, "hi_s": hi}
         ev = {"n_eff": c.n, "confidence": conf}
         if level == "claim":
             return self._make("S5", True, "claim", {"agent": name, "median": st.fmt_span(median)}, value, ev,
                               "reply", now)
-        return self._make("S5", False, "hunch", {"agent": name, "lo": st.fmt_span(lo), "hi": st.fmt_span(hi)},
+        bare = lambda x: st.fmt_span(x).removeprefix("about ")  # noqa: E731  ("anywhere from" already hedges)
+        return self._make("S5", False, "hunch", {"agent": name, "lo": bare(lo), "hi": bare(hi)},
                           value, ev, "reply", now)
 
     def _s6(self, text: str, sensed: Sensed) -> Statement | None:

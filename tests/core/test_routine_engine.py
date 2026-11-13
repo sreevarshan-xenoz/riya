@@ -71,7 +71,7 @@ def test_p1_is_observed_at_came_back_with_its_leave_time():
     leave_and_return(core, src, 3 * H)
     obs = core.routine.db.conn.execute("select bucket, value from routine_obs where predictor='P1'").fetchall()
     assert sorted(b for b, _ in obs) == ["morning", "morning/weekday"]
-    assert core._return_appraisal is not None and core._return_appraisal.predictor == "P1"
+    assert core._return_appraisal is None  # the greeting used it
 
     src.is_fullscreen = True  # a greeting deferred by a game still observes the return at came_back
     leave_and_return(core, src, 3 * H)
