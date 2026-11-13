@@ -8,11 +8,15 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from riya.core.appraise import NEG, POS, appraise
 from riya.core.protocol import EXPRESSIONS  # noqa: F401  (re-exported)
+
+if TYPE_CHECKING:  # importing riya.core.routine at load would pull in its facade; the engine and build_sft import this
+    from riya.core.routine.appraisal import Appraisal
 
 AFFECT_HALF_LIFE_S = 300
 MOOD_TAU_S = 6 * 3600
@@ -24,6 +28,10 @@ USER_MOOD_HALF_LIFE_S = 1800
 MIN_ABSENCE_S = 900  # shorter absences (a quick lock) leave her feelings alone
 BASE_AROUSAL, BASE_CURIOSITY, BASE_WARMTH, BASE_PLAYFULNESS = 0.3, 0.5, 0.6, 0.4
 _MISSING_POINTS = ((0, 0.0), (2, 0.10), (24, 0.50), (48, 0.85))
+MISSING_BONUS_MAX = 0.15  # a late return's extra missing, at most this per absence (v0.12 §4.4)
+CONCERN_MAX = 0.15  # a late return's concern, at most this per absence
+BONUS_STALE_S = 1800  # a bonus not used by a return this soon is dropped (the engine's GREET_DEFER_MAX_S)
+STARTLE_FACE_S = 6
 
 
 def missing_curve(hours: float) -> float:
@@ -99,6 +107,8 @@ class Feelings:
         self.prev_words: set[str] = set()
         self._last = clock.now()  # time of the last tick (or of the save, after a restore)
         self._override: tuple[str, float | None] | None = None  # (expression, expires_at or None)
+        self._after: tuple[str, float] | None = None  # a face queued behind a startle: (expression, seconds)
+        self._bonus: tuple[float, float] | None = None  # a late return's missing bonus: (value, at)
 
     @property
     def traits(self) -> dict[str, float]:
@@ -118,12 +128,55 @@ class Feelings:
         s = self.state
         missing = min(1.0, missing_curve(away_s / 3600) * self.traits.get("clinginess", 0.8) / 0.8)
         s.missing = max(s.missing, missing)
+        if self._bonus is not None:  # routine on: a late return she didn't expect, used once
+            value, at = self._bonus
+            self._bonus = None
+            if self.clock.now() - at <= BONUS_STALE_S:
+                s.missing = min(1.0, s.missing + value)
         cap = MAX_TURN_DELTA * 2
         self._bump("valence", 0.4 * s.missing, cap=cap)
         self._bump("arousal", 0.3 * s.missing, 0.0, 1.0, cap=cap)
         if away_s > 300:  # rested while they were away
             s.energy = max(s.energy, min(0.9, s.energy + 0.02 * away_s / 60))
-        self._set_override("missed_you" if s.missing >= 0.4 else "happy", 20)
+        face = "missed_you" if s.missing >= 0.4 else "happy"
+        if self._override and self._override[0] == "surprised" and self._override[1] is not None \
+                and self.clock.now() < self._override[1]:
+            self._after = (face, 20)  # the startle shows first; this face follows it
+        else:
+            self._set_override(face, 20)
+
+    def on_appraisal(self, a: "Appraisal", clinginess: float) -> None:
+        """Surprise and confidence move her, inside her bands (spec §4.4). The dials are never touched."""
+        from riya.core.routine.appraisal import MATURE_N
+        s = a.s
+        if a.topic == "return":
+            if a.direction == "early" and a.surprised:
+                self._bump("valence", 0.2 * s)
+                self._bump("arousal", 0.25 * s, 0.0, 1.0)
+                self._bump("curiosity", 0.1 * s, 0.0, 1.0)
+                if a.startled:
+                    self._set_override("surprised", STARTLE_FACE_S)
+            elif a.direction == "late" and a.surprised and a.n_eff >= 4:
+                self._bump("concern", min(CONCERN_MAX, 0.15 * s), 0.0, 1.0)
+                self._bump("arousal", 0.1 * s, 0.0, 1.0)
+                self._bonus = (min(MISSING_BONUS_MAX, 0.15 * s * clinginess / 0.8), self.clock.now())
+            elif a.surprise <= 0 and a.n_eff >= MATURE_N:
+                self._bump("warmth", 0.05, 0.0, 1.0)
+        elif a.topic == "answer":
+            if a.direction == "answered" and a.value < 0.4:  # a.value carries p_engage for P2
+                self._bump("valence", 0.2 * s)
+                self._bump("warmth", 0.1 * s, 0.0, 1.0)
+                if s >= 0.5:
+                    self._set_override("happy", 10)
+        elif a.topic == "run" and a.surprised:
+            if a.direction == "longer":
+                self._bump("curiosity", 0.1 * s, 0.0, 1.0)
+            elif a.direction == "shorter":
+                self._bump("valence", 0.1 * s)
+        elif a.topic == "gaming" and a.direction == "gamed" and a.surprised:
+            self._bump("curiosity", 0.1 * s, 0.0, 1.0)
+        if a.change:
+            self._bump("curiosity", 0.15, 0.0, 1.0)
 
     def estimate_user(self, text: str) -> None:
         words = re.findall(r"[a-z']+", text.lower())
@@ -192,6 +245,10 @@ class Feelings:
 
     # ---- readout ------------------------------------------------------------------------------------
     def expression(self) -> str:
+        if self._after and self._override and self._override[1] is not None \
+                and self.clock.now() >= self._override[1]:  # the startle ended: the queued face takes over
+            name, seconds = self._after
+            self._after, self._override = None, (name, self._override[1] + seconds)
         if self._override and (self._override[1] is None or self.clock.now() < self._override[1]):
             return self._override[0]
         s = self.state
@@ -203,7 +260,7 @@ class Feelings:
                 return name
         return "neutral"
 
-    def prompt_tag(self) -> str:
+    def prompt_tag(self, clause: str | None = None) -> str:
         s = self.state
         tag = (f"[Riya's state: feeling {self.expression()} | valence {s.valence:+.2f} arousal {s.arousal:.2f} "
                f"warmth {s.warmth:.2f} mood {s.mood:+.2f} energy {s.energy:.2f} curiosity {s.curiosity:.2f}")
@@ -213,6 +270,8 @@ class Feelings:
             tag += f" | worried about them ({s.concern:.2f})"
         if s.user_mood.confidence >= 0.4:
             tag += f" | they seem {s.user_mood.label}"
+        if clause:
+            tag += f" | {clause}"
         return tag + "]"
 
     # ---- persistence --------------------------------------------------------------------------------
