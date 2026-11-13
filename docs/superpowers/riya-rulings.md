@@ -451,3 +451,4 @@ Every decision taken on the user's behalf while executing the three plans. Each 
 - **C8, Task 9:** the P4 "50% interval" for S8 is the usual outcome (1 or 0). The settings-page lines show the observed median (exp of the mean log), not the predictive, which the prior pulls.
 - **C9, Task 10:** hello carries `RoutineMsg` only while routine is on (the settings already carry the switch), so the existing hello-order pins stay unedited.
 - **Known limit (2026-11-13):** Presence has a real sensor only on Windows (`WindowsIdleSource`). On Linux the fake source never sees an absence, lock or fullscreen game, so routine learning there needs a Linux idle source (a follow-up, outside v0.12).
+- **C10, Task 12:** `body/test/health-logic.test.js` also pins the Health row list; it gains `"honesty"` with the planned `ROW_LABELS` change (a pin the plan missed).

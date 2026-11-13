@@ -28,6 +28,7 @@ LABELS = {
     "colab": "Colab logs",
     "memory": "Memory",
     "autostart": "Start with Windows",
+    "honesty": "Honesty",
 }
 
 

@@ -22,6 +22,7 @@ const ROW_LABELS = {
   colab: "Colab logs",
   memory: "Memory",
   autostart: "Start with Windows",
+  honesty: "Honesty",
 };
 const FIX_LABELS = {
   online_test: "Test",

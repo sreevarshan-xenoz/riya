@@ -30,7 +30,7 @@ CHECK_TIMEOUT_S = 5.0
 DETAIL_MAX = 120
 STATUSES = ("ok", "warn", "off")
 CONNECTED_S = 24 * 3600
-ROWS = ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart")
+ROWS = ("local", "online", "voice", "mic", "look", "eyes", "claude_code", "colab", "memory", "autostart", "honesty")
 FIXES = ("online_test", "voice_sample", "mic_check", "eyes_test", "hooks_connect", "hooks_disconnect", "autostart",
          "use_base", "use_riya_v1")
 BROKEN = ("Riya v1 is set, but llama-server runs the base model: the adapter is missing, didn't load or is still "
@@ -151,6 +151,7 @@ class HealthCtx:
     online_keyless: bool = False  # the endpoint serves free models without a key (OpenCode)
     http_get: Callable[[str, float], bytes] = default_http_get
     tz: object = field(default=None)
+    honesty: object = None  # v0.12: a Later of routine.audit.Honesty (read by attribute), or None (off)
 
     def __getattribute__(self, name):  # a Later field resolves when a check reads it, on that check's thread
         value = object.__getattribute__(self, name)
@@ -387,10 +388,42 @@ def check_autostart(ctx: HealthCtx) -> HealthItem:
     return HealthItem("autostart", "warn", "Autostart is on but its shortcut is missing.", "autostart")
 
 
+HONESTY_FEW = 10  # under this many claims scored, she's still too new to judge (audit.FEW)
+HONESTY_WARN_N = 20  # audit.WARN_N
+HONESTY_WARN_RATE = 0.9  # audit.WARN_RATE
+
+
+def honesty_detail(h) -> tuple[str, str]:
+    """(status, text) for her honesty over the last 30 days; t counts in the user reading (a disputed claim is false).
+    h is an audit.Honesty, read by attribute (Health imports nothing from the routine package)."""
+    if not h.enabled:
+        return "off", "Off: she isn't noticing your routines."
+    hr, hn = h.hunches_right, h.hunches_scored
+    if not h.claims_enabled:
+        return "ok", f"Hunches only in this version · hunches right {hr} of {hn} · 30 days"
+    t, n = h.claims_true, h.claims_scored
+    if n == 0:
+        return "ok", "No claims checked yet: she needs a few more days"
+    if n < HONESTY_FEW:
+        return "ok", f"{n} claims checked so far ({'all true' if t == n else f'{t} true'}): she needs a few more days"
+    p = round(100 * t / n)
+    if n >= HONESTY_WARN_N and t / n < HONESTY_WARN_RATE:
+        return "warn", f"Only {t} of {n} claims held up ({p}%): tell Claude"
+    return "ok", f"Honest {t} of {n} claims ({p}%) · hunches right {hr} of {hn} · 30 days"
+
+
+def check_honesty(ctx: HealthCtx) -> HealthItem:
+    h = ctx.honesty
+    if h is None:
+        return HealthItem("honesty", "off", "Off: she isn't noticing your routines.")
+    status, text = honesty_detail(h)
+    return HealthItem("honesty", status, clip(text))
+
+
 CHECKS: dict[str, Callable[[HealthCtx], HealthItem]] = {
     "local": check_local, "online": check_online, "voice": check_voice, "mic": check_mic, "look": check_look,
     "eyes": check_eyes, "claude_code": check_claude_code, "colab": check_colab, "memory": check_memory,
-    "autostart": check_autostart,
+    "autostart": check_autostart, "honesty": check_honesty,
 }
 
 

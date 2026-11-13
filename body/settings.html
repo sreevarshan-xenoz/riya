@@ -282,6 +282,19 @@
     </div>
     <div class="inline"><button id="learning-reset" type="button" class="danger">Reset to her defaults</button></div>
     <p id="learning-reset-err" class="err" role="alert" hidden></p>
+    <div class="row check" data-key="routine_enabled">
+      <input id="routine_enabled" type="checkbox"><label for="routine_enabled">She notices your routines</label>
+      <p class="note">She keeps small private guesses about when you come back, how long your agent runs take and when you game, says only what she can back up, and checks herself. Nothing leaves this computer.</p>
+      <p class="err" role="alert" hidden></p>
+    </div>
+    <div class="row">
+      <span class="label">What she noticed</span>
+      <ul id="routine-cells" class="list"></ul>
+      <p id="routine-cells-empty" class="empty" hidden>Nothing yet: she needs a few days.</p>
+      <p id="routine-honesty" class="note"></p>
+    </div>
+    <div class="inline"><button id="routine-forget" type="button" class="danger">Forget my routines</button></div>
+    <p id="routine-forget-err" class="err" role="alert" hidden></p>
   </section>
 
   <section aria-labelledby="h-facts">
@@ -347,6 +360,7 @@
 <script src="src/agents-logic.js"></script>
 <script src="src/hands-logic.js"></script>
 <script src="src/learning-logic.js"></script>
+<script src="src/routine-logic.js"></script>
 <script src="src/health-logic.js"></script>
 <script src="src/settings-logic.js"></script>
 <script src="settings.js"></script>

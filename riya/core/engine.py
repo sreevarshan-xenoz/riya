@@ -2609,7 +2609,7 @@ class RiyaCore:
             schema_version=read("schema_version", part(1)),
             startup_dir=read("startup_dir", lambda: self.startup_dir or default_startup_dir()),
             session_start=self._session_start, adapter_path=self.setup.deps.adapter_path, http_get=self.health_http,
-            tz=self.tz)
+            tz=self.tz, honesty=read("honesty", lambda: self.routine.honesty(self.clock.now())))
 
     def _start_health(self) -> None:
         """One riya-health thread at a time; a request while it runs makes it run once more when done (any number of
