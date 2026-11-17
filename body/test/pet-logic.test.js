@@ -1000,6 +1000,19 @@ test("a current wave is known from her view, and its label comes back when her o
   assert.equal(activityText({ ...w, bubble: { text: "x".repeat(90), untilMs: 1e9 } }, now).length, BUBBLE_MAX, "clipped again");
 });
 
+test("the needs-you wave still reaches the badge under reduced motion, without animating", () => {
+  const { badgeView } = require("../src/agents-logic");
+  const pet = mk({ ctx: { reducedMotion: true } });
+  pet.step(0);
+  pet.react("wave", "needs you! running rm", 100);
+  const v = pet.step(150).view;
+  assert.equal(v.reduced, true);
+  assert.equal(waveCurrent(v), true, "a still wave must still count as a current wave");
+  assert.equal(badgeView(0, waveCurrent(v)).hidden, false, "and it must keep the badge visible");
+  assert.equal(activityText(v, 150), "needs you! running rm");
+  assert.doesNotMatch(petTransformCss(v, 150), /rotate\(-?[1-9]/, "reduced motion still suppresses the wave animation");
+});
+
 test("the renderer keeps needs-you visible through her own speech, and draws labels through the pure helpers", () => {
   const src = stripComments(readBody("renderer.js"));
   const activity = src.slice(src.indexOf("function renderActivity"), src.indexOf("function renderStatus"));
