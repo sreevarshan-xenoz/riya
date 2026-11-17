@@ -369,6 +369,11 @@ def test_agent_count_is_bounded(hub, clock):
     ("mytool --password hunter22 --verbose", "hunter22"),
     ("mytool --token=abcd1234 run", "abcd1234"),
     ("mytool --token abcd1234 run", "abcd1234"),
+    ("my key is hf_abcdefghijklmnopqrstuvwx ok", "hf_abcdefghijklmnopqrstuvwx"),
+    ("a glpat-abcdefghijklmnopqrst ends", "glpat-abcdefghijklmnopqrst"),
+    ("ya29.abcdefghijklmnopqrstuvw here", "ya29.abcdefghijklmnopqrstuvw"),
+    ("AIzaSyA-1234567890 bare", "AIzaSyA-1234567890"),
+    ("prefixXsk-ant-api03-AbCdEf123456 done", "sk-ant-api03-AbCdEf123456"),
 ])
 def test_summarize_redacts_secret_shapes(text, secret):
     out = summarize(text)
