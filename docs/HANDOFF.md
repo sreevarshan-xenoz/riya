@@ -5,7 +5,7 @@ Next job: make Riya's on-screen body look like a real person (a 3D model) instea
 ## Where things stand
 
 - `main` is at the docs handoff merge (PR #18); the model-pool merge was PR #17. CI is green, and the repo is public.
-  Nine audit fixes from 2026-11-17 are open as PRs #19–#27 (see `docs/PROJECT_STATUS.md`).
+  Nine audit fixes from 2026-11-17 landed as PRs #19–#27, followed by the docs refresh (#28); CI is green on `main` (see `docs/PROJECT_STATUS.md`).
 - **Online brain:** a pool of free models that take over for each other: opencode's free models first, then any
   keyed providers in `providers.env`, then Kilo. Spec: `docs/superpowers/specs/2026-11-13-riya-model-pool-design.md`.
 - **Small talk:** runs on the local LFM2.5 1.2B GGUF in `~/models/riya`.
