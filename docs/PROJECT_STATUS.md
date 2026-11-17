@@ -5,7 +5,7 @@ Reviewed 2026-11-17. This is a source review and local test report, not a live-m
 ## Where the project stands
 
 - `jarvis/` contains the research language/world models; `riya/` contains the companion runtime; `body/` is the Electron desktop app.
-- `main` is at the docs handoff merge (PR #18). The previous merge, PR #17, added the online model pool. Nine audit fixes from this review are open as PRs #19–#27; they were merged together in a local, unpushed verification branch for testing.
+- `main` is at the docs refresh merge (PR #28), after the nine audit fixes from this review (PRs #19–#27) were merged on 2026-11-17. They were verified together on a local branch first, then each PR's CI passed and the post-merge run on `main` was green. PR #17 added the online model pool.
 - The latest feature is v0.12, **Morpheus in Riya** (`riya/core/routine/`). Engine-made routine claims ship disabled (`CLAIMS_ENABLED = False`) because the held-out record failed A3, A5 and A7; hunches still run. Specs, plans and rulings through v0.12 and the 2026-11-13 model pool are checked in under `docs/superpowers/`.
 - The Linux laptop is the main dev machine: `bash scripts/start_riya.sh` starts the model server, core and body, also used by the `riya.service` systemd user unit. Windows is the older setup; its path is in `docs/HANDOFF.md`.
 - `RESUME.md` and `LOOPS.md` are dated, paused historical records. The versioned specs/plans/rulings are also historical; they record decisions as made and are deliberately not rewritten.
@@ -36,10 +36,10 @@ All runs used `NO_PROXY=127.0.0.1,localhost` and `no_proxy=127.0.0.1,localhost` 
 
 | Check | Result |
 | --- | --- |
-| Python suite on `main` (`.venv`, Python 3.14) | 3,745 passed, 10 skipped |
-| Python suite on all nine fixes merged locally (3.14) | **3,756 passed, 10 skipped** in 4m34s |
-| Body suite on `main` (`npm test`) | 329 passed |
-| Body suite on all nine fixes merged locally | **331 passed** |
+| Python suite on `main` before the audit fixes (`.venv`, Python 3.14) | 3,745 passed, 10 skipped |
+| Python suite on all nine fixes merged locally before merge, and on `main` after (3.14) | **3,756 passed, 10 skipped** |
+| Body suite on all nine fixes merged locally before merge, and on `main` after (`npm test`) | **331 passed** |
+| Post-merge CI on `main` (Python 3.12 + Node 22, run 44034402336) | both jobs green |
 | Syntax compilation (`compileall`, Python + JS audit) | clean |
 | `evaluation.gate.identity()` against the committed 0.11.1 record | `gate_version`, `probe_sha256`, `prompt_fp`, `scorer_sha256`, `embedder`, `repeat` all match |
 
@@ -54,8 +54,7 @@ The only warning is an upstream `StarletteDeprecationWarning` about `httpx` with
 
 ## Recommended next work, in order
 
-1. **Decide on the nine audit PRs.** They are independent, one commit each and verified together locally; merge the ones you want, and keep or close the rest. Nothing was merged or adopted automatically.
-2. **Write the 3D avatar spec**, then build it — the next feature in `docs/HANDOFF.md`. Keep the existing message contract, add sprites as fallback, and stay inside the body's CPU budget.
-3. **Finish the v0.11 quality gate before promoting a brain.** The committed calibration is 0.11.1 and `evaluation.gate.identity()` matches it. See `colab/riya_v1/README.md`, sections 7–9: five fresh base-vs-base runs with the pinned embedder, calibrate, then the round-2 candidate and `evaluation.champion --check-verdict`. Record failures; never tune against the held-out bank.
-4. **Do the Windows integration pass.** Welcome/Health, two windows changing settings, Startup-shortcut failure recovery, Claude Code hooks and terminal focus, voice barge-in and reduced motion. Use `evaluation.health_check`, `pet_check` and `pet_cpu` where applicable; pure tests cannot establish hardware latency or desktop CPU budgets.
-5. **Keep CI green and add hardware gates separately.** Model/hardware acceptance remains a manual, documented step.
+1. **Write the 3D avatar spec**, then build it — the next feature in `docs/HANDOFF.md`. Keep the existing message contract, add sprites as fallback, and stay inside the body's CPU budget.
+2. **Finish the v0.11 quality gate before promoting a brain.** The committed calibration is 0.11.1 and `evaluation.gate.identity()` matches it. See `colab/riya_v1/README.md`, sections 7–9: five fresh base-vs-base runs with the pinned embedder, calibrate, then the round-2 candidate and `evaluation.champion --check-verdict`. Record failures; never tune against the held-out bank.
+3. **Do the Windows integration pass.** Welcome/Health, two windows changing settings, Startup-shortcut failure recovery, Claude Code hooks and terminal focus, voice barge-in and reduced motion. Use `evaluation.health_check`, `pet_check` and `pet_cpu` where applicable; pure tests cannot establish hardware latency or desktop CPU budgets.
+4. **Keep CI green and add hardware gates separately.** Model/hardware acceptance remains a manual, documented step.
