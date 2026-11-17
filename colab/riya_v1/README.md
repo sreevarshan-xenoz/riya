@@ -1,9 +1,11 @@
 # Riya v1: the Colab runbook
 
 Fine-tune a LoRA on the LFM2.5-1.2B weights Riya serves, then let the champion gate decide whether to adopt it.
-Run the cells in order. "Local" cells run on your PC (PowerShell, in `E:\riya`); "Colab" cells run in a Colab notebook
-on a free T4 (Runtime > Change runtime type > T4 GPU). Everything the two sides share lives in one Drive folder,
-`G:/My Drive/riya_v1/` locally and `/content/drive/MyDrive/riya_v1` on Colab.
+Run the cells in order. "Local" cells run on your PC; the commands below use PowerShell from `E:\riya` (Windows).
+On the Linux dev machine, run them from the repo root with `.venv/bin/python` and your Drive mount path in place of
+`G:/My Drive/`. "Colab" cells run in a Colab notebook on a free T4 (Runtime > Change runtime type > T4 GPU).
+Everything the two sides share lives in one Drive folder, `G:/My Drive/riya_v1/` locally and
+`/content/drive/MyDrive/riya_v1` on Colab.
 
 The data is synthetic (seeded fake names, facts and places). Nothing of yours goes to Colab except code.
 
@@ -193,7 +195,7 @@ ahead of time), add `HF_HUB_OFFLINE=1` to every command (the check and each cham
 Any other problem (a file's size or sha256) means a different model file, so don't run the gate on it.
 
 Then the gate, with the candidate. `--verdict-out` implies `--dry-run`: nothing is adopted or written but the verdict.
-It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.11.0,
+It takes roughly 4-6 minutes (measured at 162-250 s per run at repeat 3 on a Kaggle T4; at `--repeat 4`, gate 0.11.1,
 the gate's budget is a ceiling of 1200 s, which section 8 checks on `bank-1`) and prints the table and
 `Verdict written: ... (total N s)`. Kaggle works the same as Colab, with the same commands:
 

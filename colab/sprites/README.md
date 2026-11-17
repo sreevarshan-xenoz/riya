@@ -2,7 +2,8 @@
 
 Generation runs on a free Colab T4; the pack is built on the laptop. Nothing generated is ever committed: Colab writes
 to `MyDrive/jarvis/sprites/` and the laptop to `sprites/` (gitignored). Every step can be re-run after a disconnect and
-skips what already exists.
+skips what already exists. Laptop commands below use Windows paths; on Linux use `.venv/bin/python` from the repo root
+and your Drive mount (for example `~/drive/MyDrive/jarvis/sprites`) in place of `G:\My Drive\jarvis\sprites`.
 
 The repo and the `riya images/` folder are uploaded to `MyDrive/jarvis/`. In the notebook, `J` is a Python variable;
 IPython expands `$J` inside `!` lines.
@@ -90,6 +91,7 @@ Pull the whole `MyDrive/jarvis/sprites/frames/` folder, `run.json` included, to 
 `G:\My Drive\jarvis\sprites\frames`). Then, from the repo root:
 
 ```
+# Windows: .venv/Scripts/python.exe    Linux: .venv/bin/python
 .venv/Scripts/python.exe -m pip install "rembg[cpu]" jsonschema
 .venv/Scripts/python.exe colab/sprites/build_pack.py --raw sprites/frames --out sprites/riya-v1
 ```
