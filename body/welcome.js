@@ -3,10 +3,11 @@
  *  Settings window would. Text from the core is only ever put in with textContent. Pure logic is in src/welcome-logic.js
  *  and src/health-logic.js. The window never says it is finished: closing it (Finish, Skip setup or the X) is all it does,
  *  and the main process's `closed` handler decides what the core hears. The key is typed into a password field, sent once
- *  through submitKey and never kept here. */
+ *  and cleared only when the core confirms it; no copy is kept here. */
 (() => {
   const { STEPS, LINES, nextStep, prevStep, nameMessage, cleanName, nameError, modeMessage, eyesMessage, eyesLine, agentRows } = RiyaWelcome;
-  const { submitKey, saveKeyEnabled, keySourceText, voiceItems, resultText, STATUS_TEXT } = RiyaHealth;
+  const { KeySave, saveKeyEnabled, keySourceText, voiceItems, resultText, STATUS_TEXT } = RiyaHealth;
+  const keySave = new KeySave();
   const $ = (id) => document.getElementById(id);
   const send = (msg) => window.riya.send(msg);
   const SETUP_ACTIONS = ["online_key_set", "voice_sample", "voice_choose"]; // results shown here: the others are Settings'
@@ -76,10 +77,10 @@
 
   function saveKey() {
     if (!keyUi) return;
-    const sent = submitKey(keyUi.field, send, coreConnected);
-    keyUi.err.textContent = sent ? "" : coreConnected ? "That doesn't look like a key (no spaces, at most 200 characters)."
+    const sent = keySave.submitKey(keyUi.field, send, coreConnected);
+    keyUi.err.textContent = sent ? "Saving…" : coreConnected ? "That doesn't look like a key (no spaces, at most 200 characters)."
       : "Her core isn't connected, so the key wasn't sent.";
-    keyUi.err.hidden = sent;
+    keyUi.err.hidden = !sent;
   }
 
   function updateKey() {
@@ -223,7 +224,13 @@
     coreConnected = Boolean(connected);
     $("conn").textContent = coreConnected ? "connected" : "connecting…";
     $("conn").classList.toggle("off", !coreConnected);
-    if (!coreConnected) healthMsg = null;
+    if (!coreConnected) {
+      healthMsg = null;
+      if (keyUi && keySave.disconnected()) {
+        keyUi.err.textContent = "Her core went away before the key was saved; it's still in the field.";
+        keyUi.err.hidden = false;
+      }
+    }
     refreshStep();
     refreshHealth(); // on load and on every reconnect: the status replay on load arrives here
   });
@@ -240,6 +247,11 @@
       voices = voiceItems(msg);
       if (step === "voice") refreshStep();
     } else if (msg.type === "setup_result") {
+      const ack = keyUi && keySave.result(msg, keyUi.field);
+      if (ack && keyUi) {
+        keyUi.err.textContent = ack === "saved" ? "Saved" : "Her core couldn't save that key; it's still in the field.";
+        keyUi.err.hidden = false;
+      }
       if (SETUP_ACTIONS.includes(msg.action)) showResult(resultText(msg));
       refreshHealth(); // after every result, so the key step's source line follows a save
     }

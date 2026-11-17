@@ -95,15 +95,52 @@ function keyRequest(raw) {
   return { type: "setup_request", action: "online_key_set", args: { key } };
 }
 
-/** Send the key in `field` once, and only while the core is connected (a setup_request is dropped while it is away, so
- *  the field keeps the key until a send really happened); then empty the field. True when it was sent. Keeps no copy. */
-function submitKey(field, send, connected) {
-  if (connected !== true || !field || typeof send !== "function") return false;
-  const msg = keyRequest(field.value);
-  if (!msg) return false;
-  send(msg);
-  field.value = "";
-  return true;
+/** One-way fingerprint: lets a pending save recognise the same key in the field without keeping a copy of the secret. */
+function keyFingerprint(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
+/** A key save is finished only when the core confirms it. `setup_request` is NOW_ONLY: it is dropped if the bridge's
+ *  socket is closed while the UI still thinks the core is connected. Clearing the field on send would lose the key
+ *  silently, so keep it until a matching `setup_result` arrives (or the connection goes away). */
+class KeySave {
+  constructor() {
+    this.pending = null;
+  }
+
+  /** Hand a valid key to `send` once. The field keeps the key until `result` confirms it. True when sent. */
+  submitKey(field, send, connected) {
+    if (connected !== true || !field || typeof send !== "function") return false;
+    const msg = keyRequest(field.value);
+    if (!msg) return false;
+    send(msg);
+    this.pending = keyFingerprint(msg.args.key);
+    return true;
+  }
+
+  /** Feed a core `setup_result`. "saved" means this field was cleared, "failed" that it was kept; null = not ours. */
+  result(msg, field) {
+    const pending = this.pending;
+    if (!pending || !msg || msg.type !== "setup_result" || msg.action !== "online_key_set") return null;
+    this.pending = null;
+    if (msg.ok === true && field && keyFingerprint(String(field.value).trim()) === pending) {
+      field.value = "";
+      return "saved";
+    }
+    return "failed";
+  }
+
+  /** No result can arrive once the socket is gone. True if a save was in flight, so the UI can say so. */
+  disconnected() {
+    const had = this.pending !== null;
+    this.pending = null;
+    return had;
+  }
 }
 
 /** Every Save-key button is disabled unless the core is connected. */
@@ -227,7 +264,7 @@ const shouldRefresh = ({ hidden, connected }) => !hidden && Boolean(connected);
 
 const healthExports = {
   REFRESH_MS, MAX_KEY, CONFIRM_EXPIRY_MS, CONFIRM_GATED, ROW_LABELS, FIX_LABELS, CONFIRM_TITLES, STATUS_TEXT, healthRows,
-  fixRequest, keyRequest, submitKey, saveKeyEnabled, clearKeyEnabled, keySourceText, ConfirmGate, ConfirmFlow, voiceItems, resultText,
+  fixRequest, keyRequest, KeySave, saveKeyEnabled, clearKeyEnabled, keySourceText, ConfirmGate, ConfirmFlow, voiceItems, resultText,
   shouldRefresh,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = healthExports;

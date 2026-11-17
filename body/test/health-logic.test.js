@@ -74,26 +74,55 @@ test("keyRequest trims, and refuses empty, long, spaced or control-character key
   assert.ok(H.keyRequest("a".repeat(200)));
 });
 
-test("test_submitKey_sends_once_and_clears_the_field", () => {
+test("a key save keeps the field until the core confirms it", () => {
   const sent = [];
   const send = (m) => sent.push(m);
-  const field = { value: " AIzaCANARY123456 " };
-  assert.equal(H.submitKey(field, send, true), true);
-  assert.deepEqual(sent, [{ type: "setup_request", action: "online_key_set", args: { key: "AIzaCANARY123456" } }]);
+  const key = "AIzaCANARY123456";
+  const field = { value: ` ${key} ` };
+  const save = new H.KeySave();
+
+  assert.equal(save.submitKey(field, send, true), true);
+  assert.deepEqual(sent, [{ type: "setup_request", action: "online_key_set", args: { key } }]);
+  assert.equal(field.value, ` ${key} `, "no ack yet: the key is still on screen");
+
+  // a result for another action, or for a different field, is not ours
+  assert.equal(save.result({ type: "setup_result", action: "online_test", ok: true }, field), null);
+  assert.equal(save.result({ type: "setup_result", action: "online_key_set", ok: true }, { value: "other" }), "failed");
+  assert.equal(field.value, ` ${key} `);
+
+  // the matching success clears it; the field is re-submitted as a fresh save
+  assert.equal(save.submitKey(field, send, true), true);
+  assert.equal(save.result({ type: "setup_result", action: "online_key_set", ok: true }, field), "saved");
   assert.equal(field.value, "");
+  assert.equal(save.result({ type: "setup_result", action: "online_key_set", ok: true }, field), null,
+    "a late duplicate result is ignored");
+
+  // a rejected save keeps the key so it can be corrected
+  const again = { value: key };
+  assert.equal(save.submitKey(again, send, true), true);
+  assert.equal(save.result({ type: "setup_result", action: "online_key_set", ok: false, detail: "no" }, again), "failed");
+  assert.equal(again.value, key);
 
   const bad = { value: "has space" };
-  assert.equal(H.submitKey(bad, send, true), false);
-  assert.equal(sent.length, 1);
-  assert.equal(bad.value, "has space");
-
+  assert.equal(save.submitKey(bad, send, true), false);
+  assert.equal(sent.length, 3, "an invalid key is never sent");
   for (const connected of [false, undefined, "yes", 1]) {
-    const f = { value: "AIzaCANARY123456" };
-    assert.equal(H.submitKey(f, send, connected), false);
-    assert.equal(f.value, "AIzaCANARY123456", "the key stays in the field while the core is away");
+    const f = { value: key };
+    assert.equal(save.submitKey(f, send, connected), false);
+    assert.equal(f.value, key, "the key stays in the field while the core is away");
   }
-  assert.equal(sent.length, 1, "nothing was sent while disconnected");
-  assert.equal(H.submitKey(null, send, true), false);
+  assert.equal(save.submitKey(null, send, true), false);
+});
+
+test("a connection loss while a key is pending keeps the field for a retry", () => {
+  const save = new H.KeySave();
+  const field = { value: "AIzaCANARY123456" };
+  assert.equal(save.submitKey(field, () => {}, true), true);
+  assert.equal(save.disconnected(), true);
+  assert.equal(field.value, "AIzaCANARY123456");
+  assert.equal(save.result({ type: "setup_result", action: "online_key_set", ok: true }, field), null,
+    "a result from the old connection can't clear the field");
+  assert.equal(save.disconnected(), false);
 });
 
 test("saveKeyEnabled and clearKeyEnabled", () => {
