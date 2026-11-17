@@ -18,7 +18,7 @@ from riya.core import secrets as keystore
 from riya.core.clock import FakeClock
 from riya.core.eyes.capture import FakeWindowSource, WindowInfo
 from riya.core.models import ModelUnavailable, ToolReply
-from riya.core.protocol import (ErrorMsg, GetMemories, HealthGet, HealthMsg, OnboardingDone, ProtocolError,
+from riya.core.protocol import (ErrorMsg, GetMemories, HealthGet, HealthMsg, ProtocolError,
                                 SetSettings, SettingsMsg, SetupAction, SetupConfirm, SetupRequest, SetupResult,
                                 VoicesMsg, dump, parse_body_message)
 from riya.core.secrets import KEY_VAR, InvalidKey, OnlineKey

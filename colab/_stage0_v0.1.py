@@ -1,4 +1,6 @@
-import os, subprocess, zipfile
+import os
+import subprocess
+import zipfile
 zipfile.ZipFile('/content/jarvis.zip').extractall('/content/code')
 os.makedirs('/content/runs/bench', exist_ok=True)
 cmd = ['python', '-m', 'evaluation.run_world', 'train', '--variant', 'v0.1', '--episodes', '60',

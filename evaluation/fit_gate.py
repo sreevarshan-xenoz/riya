@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from evaluation.run_world import MANIFEST, VARIANTS, build, seeds
+from evaluation.run_world import MANIFEST, build, seeds
 from jarvis.world.gate import FailureHead, ece, fit_temperature, harmful_labels
 from jarvis.world.vec import VecSurvival
 

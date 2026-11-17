@@ -37,7 +37,9 @@ jobs:
         run: >
           pip install
           fastapi "uvicorn[standard]" "pydantic>=2" httpx
-          "fastembed==0.9.0" numpy jsonschema pillow tzdata pytest
+          "fastembed==0.9.0" numpy jsonschema pillow tzdata pytest ruff
+      - name: Run ruff
+        run: ruff check .
       - name: Run the Python suite
         run: python -m pytest -q
 

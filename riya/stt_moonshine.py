@@ -53,7 +53,7 @@ class MoonshineStreamSTT:
     def finish(self):
         """End of speech: flush remaining audio, return the final transcript, and reset for the next turn."""
         t = self.stream.stop()
-        text = " ".join(l.text.strip() for l in (t.lines if t else []) if l.text.strip())
+        text = " ".join(line.text.strip() for line in (t.lines if t else []) if line.text.strip())
         if hasattr(self.stream, "close"):
             self.stream.close()
         self.stream = None
@@ -63,7 +63,7 @@ class MoonshineStreamSTT:
     def transcribe(self, audio):
         """Non-streaming fallback with the same signature as voice.WhisperSTT.transcribe."""
         t = self.tr.transcribe_without_streaming(np.asarray(audio, dtype=np.float32).ravel().tolist(), SR)
-        return " ".join(l.text.strip() for l in t.lines if l.text.strip())
+        return " ".join(line.text.strip() for line in t.lines if line.text.strip())
 
     def close(self):
         if self.stream is not None and hasattr(self.stream, "close"):

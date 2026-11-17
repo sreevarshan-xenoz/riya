@@ -2,7 +2,6 @@
 import math
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from riya.core import shaping
 from riya.core.memory import Glance

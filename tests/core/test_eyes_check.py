@@ -118,7 +118,7 @@ class LiveU32(FakeUser32):
         super().__init__()
         self.stays_open, self.closed = stays_open, []
 
-    def PostMessageW(self, hwnd, msg, w, l):
+    def PostMessageW(self, hwnd, msg, w, lp):
         assert msg == 0x0010
         self.closed.append(hwnd)
 

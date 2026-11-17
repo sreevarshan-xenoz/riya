@@ -12,11 +12,10 @@ from fastapi.testclient import TestClient
 from riya.agents.hooks import create_hook_app
 from riya.agents.peer import FakePeerOS, Proc, TcpRow, TopWindow
 from riya.core import engine, settings
-from riya.core import protocol as proto
 from riya.core.clock import FakeClock
 from riya.core.protocol import AgentActivity, AgentsMsg, AgentWindow, FocusAgent, PresenceMsg, SetSettings, SettingsMsg
 from riya.core.settings import Settings, apply_patch
-from tests.core.test_agents_engine import ask, failure, hook, stop
+from tests.core.test_agents_engine import ask, hook, stop
 from tests.fakes import make_core
 
 TOKEN = "t" * 64

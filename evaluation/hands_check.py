@@ -68,7 +68,8 @@ def run_t0(name: str, phrase: str, ctx: ToolCtx) -> bool:
 
 def run_dry(name: str, phrase: str, settings: Settings, now: float) -> bool:
     """Match, validate, summarize and build the confirmation for one T1/T2 turn. Runs nothing."""
-    names = lambda items: [i["name"] for i in items]
+    def names(items):
+        return [i["name"] for i in items]
     call = match(phrase, now, apps=names(settings.apps), commands=names(settings.commands))
     if call is None:
         print(f"  {name}: FAIL (\"{phrase}\" did not match)")

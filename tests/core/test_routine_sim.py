@@ -1,6 +1,5 @@
 """The routine simulator: deterministic, on the real engine, with its oracle and criteria (v0.12 §4.10, §4.12.4)."""
 import json
-import random
 from pathlib import Path
 
 import pytest
