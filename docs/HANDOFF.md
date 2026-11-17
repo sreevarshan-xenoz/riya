@@ -90,7 +90,7 @@ The body is an Electron app in `body/`. It is plain scripts, with no bundler and
 5. **Little Riya (buddy/pet mode)** walks, sits and sleeps through `pet-logic.js`. With a VRM those become animation
    clips (VRMA or Mixamo, retargeted); until then a sprite or idle pose is fine.
 
-Brainstorm and write the spec (`docs/superpowers/specs/`) before building, as with every version so far.
+The spec is written: `docs/superpowers/specs/2026-11-17-riya-3d-avatar-design.md` (chosen approach: three.js + `@pixiv/three-vrm` in the existing renderer, sprites as fallback). Build against it, as with every version so far.
 
 ## Still open from the Linux side
 
