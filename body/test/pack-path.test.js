@@ -1,6 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const { pathToFileURL } = require("node:url");
 const { resolveInPack, packCandidates, getPackPath, resolveManifestFrames } = require("../src/pack-path");
 
@@ -93,7 +95,7 @@ const goodManifest = (extra = {}) => JSON.stringify({
   name: "p", version: 1, canvas: { width: 10, height: 20 }, crops: { upper: [0, 0, 10, 10] },
   expressions: { neutral: { closed: "n.png" } }, ...extra,
 });
-const ARGS = { spritePack: "mine", repoRoot: REPO, bodyDir: BODY };
+const ARGS = { spritePack: "mine", repoRoot: REPO, bodyDir: BODY, realpath: (p) => p }; // fake disks: no real paths
 
 test("loadFirstPack returns the first valid pack with frame URLs", () => {
   const disk = fakeDisk({ [path.join(MINE, "manifest.json")]: goodManifest(), [path.join(MINE, "n.png")]: "" });
@@ -133,6 +135,37 @@ test("loadFirstPack returns null when no candidate is usable", () => {
   const disk = fakeDisk({ [path.join(PLACEHOLDER, "manifest.json")]: goodManifest({ crops: {} }) });
   assert.equal(loadFirstPack({ ...ARGS, ...disk, log: () => {} }), null);
   assert.equal(loadFirstPack({ ...ARGS, ...fakeDisk({}), log: () => {} }), null);
+});
+
+test("frame paths that leave the pack through a symlink are rejected", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "riya-pack-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "riya-outside-"));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+  const target = path.join(outside, "secret.svg");
+  fs.writeFileSync(target, "private");
+  fs.writeFileSync(path.join(root, "plain.svg"), "ok");
+  try {
+    fs.symlinkSync(target, path.join(root, "neutral.svg"));
+  } catch (e) {
+    t.skip(`symlinks are not available here: ${e.message}`);
+    return;
+  }
+
+  assert.equal(resolveInPack(root, "neutral.svg", fs.realpathSync), null, "a symlink out of the pack is not a frame");
+  assert.equal(resolveInPack(root, "neutral.svg", (p) => p), path.join(root, "neutral.svg"), "the lexical path itself");
+  assert.equal(resolveInPack(root, "plain.svg", fs.realpathSync), path.join(root, "plain.svg"));
+  assert.equal(resolveInPack(root, "missing.svg", fs.realpathSync), null);
+
+  const out = resolveManifestFrames(JSON.parse(goodManifest({ motions: { walk: ["neutral.svg"] } })), root,
+    fs.existsSync, fs.realpathSync);
+  assert.deepEqual(out.expressions.neutral, {}, "the escaping frame is dropped as missing");
+  assert.equal(out.motions.walk, undefined, "motion frames are contained too");
+  fs.writeFileSync(path.join(root, "manifest.json"), goodManifest());
+  assert.equal(loadFirstPack({ spritePack: ".", repoRoot: root, bodyDir: root, log: () => {} }), null,
+    "a pack with no in-bounds neutral frame is unusable");
 });
 
 test("motions resolve inside the pack like frames", () => {

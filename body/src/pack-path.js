@@ -5,14 +5,24 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { validateManifest } = require("./sprite-logic");
 
-/** Absolute path of `rel` inside `packDir`, or null if it is not a plain relative path that stays inside. */
-function resolveInPack(packDir, rel) {
+/** Absolute path of `rel` inside `packDir`, or null if it is not a plain relative path that stays inside.
+ *  With a `realpath` function, also reject a symlink inside the pack that points outside it: the renderer would
+ *  otherwise load and display the outside file as a sprite. */
+function resolveInPack(packDir, rel, realpath = null) {
   if (typeof rel !== "string" || !rel || rel.includes("\0")) return null;
   if (path.win32.isAbsolute(rel) || path.posix.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) return null;
   const root = path.resolve(packDir);
   const full = path.resolve(root, rel);
   const inside = path.relative(root, full);
   if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) return null;
+  if (realpath) {
+    try {
+      const realInside = path.relative(realpath(root), realpath(full));
+      if (!realInside || realInside.startsWith("..") || path.isAbsolute(realInside)) return null;
+    } catch {
+      return null;  // a missing or broken link is a missing frame
+    }
+  }
   return full;
 }
 
@@ -29,31 +39,32 @@ function getPackPath({ spritePack, repoRoot, bodyDir, existsSync = fs.existsSync
 }
 
 /** Copy of `manifest` whose frame paths are file URLs; escaping or non-existent frames are dropped (treated as missing). */
-function resolveManifestFrames(manifest, packDir, exists = () => true) {
+function resolveManifestFrames(manifest, packDir, exists = () => true, realpath = null) {
   if (!manifest || typeof manifest !== "object") return null;
   const expressions = {};
   for (const [name, frames] of Object.entries(manifest.expressions || {})) {
     expressions[name] = {};
     for (const [variant, rel] of Object.entries(frames || {})) {
-      const full = resolveInPack(packDir, rel);
+      const full = resolveInPack(packDir, rel, realpath);
       if (full && exists(full)) expressions[name][variant] = pathToFileURL(full).href;
     }
   }
   const out = { ...manifest, expressions };
-  if (manifest.motions && typeof manifest.motions === "object") out.motions = resolveMotions(manifest.motions, packDir, exists);
-  else delete out.motions;
+  if (manifest.motions && typeof manifest.motions === "object") {
+    out.motions = resolveMotions(manifest.motions, packDir, exists, realpath);
+  } else delete out.motions;
   return out;
 }
 
 /** `motions` ({walk, sit, sleep}: arrays of frame paths) as arrays of file URLs, resolved like expression frames:
  *  escaping or missing frames are dropped and an emptied array goes with them. */
-function resolveMotions(motions, packDir, exists) {
+function resolveMotions(motions, packDir, exists, realpath = null) {
   const out = {};
   for (const [name, frames] of Object.entries(motions)) {
     if (!Array.isArray(frames)) continue;
     const urls = [];
     for (const rel of frames) {
-      const full = resolveInPack(packDir, rel);
+      const full = resolveInPack(packDir, rel, realpath);
       if (full && exists(full)) urls.push(pathToFileURL(full).href);
     }
     if (urls.length) out[name] = urls;
@@ -64,14 +75,14 @@ function resolveMotions(motions, packDir, exists) {
 /** The first candidate pack whose manifest parses, passes validateManifest and has a neutral.closed file, as
  *  { dir, manifest } with frame file URLs, or null. Each skipped pack is reported through `log`. */
 function loadFirstPack({ spritePack, repoRoot, bodyDir, existsSync = fs.existsSync,
-  readText = (p) => fs.readFileSync(p, "utf8"), log = () => {} }) {
+  readText = (p) => fs.readFileSync(p, "utf8"), realpath = fs.realpathSync, log = () => {} }) {
   for (const dir of packCandidates({ spritePack, repoRoot, bodyDir })) {
     const file = path.join(dir, "manifest.json");
     if (!existsSync(file)) continue;
     try {
       const raw = JSON.parse(readText(file));
       validateManifest(raw, []);
-      const manifest = resolveManifestFrames(raw, dir, existsSync);
+      const manifest = resolveManifestFrames(raw, dir, existsSync, realpath);
       if (manifest.expressions.neutral && manifest.expressions.neutral.closed) return { dir, manifest };
       log("sprite pack has no neutral.closed file, skipping", dir);
     } catch (e) {
