@@ -65,6 +65,13 @@ def load_rows(paths, neutral_keep, rng):
     return rows
 
 
+def train_sample(pool, k, rng):
+    """k training rows: without replacement when the pool allows it, with replacement for a small pool."""
+    if not pool:
+        raise ValueError("no training rows in the input files")
+    return rng.sample(pool, k) if len(pool) >= k else rng.choices(pool, k=k)
+
+
 def encode(row, enc, block_size):
     system = BUTLER_SYSTEM if row.get("source", "").startswith("synth") else HUMAN_SYSTEM
     f = format_row(row, system)
@@ -156,7 +163,8 @@ def main():
                 X, Y = pretrain.batch()
                 A = torch.zeros(X.size(0), cfg.affect_dim, device=device)
             else:
-                X, Y, A = make_batch(random.sample(rows["train"], args.batch_size), enc, args, device, drop=True)
+                X, Y, A = make_batch(train_sample(rows["train"], args.batch_size, random),
+                                     enc, args, device, drop=True)
             with amp:
                 _, loss = model(X, Y, affect=A)
             scaler.scale(loss / args.grad_accum).backward()
