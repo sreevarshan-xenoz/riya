@@ -496,7 +496,9 @@ class Pet {
       else motion = BIG_MOTIONS[0];
     }
     if (this.ctx.reducedMotion === true) {
-      motion = null;
+      // A wave is a signal as well as a motion: keep it so the needs-you badge survives "Keep her still".
+      // petTransformCss suppresses the animation itself whenever the view is reduced, so nothing moves.
+      if (entry.kind !== "wave") motion = null;
       effect = null;
     }
     this.sleepForced = false;
