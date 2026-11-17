@@ -16,13 +16,12 @@ import json
 import logging
 import math
 import random
-import re
 import statistics
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

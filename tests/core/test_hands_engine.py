@@ -16,7 +16,7 @@ from riya.core.initiative import Action
 from riya.core.models import ModelUnavailable, ToolReply
 from riya.core.prompt import TOOL_NOTE
 from riya.core.protocol import (ActionsClear, ActionsMsg, Confirm, ConfirmDone, ConfirmRequest, ErrorMsg,
-                                MemoriesMsg, NoteDelete, ReminderCancel, RemindersMsg, Say, SayEnd)
+                                MemoriesMsg, NoteDelete, ReminderCancel, RemindersMsg, Say)
 from riya.core.shaping import BUDGETS, CAPS
 from tests.fakes import FakeModel, make_core
 

@@ -1,5 +1,4 @@
 """Pause LM pretraining on the T4 (Riya work has priority); it resumes later from runs/lm-small/ckpt.pt."""
-import json
 import os
 import subprocess
 

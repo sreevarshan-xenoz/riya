@@ -6,7 +6,7 @@ import pytest
 
 import riya.core.routine as rt
 from riya.core.clock import FakeClock
-from riya.core.engine import BID_IGNORED_S, RiyaCore
+from riya.core.engine import BID_IGNORED_S
 from riya.core.initiative import Action
 from riya.core.protocol import ExpressionMsg, GetMemories, RoutineForget, RoutineMsg, TwinReset, LearningReset
 from riya.core.routine import audit as au

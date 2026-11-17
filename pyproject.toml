@@ -1,3 +1,23 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# Scoped to rules that catch real mistakes. The default rule set is far too noisy for this repo (mostly style in
+# throwaway Colab scripts); the ignores below are for verified false positives, documented inline.
+[tool.ruff]
+exclude = [".venv", "body/node_modules", "notebooks", ".pytest_cache", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    "E702",  # semicolons are used deliberately in a few compact scripts
+    "B905",  # these zip() calls iterate equal-length sequences on purpose
+    "B007",  # a few unused loop variables are kept as readable documentation
+    "B023",  # these lambdas use their loop variable inside the same iteration
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F811", "F841", "F402", "B017", "E731"]  # fixture shadowing, setup vars and local test lambdas
+"colab/**" = ["F821", "E741"]  # a `del` after a closure confuses F821; short script-loop names
+"jarvis/lm/data.py" = ["F821"]  # `del arr` after the flush closure is defined, but before it is used
+"evaluation/run_world.py" = ["F841"]  # the resume assignment mirrors the one just above it

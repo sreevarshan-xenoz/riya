@@ -69,7 +69,7 @@ def test_runner_train_eval_and_resume(tmp_path):
                 "--replay", "5000", "--out", str(out)]
 
     subprocess.run(cmd(2), cwd=ROOT, check=True, capture_output=True, timeout=600)
-    rows = [json.loads(l) for l in open(out / "episodes.jsonl")]
+    rows = [json.loads(line) for line in open(out / "episodes.jsonl")]
     assert len(rows) == 4 and {"seed", "success", "poison", "planner_calls", "code_hash"} <= set(rows[0])
     # resume with a larger budget continues instead of restarting
     subprocess.run(cmd(3), cwd=ROOT, check=True, capture_output=True, timeout=600)

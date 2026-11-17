@@ -1,5 +1,4 @@
 import inspect
-import moonshine_voice as mv
 import moonshine_voice.download as dl
 import moonshine_voice.transcriber as tr
 import moonshine_onnx

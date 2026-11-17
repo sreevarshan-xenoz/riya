@@ -8,7 +8,6 @@ something needs attention, so the agent wakes up, acts, and re-arms the watcher:
 State of already-reported events lives in scratch_runs/autopilot_seen.json.
 """
 import json
-import os
 import pathlib
 import shutil
 import subprocess

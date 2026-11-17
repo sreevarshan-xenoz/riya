@@ -28,7 +28,6 @@ def no_real_user_files(tmp_path, monkeypatch):
     """No test reaches the real %LOCALAPPDATA%\\Riya, ~/.claude/settings.json, Startup folder or models folder: every
     default path is redirected to tmp_path (riya.brain's base model, adapter folder and so its adopted and candidate
     adapters), and no remembered key carries from one test into the next."""
-    from riya import brain
     from riya.agents import hooks, install_hooks
     from riya.core import secrets as keystore
     riya_dir = tmp_path / "localappdata" / "Riya"

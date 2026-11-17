@@ -1,6 +1,5 @@
 """On the T4 VM: build llama.cpp with CUDA (sm75 only, server target) and download Riya candidate GGUFs.
 Runs detached; progress in /content/runs/llamacpp.out."""
-import os
 import subprocess
 
 script = r"""
