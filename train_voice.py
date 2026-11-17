@@ -92,6 +92,29 @@ def make_batch(rows, enc, args, device, drop: bool):
     return X.to(device), Y.to(device), torch.from_numpy(np.stack(affs)).to(device)
 
 
+def val_slices(rows, batch_size):
+    """Every validation batch actually present: a small val set yields fewer batches, never an empty one."""
+    for i in range(0, len(rows), batch_size):
+        yield rows[i : i + batch_size]
+
+
+@torch.no_grad()
+def evaluate(model, rows, enc, args, device, amp):
+    """Val loss with and without the affect vector. val_noaffect - val > 0 means the model uses affect."""
+    model.eval()
+    out = {}
+    for name, drop_all in (("val", False), ("val_noaffect", True)):
+        losses = []
+        for batch in val_slices(rows["val"], args.batch_size):
+            X, Y, A = make_batch(batch, enc, args, device, drop=False)
+            with amp:
+                _, loss = model(X, Y, affect=torch.zeros_like(A) if drop_all else A)
+            losses.append(loss.item())
+        out[name] = sum(losses) / len(losses) if losses else float("nan")
+    model.train()
+    return out
+
+
 def main():
     args = parse()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -129,21 +152,6 @@ def main():
                     "config": cfg.to_dict()}, weights_path + ".tmp")
         os.replace(weights_path + ".tmp", weights_path)
 
-    @torch.no_grad()
-    def evaluate(n=20):
-        model.eval()
-        out = {}
-        for name, drop_all in (("val", False), ("val_noaffect", True)):
-            losses = []
-            for i in range(n):
-                batch = rows["val"][i * args.batch_size : (i + 1) * args.batch_size]
-                X, Y, A = make_batch(batch, enc, args, device, drop=False)
-                with amp:
-                    _, loss = model(X, Y, affect=torch.zeros_like(A) if drop_all else A)
-                losses.append(loss.item())
-            out[name] = sum(losses) / len(losses)
-        model.train()
-        return out  # val_noaffect - val > 0 means the model is actually using the affect vector
 
     t_start = t0 = time.time()
     while step < args.steps:
@@ -173,7 +181,7 @@ def main():
             print(f"step {step} | loss {loss.item():.3f} | lr x{factor:.2f} | {(time.time() - t0) / 50:.2f}s/step", flush=True)
             t0 = time.time()
         if step % args.eval_every == 0 or step == args.steps:
-            ev = evaluate()
+            ev = evaluate(model, rows, enc, args, device, amp)
             print(f"== step {step} val {ev['val']:.3f} | val without affect {ev['val_noaffect']:.3f} "
                   f"(affect gain {ev['val_noaffect'] - ev['val']:+.4f})", flush=True)
             with open(os.path.join(args.out_dir, "log.jsonl"), "a") as f:
