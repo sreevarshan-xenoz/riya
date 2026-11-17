@@ -12,7 +12,7 @@
   const { hookStatus, receiverProblems, TOKEN_PATH, SETUP_COMMAND, LOG_KEYS } = RiyaAgents;
   const { toolRows, toolsPatch, joinCommandLine, actionText } = RiyaHands;
   const {
-    REFRESH_MS, CONFIRM_EXPIRY_MS, CONFIRM_TITLES, STATUS_TEXT, healthRows, fixRequest, submitKey, saveKeyEnabled, clearKeyEnabled,
+    REFRESH_MS, CONFIRM_EXPIRY_MS, CONFIRM_TITLES, STATUS_TEXT, healthRows, fixRequest, KeySave, saveKeyEnabled, clearKeyEnabled,
     keySourceText, ConfirmFlow, voiceItems, resultText, shouldRefresh,
   } = RiyaHealth;
   const $ = (id) => document.getElementById(id);
@@ -438,6 +438,7 @@
   }
 
   let keySource = null;
+  const keySave = new KeySave();
 
   function updateKeyButtons() {
     $("online-key-save").disabled = !saveKeyEnabled(coreConnected);
@@ -454,12 +455,16 @@
     updateKeyButtons();
   }
 
-  function saveKey() {
+  function keyError(text) {
     const err = $("online-key-err");
-    const sent = submitKey($("online-key"), send, coreConnected);
-    err.textContent = sent ? "" : coreConnected ? "That doesn't look like a key (no spaces, at most 200 characters)."
-      : "Her core isn't connected, so the key wasn't sent.";
-    err.hidden = sent;
+    if (text) err.textContent = text;
+    err.hidden = !text;
+  }
+
+  function saveKey() {
+    const sent = keySave.submitKey($("online-key"), send, coreConnected);
+    keyError(sent ? "Saving…" : coreConnected ? "That doesn't look like a key (no spaces, at most 200 characters)."
+      : "Her core isn't connected, so the key wasn't sent.");
   }
 
   $("online-key-save").addEventListener("click", saveKey);
@@ -745,6 +750,7 @@
       renderLearning(null);
       renderRoutine(null);
       renderHealth(null);
+      if (keySave.disconnected()) keyError("Her core went away before the key was saved; it's still in the field.");
     }
     updateKeyButtons();
     if (connected) {
@@ -781,6 +787,8 @@
       const token = flow.open(msg);
       if (token !== null) askConfirm(msg, token);
     } else if (msg.type === "setup_result") {
+      const ack = keySave.result(msg, $("online-key"));
+      if (ack) keyError(ack === "saved" ? "Saved" : "Her core couldn't save that key; it's still in the field.");
       if (flow.result(msg)) closeModal();
       $("setup-result").textContent = resultText(msg);
       if (shouldRefresh({ hidden: document.hidden, connected: coreConnected })) refreshHealth();
