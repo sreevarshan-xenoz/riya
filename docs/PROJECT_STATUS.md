@@ -54,7 +54,10 @@ The only warning is an upstream `StarletteDeprecationWarning` about `httpx` with
 
 ## Recommended next work, in order
 
-1. **Write the 3D avatar spec**, then build it — the next feature in `docs/HANDOFF.md`. Keep the existing message contract, add sprites as fallback, and stay inside the body's CPU budget.
+The hands-on items (2–4 below, plus provider and voice loose ends) are collected as a checklist in
+[manual acceptance](MANUAL_ACCEPTANCE.md); none of them can be established by the automated suite.
+
+1. **Write the 3D avatar spec**, then build it — the spec is in `docs/superpowers/specs/2026-11-17-riya-3d-avatar-design.md` and the route in `docs/HANDOFF.md`. Keep the existing message contract, add sprites as fallback, and stay inside the body's CPU budget.
 2. **Finish the v0.11 quality gate before promoting a brain.** The committed calibration is 0.11.1 and `evaluation.gate.identity()` matches it. See `colab/riya_v1/README.md`, sections 7–9: five fresh base-vs-base runs with the pinned embedder, calibrate, then the round-2 candidate and `evaluation.champion --check-verdict`. Record failures; never tune against the held-out bank.
 3. **Do the Windows integration pass.** Welcome/Health, two windows changing settings, Startup-shortcut failure recovery, Claude Code hooks and terminal focus, voice barge-in and reduced motion. Use `evaluation.health_check`, `pet_check` and `pet_cpu` where applicable; pure tests cannot establish hardware latency or desktop CPU budgets.
 4. **Keep CI green and add hardware gates separately.** Model/hardware acceptance remains a manual, documented step.
