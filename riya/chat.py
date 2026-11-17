@@ -124,11 +124,13 @@ def main():
         if not user:
             continue
         t0 = time.time()
+        first = None
         for i, sentence in enumerate(riya.reply(user)):
             if i == 0:
                 first = time.time() - t0
             print(sentence, end=" ", flush=True)
-        print(f"\n   ({first * 1000:.0f} ms to first sentence)" + (f" {riya.state_tag()}" if a.show_state else ""))
+        timing = f"   ({first * 1000:.0f} ms to first sentence)" if first is not None else "   (no reply)"
+        print("\n" + timing + (f" {riya.state_tag()}" if a.show_state else ""))
 
 
 if __name__ == "__main__":
