@@ -33,7 +33,8 @@ def hits(rows: list[dict], texts: list[str], facts: list[str]) -> list[tuple[str
 def short_probes(probes: dict) -> list[str]:
     """The ids of g_* conversations whose turn has under HOLDOUT_N normalised words."""
     return [c["id"] for c in probes["conversations"] if c["id"].startswith("g_")
-            and any(len(holdout.normalize(t["text"]).split()) < holdout.HOLDOUT_N for t in c["turns"])]
+            and any(len(holdout.normalize(t["text"]).split()) < holdout.HOLDOUT_N for t in c["turns"]
+                    if not t.get("speak_first"))]
 
 
 def main(argv: list[str] | None = None, *, build: Callable[[int], list[dict]] = build_sft.build) -> int:
