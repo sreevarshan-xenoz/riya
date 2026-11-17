@@ -31,9 +31,12 @@ def test_hits_and_short_probes():
     probes = {"conversations": [
         {"id": "g_x", "facts": [], "turns": [{"id": "q", "kind": "unknown", "text": "what's my cat's name, riya?"}]},
         {"id": "g_y", "facts": [], "turns": [{"id": "q", "kind": "unknown", "text": TEXT}]},
+        {"id": "g_z", "facts": [], "turns": [
+            {"id": "greeting", "kind": "greeting", "speak_first": True, "text": "Hi~"}]},
         {"id": "sister", "facts": [], "turns": [{"id": "q", "kind": "unknown", "text": "my sister?"}]},
     ]}
     assert short_probes(probes) == ["g_x"]  # 5 normalised words; v0.9's own short turns are not g_*
+    # a short speak-first turn is a stage note, not one of the texts the hold-out protects
 
 
 def test_the_real_probe_file_has_no_short_probes():
