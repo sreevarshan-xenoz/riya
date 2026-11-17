@@ -41,10 +41,14 @@ def default_llama_server(home: Path | None = None, which: Callable[[str], str | 
 LLAMA_SERVER = os.environ.get("LLAMA_SERVER") or default_llama_server()
 
 
-def free_vram_mb():
-    out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True).stdout
-    return int(out.split()[0])
+def free_vram_mb(run=subprocess.run):
+    """Free VRAM in MB, or 0 when there is no NVIDIA telemetry (no driver, no nvidia-smi, or a non-NVIDIA card)."""
+    try:
+        out = run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                  capture_output=True, text=True, timeout=5).stdout
+        return int(out.split()[0])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return 0  # 0 means "no free VRAM": the launcher's CPU mode stays on CPU, the watcher never moves to GPU
 
 
 class GameModePolicy:

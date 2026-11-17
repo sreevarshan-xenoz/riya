@@ -80,6 +80,29 @@ def make(tmp_path, popen=None, **kw):
     return srv, popen
 
 
+def test_free_vram_mb_is_total_without_nvidia_telemetry():
+    """A non-NVIDIA Linux box has no nvidia-smi: the local model must still start (on CPU)."""
+    class Out:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def missing(*a, **kw):
+        raise FileNotFoundError("nvidia-smi")
+
+    def failed(*a, **kw):
+        raise subprocess.CalledProcessError(1, "nvidia-smi")
+
+    def timed_out(*a, **kw):
+        raise subprocess.TimeoutExpired("nvidia-smi", 5)
+
+    assert server.free_vram_mb(run=missing) == 0
+    assert server.free_vram_mb(run=failed) == 0
+    assert server.free_vram_mb(run=timed_out) == 0
+    assert server.free_vram_mb(run=lambda *a, **kw: Out("")) == 0
+    assert server.free_vram_mb(run=lambda *a, **kw: Out("junk\n")) == 0
+    assert server.free_vram_mb(run=lambda *a, **kw: Out("4096\n")) == 4096
+
+
 def test_cmd_passes_lora_and_keys_the_slot_dir(tmp_path, adapter):
     srv, _ = make(tmp_path, lora=str(adapter))
     cmd = srv._cmd(True)
