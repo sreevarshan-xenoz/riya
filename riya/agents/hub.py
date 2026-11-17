@@ -21,8 +21,11 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9 ._:/-]")  # the same rule as prompt._safe (pr
 
 _VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"'&;,]+)"""
 _SECRETS = [  # (pattern, replacement): a secret-looking value becomes ***, its label stays
-    (re.compile(r"\b(?:sk-(?:ant-)?|gh[opusr]_|github_pat_|xox[abpr]-)[A-Za-z0-9_\-]{8,}"), "***"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "***"),
+    # No \b anchors: a marker glued to a word (`prefixXsk-ant-...`) is how a secret hides from a name check, and it
+    # must not survive redaction either. The distinctive prefixes above all carry a long token after them.
+    (re.compile(r"(?:sk-(?:ant-)?|sk_(?:live|test)_|pk_(?:live|test)_|rk_(?:live|test)_|"
+                r"gh[opusr]_|github_pat_|glpat-|xox[abpr]-|hf_|ya29\.|AIza)[A-Za-z0-9_\-]{8,}"), "***"),
+    (re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"), "***"),
     (re.compile(r"(?i)\b(authorization\s*:\s*)(?:(?:bearer|basic|token)\s+)?" + _VALUE), r"\1***"),
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=\-]+"), r"\1***"),
     (re.compile(r"(?i)(password|passwd|pwd|token|secret|api[_-]?key)([\"']?\s*[=:]\s*)" + _VALUE), r"\1\2***"),
