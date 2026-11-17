@@ -109,7 +109,11 @@ def members(keys: Mapping[str, str], name: str, timeout_s: float, vision_only: b
         base = p.base_url.format(**{v: keys[v].strip() for v in p.needs})
         listed = p.models
         if (keys.get(p.models_var) or "").strip():
-            listed = tuple((m.strip(), True) for m in keys[p.models_var].split(",") if m.strip())
+            # Keep the known models' image capability: assuming True would enroll a text-only override in the eyes'
+            # pool, which then sends screenshots to a model that can't read them. Unknown ids default to text-only.
+            known = dict(p.models)
+            listed = tuple((m.strip(), known.get(m.strip(), False))
+                           for m in keys[p.models_var].split(",") if m.strip())
         for model_id, vision in listed:
             if vision_only and not vision:
                 continue

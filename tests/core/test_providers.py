@@ -51,6 +51,18 @@ def test_members_follow_the_keys_in_provider_order(tmp_path):
     keys["GROQ_MODELS"] = "x, y"
     assert [m.name for m in providers.members(keys, "online", 12.0, make=Fake) if m.provider == "groq"] == ["x", "y"]
 
+    # An override keeps each known model's vision capability: a text-only model must not join the eyes' pool.
+    keys["GROQ_MODELS"] = "openai/gpt-oss-120b"
+    eyes = providers.members(keys, "vision", 20.0, vision_only=True, make=Fake)
+    assert not [m for m in eyes if m.provider == "groq"], "a known text-only override must stay out of the vision pool"
+    keys["GROQ_MODELS"] = "a-brand-new-text-model"
+    assert not [m for m in providers.members(keys, "vision", 20.0, vision_only=True, make=Fake)
+                if m.provider == "groq"], "an unknown override must not be assumed to take images"
+    keys["CEREBRAS_API_KEY"] = "fake-key"
+    keys["CEREBRAS_MODELS"] = "qwen-3.8-27b"
+    assert [m for m in providers.members(keys, "vision", 20.0, vision_only=True, make=Fake)
+            if m.provider == "cerebras"], "a known vision-capable override must still join"
+
 
 def test_provider_keys_are_redacted_in_logs():
     providers.members({"GROQ_API_KEY": "gsk_SECRETSECRET123"}, "online", 12.0, make=Fake)
